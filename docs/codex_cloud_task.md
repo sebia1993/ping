@@ -48,6 +48,79 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
    - On Windows, run `python scripts\verify_release.py --exe`.
    - Build with `powershell -NoProfile -ExecutionPolicy Bypass -File .\build_windows_exe.ps1`.
 
+## Official PingPlotter Documentation Priority Notes
+
+Based on the official PingPlotter documentation, the current project is already fairly close to basic PingPlotter-style measurement, graphing, focus range handling, and export behavior. However, it still needs several improvement areas before it can be considered a PingPlotter-grade stable operations tool.
+
+Core conclusion: prioritize multi-target long-run stability, session save/restore architecture, alert conditions/actions, and probe engine choice before adding cosmetic features.
+
+### High Priority
+
+1. Strengthen multi-target operations.
+   - PingPlotter provides an All Targets Summary that lets operators compare many targets at a glance and change interval/config settings for multiple selected targets.
+   - The current project can measure multiple IPs, but its PingPlotter-style summary, grouping, and batch-control workflow is still weaker.
+   - References:
+     - https://www.pingplotter.com/manual/summary_graphs/
+     - https://www.pingplotter.com/manual/tracing_to_multiple_targets/
+
+2. Improve long-term storage and session recovery.
+   - PingPlotter keeps saving sessions and allows operators to reopen, export, and manage them later through Session Manager.
+   - PingPlotter Flex Storage separates storage by target and time range so many targets and long history can still load efficiently.
+   - The current project has segmented CSV storage, but the session database, restore, retention, delete, and resume model should be made stronger.
+   - References:
+     - https://www.pingplotter.com/manual/auto-saving-data/
+     - https://www.pingplotter.com/manual/session-manager/
+     - https://www.pingplotter.com/manual/flex-storage/
+
+3. Expand the alert system.
+   - The current project is still close to fixed loss, latency, and route-change alerts.
+   - PingPlotter supports conditions based on time, sample count, MOS, route change, specific route/IP appearance, and timers.
+   - PingPlotter can also run actions when alerts start/end, including sound, email, logging, REST calls, executable launch, image save, comment insertion, and route adjustment.
+   - References:
+     - https://www.pingplotter.com/manual/alert-conditions/
+     - https://www.pingplotter.com/manual/help_alerts/
+     - https://www.pingplotter.com/manual/final-hop-only/
+
+4. Add meaningful probe engine choice.
+   - The current project is centered on Windows ICMP ping and tracert behavior.
+   - PingPlotter supports ICMP and TCP SYN-style tracing, which is important when ICMP/UDP is blocked and the operator needs to inspect a real service path such as TCP 443.
+   - This matters in company networks, VPNs, and firewall-heavy environments.
+   - References:
+     - https://www.pingplotter.com/manual/packetoptions/
+     - https://www.pingplotter.com/manual/tcp-packets/
+
+### Important Second Priority
+
+5. Improve Timeline UX.
+   - The current project has focus range, graph zoom, and some navigation behavior.
+   - PingPlotter connects timeline dragging, mouse-wheel zooming, 60-second to 48-hour scales, Reset Focus to Current, and per-hop timeline visibility in a more natural workflow.
+   - This is important when tracking the exact failure window.
+   - Reference:
+     - https://www.pingplotter.com/manual/time_line_graphing/
+
+6. Expand export and report options.
+   - The current project supports CSV, XLSX, TXT, and PNG.
+   - PingPlotter-style parity should include All Time, Visible Time, explicit Start/End Date, grouping size, timezone, and image options for Tracegraph, Timegraph, or both.
+   - References:
+     - https://www.pingplotter.com/manual/export-statistics/
+     - https://www.pingplotter.com/manual/save-an-image/
+
+7. Strengthen analysis logic.
+   - PingPlotter documentation emphasizes checking the final destination first, then finding the first hop where the same symptom begins.
+   - The current analyzer already moves in that direction, but it should classify bandwidth saturation, ISP segment issues, intermediate-hop ICMP rate limiting, firewall blocking, and Wi-Fi/LAN issues with clearer cause codes and recommended actions.
+   - Reference:
+     - https://www.pingplotter.com/manual/voiptroubleshooting/
+
+### Recommended Implementation Order
+
+1. Session Manager and Flex Storage-style persistence.
+2. All Targets Summary with batch pause/resume/interval controls.
+3. Alert Rule UI with actions.
+4. TCP/ICMP probe engine selection.
+5. Export and Timeline UX refinement.
+
+The analysis above is a planning instruction. It does not mean these items are already implemented.
+
 ## Expected Completion Report
 
 - Summarize changed behavior and files.
