@@ -10,7 +10,13 @@ from app.storage.excel_exporter import export_xlsx
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.report_writer import write_text_report
 from app.storage import session_index as session_index_module
-from app.storage.session_index import SESSION_STATE_ACTIVE, SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
+from app.storage.session_index import (
+    SESSION_STATE_ACTIVE,
+    SESSION_STATE_ARCHIVED,
+    SESSION_STATE_PAUSED,
+    SESSION_STATE_WILL_DELETE,
+    SessionIndexStore,
+)
 from app.storage.session_log import (
     SessionLogWriter,
     iter_observations_in_range,
@@ -406,6 +412,44 @@ def test_session_index_recovers_stale_active_sessions_as_paused(tmp_path) -> Non
     assert recent_record.state == SESSION_STATE_ACTIVE
     assert archived_record is not None
     assert archived_record.state == SESSION_STATE_ARCHIVED
+
+
+def test_session_index_reconciles_missing_session_files_as_will_delete(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    existing_path = tmp_path / "198.51.100.10" / "2026-01" / "existing.samples.csv"
+    missing_path = tmp_path / "203.0.113.20" / "2026-01" / "missing.samples.csv"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_text("header\n", encoding="utf-8")
+    existing = store.register_session(
+        target="198.51.100.10",
+        sample_path=existing_path,
+        route_path=existing_path.with_name("existing.routes.csv"),
+        started_at=now,
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    missing = store.register_session(
+        target="203.0.113.20",
+        sample_path=missing_path,
+        route_path=missing_path.with_name("missing.routes.csv"),
+        started_at=now + timedelta(minutes=1),
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    marked = store.reconcile_missing_session_files()
+
+    assert [record.session_id for record in marked] == [missing.session_id]
+    existing_record = store.find_session(existing.session_id)
+    missing_record = store.find_session(missing.session_id)
+    assert existing_record is not None
+    assert existing_record.state == SESSION_STATE_ACTIVE
+    assert missing_record is not None
+    assert missing_record.state == SESSION_STATE_WILL_DELETE
+    assert missing_record.last_error == f"Session log missing: {missing_path}"
 
 
 def test_session_index_recovers_sessions_from_existing_logs_when_index_missing(tmp_path) -> None:

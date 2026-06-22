@@ -178,6 +178,27 @@ class SessionIndexStore:
                 self._write_records(updated)
         return recovered
 
+    def reconcile_missing_session_files(self) -> list[TraceSessionRecord]:
+        updated_records: list[TraceSessionRecord] = []
+        with self._lock:
+            records = self._read_records()
+            updated: list[TraceSessionRecord] = []
+            for record in records:
+                if record.sample_path.exists() or record.state == SESSION_STATE_WILL_DELETE:
+                    updated.append(record)
+                    continue
+                marked = _replace_record(
+                    record,
+                    state=SESSION_STATE_WILL_DELETE,
+                    end=record.end or record.start,
+                    last_error=f"Session log missing: {record.sample_path}",
+                )
+                updated_records.append(marked)
+                updated.append(marked)
+            if updated_records:
+                self._write_records(updated)
+        return updated_records
+
     def find_session(self, session_id: str) -> TraceSessionRecord | None:
         return next((record for record in self._read_records() if record.session_id == session_id), None)
 

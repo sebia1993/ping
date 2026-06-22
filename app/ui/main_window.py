@@ -1163,6 +1163,7 @@ class MainWindow(QMainWindow):
             self.session_index_store.recover_stale_active_sessions(
                 stale_after=timedelta(seconds=STALE_ACTIVE_SESSION_RECOVERY_SECONDS)
             )
+            self.session_index_store.reconcile_missing_session_files()
         sessions = self.session_index_store.list_sessions()[:6]
         self._sync_session_combo(sessions)
         if not sessions:
