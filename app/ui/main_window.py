@@ -240,6 +240,8 @@ class MainWindow(QMainWindow):
         heading.setObjectName("panelTitle")
         hint = QLabel("중복 IPv4는 자동 제외, Tracert는 선택된 IPv4 1개만 수행")
         hint.setObjectName("muted")
+        self.target_summary_status_label = QLabel("Targets: 0")
+        self.target_summary_status_label.setObjectName("muted")
         self.pause_selected_targets_button = QPushButton("Pause selected")
         self.pause_selected_targets_button.clicked.connect(self.pause_selected_targets)
         self.resume_selected_targets_button = QPushButton("Resume selected")
@@ -256,6 +258,7 @@ class MainWindow(QMainWindow):
         self.problem_sort_check.toggled.connect(self._on_problem_sort_toggled)
         header.addWidget(heading)
         header.addStretch(1)
+        header.addWidget(self.target_summary_status_label)
         header.addWidget(hint)
         header.addWidget(self.problem_sort_check)
         header.addWidget(self.export_target_summary_button)
@@ -764,6 +767,7 @@ class MainWindow(QMainWindow):
         update_target_table(self.target_table, target_snapshots)
         if getattr(self, "problem_sort_check", None) is not None and self.problem_sort_check.isChecked():
             self._apply_target_problem_sort()
+        self._update_all_targets_summary(target_snapshots)
         self._update_target_summary(target_snapshot)
         self.graph.set_points(self.target_history)
         self.graph.set_annotations(self._timeline_annotations())
@@ -785,6 +789,11 @@ class MainWindow(QMainWindow):
         if self.focus_range is None:
             return self.analysis
         return [self._focus_period_line(), *self.focus_analysis]
+
+    def _update_all_targets_summary(self, snapshots: list[MetricSnapshot]) -> None:
+        if not hasattr(self, "target_summary_status_label"):
+            return
+        self.target_summary_status_label.setText(_all_targets_summary_line(snapshots))
 
     def on_session_log_ready(self, path: str) -> None:
         self.session_log_path = Path(path)
@@ -1948,6 +1957,34 @@ def _format_duration(seconds: int) -> str:
     if seconds < 86400:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
+
+
+def _all_targets_summary_line(snapshots: list[MetricSnapshot]) -> str:
+    if not snapshots:
+        return "Targets: 0"
+    statuses = [display_status(snapshot) for snapshot in snapshots]
+    critical = statuses.count("CRITICAL")
+    warning = statuses.count("WARNING")
+    paused = statuses.count("PAUSED")
+    ok = statuses.count("OK")
+    other = len(snapshots) - critical - warning - paused - ok
+    parts = [
+        f"Targets: {len(snapshots)}",
+        f"OK {ok}",
+        f"Warning {warning}",
+        f"Critical {critical}",
+        f"Paused {paused}",
+    ]
+    if other:
+        parts.append(f"Other {other}")
+    worst_loss = max(snapshot.loss_percent for snapshot in snapshots)
+    max_latency = max(
+        (snapshot.current_latency_ms for snapshot in snapshots if snapshot.current_latency_ms is not None),
+        default=None,
+    )
+    max_latency_text = f"{fmt_ms(max_latency)} ms" if max_latency is not None else "-"
+    parts.extend([f"worst loss {worst_loss:.1f}%", f"max latency {max_latency_text}"])
+    return " | ".join(parts)
 
 
 def _apply_default_font() -> None:

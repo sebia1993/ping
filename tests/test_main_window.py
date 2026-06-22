@@ -49,6 +49,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert "Malgun Gothic" in set(QFontDatabase.families())
         assert window.table.columnCount() == len(TABLE_HEADERS)
         assert window.target_table.columnCount() == len(TARGET_HEADERS)
+        assert window.target_summary_status_label.text() == "Targets: 0"
         assert window.csv_button.isEnabled() is False
         assert window.xlsx_button.isEnabled() is False
         assert window.report_button.isEnabled() is False
@@ -757,6 +758,11 @@ def test_main_window_renders_trace_metrics_and_exports(qt_app) -> None:
         assert window.table.item(1, 8).text() == "25.0"
         assert window.target_table.rowCount() == 2
         assert window.target_table.item(1, 0).text() == "192.168.0.1"
+        summary = window.target_summary_status_label.text()
+        assert "Targets: 2" in summary
+        assert "OK 1" in summary
+        assert "Critical 1" in summary
+        assert "worst loss 25.0%" in summary
         assert window.metric_value_labels["loss"].text() == "25.0%"
         assert window.metric_value_labels["samples"].text() == "1"
         assert "가능성" in window.analysis_box.toPlainText()
