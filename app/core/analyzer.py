@@ -59,6 +59,13 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                     "Check the local cable, Wi-Fi signal, AP, gateway, and try a wired test.",
                 )
             )
+            analysis.append(
+                _cause_line(
+                    "CAUSE_LOCAL_LAN_WIFI",
+                    "The first hop and final target show the same packet-loss symptom.",
+                    "Start troubleshooting at the local NIC, cable, Wi-Fi/AP, switch port, or default gateway.",
+                )
+            )
         else:
             earlier_loss = [snapshot for snapshot in sampled_hops[:-1] if _lossy(snapshot)]
             if not earlier_loss:
@@ -70,6 +77,13 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                         "ANALYSIS_TARGET_ONLY_LOSS_OR_FILTER",
                         "Loss is visible mainly at the final target.",
                         "Check the target service/firewall and retry with TCP Connect on the service port, usually 443.",
+                    )
+                )
+                analysis.append(
+                    _cause_line(
+                        "CAUSE_FIREWALL_OR_TARGET_FILTER",
+                        "Earlier hops are healthy, but the final target shows loss or timeout.",
+                        "Confirm the service port, host firewall, upstream filtering, and test with TCP Connect on the expected port.",
                     )
                 )
 
@@ -91,6 +105,13 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                     "Do not treat middle-hop-only loss as an outage unless the final target has the same symptom.",
                 )
             )
+            analysis.append(
+                _cause_line(
+                    "CAUSE_INTERMEDIATE_HOP_ICMP_RATE_LIMIT",
+                    f"{hop_list} shows loss while the final target remains healthy.",
+                    "Treat this as ICMP rate-limit or firewall deprioritization unless later hops inherit the same loss.",
+                )
+            )
 
     analysis.extend(_detect_segment_issue(sampled_hops, final))
 
@@ -105,6 +126,13 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                 "ANALYSIS_JITTER_OR_WIRELESS_CONGESTION",
                 f"High latency variation is visible at {hop_list}.",
                 "Check Wi-Fi quality, local congestion, and bandwidth saturation during the focus window.",
+            )
+        )
+        analysis.append(
+            _cause_line(
+                "CAUSE_JITTER_OR_LOCAL_CONGESTION",
+                f"Latency variation is high at {hop_list}.",
+                "Compare with local Wi-Fi signal, link utilization, VPN load, and upload/download saturation.",
             )
         )
 
@@ -134,12 +162,23 @@ def _detect_segment_issue(
         if len(tail) < 2:
             continue
         if all(_lossy(item) for item in tail):
+            cause_code = "CAUSE_LOCAL_LAN_WIFI" if snapshot.hop_index <= 1 else "CAUSE_ISP_OR_UPSTREAM_SEGMENT"
+            cause_action = (
+                "Check the local gateway, cable, Wi-Fi/AP, and switch port before escalating."
+                if snapshot.hop_index <= 1
+                else f"Escalate with a focused export showing the first affected hop around Hop {snapshot.hop_index}."
+            )
             return [
                 f"Hop {snapshot.hop_index} 이후 여러 Hop에서 손실이 이어집니다. 해당 구간 이후 장애 가능성이 있습니다.",
                 _diagnostic_line(
                     "ANALYSIS_SEGMENT_LOSS_AFTER_HOP",
                     f"Loss is carried from Hop {snapshot.hop_index} to later hops.",
                     f"Focus on the boundary before Hop {snapshot.hop_index} and export that period for the provider.",
+                ),
+                _cause_line(
+                    cause_code,
+                    f"Loss starts at Hop {snapshot.hop_index} and is inherited by later hops.",
+                    cause_action,
                 ),
             ]
 
@@ -154,6 +193,11 @@ def _detect_segment_issue(
                     "ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION",
                     f"Average latency jumps by at least {LATENCY_JUMP_MS:.0f} ms at Hop {snapshot.hop_index}.",
                     "Check upload/download saturation, QoS, VPN load, and ISP congestion during the same period.",
+                ),
+                _cause_line(
+                    "CAUSE_BANDWIDTH_SATURATION",
+                    f"Average latency jumps by at least {LATENCY_JUMP_MS:.0f} ms at Hop {snapshot.hop_index}.",
+                    "Check interface utilization, upload/download saturation, VPN load, QoS, and congestion at the same time window.",
                 ),
             ]
         previous_avg = snapshot.avg_latency_ms
@@ -173,3 +217,7 @@ def _detect_segment_issue(
 
 def _diagnostic_line(code: str, summary: str, action: str) -> str:
     return f"{code}: {summary} Action: {action}"
+
+
+def _cause_line(code: str, evidence: str, action: str) -> str:
+    return f"{code}: Evidence: {evidence} Action: {action}"

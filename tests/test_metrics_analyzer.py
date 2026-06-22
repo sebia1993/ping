@@ -55,6 +55,7 @@ def test_analyzer_flags_isolated_middle_hop_loss_as_icmp_limit() -> None:
     analysis = analyze_path(snapshots, target)
     assert any("ICMP 응답 제한" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_MIDDLE_HOP_ICMP_RATE_LIMIT:") for line in analysis)
+    assert any(line.startswith("CAUSE_INTERMEDIATE_HOP_ICMP_RATE_LIMIT:") for line in analysis)
 
 
 def test_analyzer_flags_first_hop_loss() -> None:
@@ -67,6 +68,7 @@ def test_analyzer_flags_first_hop_loss() -> None:
     analysis = analyze_path(snapshots, target)
     assert any("단말, 무선, AP, 게이트웨이" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_FIRST_HOP_LAN_WIFI:") for line in analysis)
+    assert any(line.startswith("CAUSE_LOCAL_LAN_WIFI:") for line in analysis)
 
 
 def test_analyzer_flags_segment_loss_after_specific_hop() -> None:
@@ -82,6 +84,7 @@ def test_analyzer_flags_segment_loss_after_specific_hop() -> None:
 
     assert any("Hop 2 이후" in line and "해당 구간 이후 장애 가능성" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_SEGMENT_LOSS_AFTER_HOP:") and "Hop 2" in line for line in analysis)
+    assert any(line.startswith("CAUSE_ISP_OR_UPSTREAM_SEGMENT:") and "Hop 2" in line for line in analysis)
 
 
 def test_analyzer_flags_target_only_loss() -> None:
@@ -96,6 +99,7 @@ def test_analyzer_flags_target_only_loss() -> None:
 
     assert any("대상 서버, 방화벽, 서비스 구간 문제 가능성" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_TARGET_ONLY_LOSS_OR_FILTER:") for line in analysis)
+    assert any(line.startswith("CAUSE_FIREWALL_OR_TARGET_FILTER:") for line in analysis)
 
 
 def test_analyzer_flags_latency_jump_after_hop() -> None:
@@ -110,6 +114,7 @@ def test_analyzer_flags_latency_jump_after_hop() -> None:
 
     assert any("Hop 3 이후 평균 지연시간" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION:") for line in analysis)
+    assert any(line.startswith("CAUSE_BANDWIDTH_SATURATION:") for line in analysis)
 
 
 def test_analyzer_flags_jitter_with_stable_code() -> None:
@@ -124,6 +129,7 @@ def test_analyzer_flags_jitter_with_stable_code() -> None:
 
     assert any("지연 편차" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:") for line in analysis)
+    assert any(line.startswith("CAUSE_JITTER_OR_LOCAL_CONGESTION:") for line in analysis)
 
 
 def test_analyzer_reports_no_clear_issue_with_stable_code() -> None:
