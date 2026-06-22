@@ -52,16 +52,20 @@ from app.ui.export_worker import ExportWorker
 from app.ui.graph_detail_window import GraphDetailWindow
 from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation
 from app.ui.table_panels import (
+    SESSION_HEADERS,
+    SESSION_ID_ROLE,
     TABLE_HEADERS,
     TARGET_HEADERS,
     TARGET_SCORE_COLUMN,
     create_hop_table,
+    create_session_table,
     create_target_table,
     display_status,
     fmt_ms,
     populate_trace_table,
     target_problem_score,
     update_hop_table,
+    update_session_table,
     update_target_table,
 )
 from app.ui.worker import (
@@ -138,6 +142,7 @@ class MainWindow(QMainWindow):
         self.pending_alert_image_keys: set[str] = set()
         self.active_alert_keys: set[str] = set()
         self.metric_value_labels: dict[str, QLabel] = {}
+        self._syncing_session_selection = False
 
         self._build_ui()
         self._set_running(False)
@@ -537,6 +542,10 @@ class MainWindow(QMainWindow):
         sessions_header.addWidget(QLabel("Keep"))
         sessions_header.addWidget(self.session_retention_days_spin)
         sessions_header.addWidget(self.prune_sessions_button)
+        self.session_combo.currentIndexChanged.connect(lambda *_args: self._select_session_table_row())
+        self.session_table = create_session_table()
+        self.session_table.itemSelectionChanged.connect(self.on_session_table_selection_changed)
+        self.session_table.cellDoubleClicked.connect(lambda *_args: self.open_selected_session())
         self.sessions_box = QTextEdit()
         self.sessions_box.setReadOnly(True)
         self.sessions_box.setMaximumHeight(118)
@@ -608,6 +617,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(route_title)
         layout.addWidget(self.route_changes_box)
         layout.addLayout(sessions_header)
+        layout.addWidget(self.session_table)
         layout.addWidget(self.sessions_box)
         layout.addWidget(export_title)
         layout.addLayout(export_row)
@@ -1735,17 +1745,22 @@ class MainWindow(QMainWindow):
     def _sync_session_combo(self, sessions: list[TraceSessionRecord]) -> None:
         if not hasattr(self, "session_combo"):
             return
-        selected_session_id = self.session_combo.currentData()
-        self.session_combo.blockSignals(True)
-        self.session_combo.clear()
-        for session in sessions:
-            label = f"{session.target} | {session.start.strftime('%m-%d %H:%M')} | {session.samples}"
-            self.session_combo.addItem(label, session.session_id)
-        if selected_session_id:
-            selected_index = self.session_combo.findData(selected_session_id)
-            if selected_index >= 0:
-                self.session_combo.setCurrentIndex(selected_index)
-        self.session_combo.blockSignals(False)
+        self._syncing_session_selection = True
+        try:
+            selected_session_id = self.session_combo.currentData()
+            self.session_combo.blockSignals(True)
+            self.session_combo.clear()
+            for session in sessions:
+                label = f"{session.target} | {session.start.strftime('%m-%d %H:%M')} | {session.samples}"
+                self.session_combo.addItem(label, session.session_id)
+            if selected_session_id:
+                selected_index = self.session_combo.findData(selected_session_id)
+                if selected_index >= 0:
+                    self.session_combo.setCurrentIndex(selected_index)
+            self.session_combo.blockSignals(False)
+            self._sync_session_table(sessions)
+        finally:
+            self._syncing_session_selection = False
         has_sessions = bool(sessions)
         self.session_combo.setEnabled(has_sessions)
         can_switch_session = has_sessions and not bool(self.worker and self.worker.isRunning())
@@ -1757,6 +1772,48 @@ class MainWindow(QMainWindow):
         self.delete_session_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
         if hasattr(self, "prune_sessions_button"):
             self.prune_sessions_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
+
+    def _sync_session_table(self, sessions: list[TraceSessionRecord]) -> None:
+        if not hasattr(self, "session_table"):
+            return
+        update_session_table(self.session_table, sessions)
+        self._select_session_table_row()
+
+    def _select_session_table_row(self) -> None:
+        if not hasattr(self, "session_table") or not hasattr(self, "session_combo"):
+            return
+        session_id = self.session_combo.currentData()
+        self.session_table.blockSignals(True)
+        try:
+            self.session_table.clearSelection()
+            if not session_id:
+                return
+            for row in range(self.session_table.rowCount()):
+                item = self.session_table.item(row, 0)
+                if item is not None and item.data(SESSION_ID_ROLE) == session_id:
+                    self.session_table.selectRow(row)
+                    self.session_table.scrollToItem(item)
+                    return
+        finally:
+            self.session_table.blockSignals(False)
+
+    def on_session_table_selection_changed(self) -> None:
+        if self._syncing_session_selection or not hasattr(self, "session_table"):
+            return
+        item = self.session_table.item(self.session_table.currentRow(), 0)
+        if item is None:
+            return
+        session_id = item.data(SESSION_ID_ROLE)
+        if not session_id:
+            return
+        index = self.session_combo.findData(session_id)
+        if index < 0:
+            return
+        self._syncing_session_selection = True
+        try:
+            self.session_combo.setCurrentIndex(index)
+        finally:
+            self._syncing_session_selection = False
 
     def open_selected_session(self) -> None:
         if self.worker and self.worker.isRunning():

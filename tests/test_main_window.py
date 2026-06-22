@@ -28,6 +28,8 @@ from app.ui import main_window as main_window_module
 from app.ui.graph_detail_window import VIEW_SELECTED_HOP, VIEW_VISIBLE_HOPS
 from app.ui.main_window import (
     MainWindow,
+    SESSION_HEADERS,
+    SESSION_ID_ROLE,
     STATISTICS_SCOPE_CUSTOM,
     STATISTICS_SCOPE_FOCUS,
     STATISTICS_SCOPE_VISIBLE,
@@ -51,6 +53,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert "Malgun Gothic" in set(QFontDatabase.families())
         assert window.table.columnCount() == len(TABLE_HEADERS)
         assert window.target_table.columnCount() == len(TARGET_HEADERS)
+        assert window.session_table.columnCount() == len(SESSION_HEADERS)
         assert window.target_summary_status_label.text() == "Targets: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
@@ -124,6 +127,60 @@ def test_main_window_renders_session_index_summary(qt_app, tmp_path) -> None:
         assert window.session_combo.count() == 1
         assert window.open_session_button.isEnabled() is True
         assert window.export_session_button.isEnabled() is True
+    finally:
+        window.close()
+
+
+def test_main_window_renders_and_selects_session_table_rows(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    first_path = tmp_path / "198.51.100.10" / "2026-01" / "first.samples.csv"
+    second_path = tmp_path / "203.0.113.10" / "2026-01" / "second.samples.csv"
+    for path in (first_path, second_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("header\n", encoding="utf-8")
+    first = store.register_session(
+        target="198.51.100.10",
+        sample_path=first_path,
+        route_path=first_path.with_name("first.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(first.session_id, 4, now + timedelta(seconds=4), segments=[first_path])
+    store.finish_session(first.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=4))
+    second = store.register_session(
+        target="203.0.113.10",
+        sample_path=second_path,
+        route_path=second_path.with_name("second.routes.csv"),
+        started_at=now + timedelta(minutes=1),
+        interval_seconds=5,
+        measurement_mode="final_hop_only:tcp_connect:port443",
+        target_count=2,
+    )
+    store.add_samples(second.session_id, 7, now + timedelta(minutes=1, seconds=7), segments=[second_path])
+    store.finish_session(second.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(minutes=1, seconds=7))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        assert window.session_table.rowCount() == 2
+        assert window.session_table.item(0, 1).text() == "203.0.113.10"
+        assert window.session_table.item(0, 4).text() == "7"
+        assert window.session_table.item(0, 6).text() == "final_hop_only:tcp_connect:port443"
+        assert window.session_table.item(0, 0).data(SESSION_ID_ROLE) == second.session_id
+
+        first_row = next(
+            row
+            for row in range(window.session_table.rowCount())
+            if window.session_table.item(row, 0).data(SESSION_ID_ROLE) == first.session_id
+        )
+        window.session_table.selectRow(first_row)
+
+        assert window.session_combo.currentData() == first.session_id
     finally:
         window.close()
 

@@ -7,6 +7,8 @@ from PySide6.QtWidgets import QAbstractItemView, QSizePolicy, QTableWidget, QTab
 from app.core.models import STATUS_PAUSED, MetricSnapshot
 
 
+SESSION_ID_ROLE = Qt.UserRole + 1
+
 TABLE_HEADERS = [
     "Hop",
     "Address",
@@ -40,6 +42,18 @@ TARGET_HEADERS = [
 TARGET_HEADERS.append("Score")
 TARGET_SCORE_COLUMN = len(TARGET_HEADERS) - 1
 
+SESSION_HEADERS = [
+    "State",
+    "Target",
+    "Start",
+    "End",
+    "Samples",
+    "Interval",
+    "Mode",
+    "Targets",
+    "Segments",
+]
+
 
 def create_hop_table() -> QTableWidget:
     table = QTableWidget(0, len(TABLE_HEADERS))
@@ -65,6 +79,20 @@ def create_target_table() -> QTableWidget:
     table.setMinimumHeight(120)
     table.setSortingEnabled(False)
     table.hideColumn(TARGET_SCORE_COLUMN)
+    return table
+
+
+def create_session_table() -> QTableWidget:
+    table = QTableWidget(0, len(SESSION_HEADERS))
+    table.setHorizontalHeaderLabels(SESSION_HEADERS)
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.setSelectionMode(QAbstractItemView.SingleSelection)
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.verticalHeader().setVisible(False)
+    table.setAlternatingRowColors(True)
+    table.setMaximumHeight(150)
+    table.setSortingEnabled(True)
+    table.sortItems(2, Qt.DescendingOrder)
     return table
 
 
@@ -160,6 +188,51 @@ def update_target_table(table: QTableWidget, snapshots: list[MetricSnapshot]) ->
         table.resizeColumnsToContents()
         table.hideColumn(TARGET_SCORE_COLUMN)
     table.setSortingEnabled(sorting_enabled)
+
+
+def update_session_table(table: QTableWidget, sessions: object) -> None:
+    session_list = list(sessions)
+    sorting_enabled = table.isSortingEnabled()
+    table.setSortingEnabled(False)
+    rows_changed = table.rowCount() != len(session_list)
+    table.setRowCount(len(session_list))
+    for row, session in enumerate(session_list):
+        end = session.end.strftime("%Y-%m-%d %H:%M:%S") if session.end is not None else "running"
+        values = [
+            (session.state, _session_state_sort_key(session.state)),
+            (session.target, session.target),
+            (session.start.strftime("%Y-%m-%d %H:%M:%S"), session.start.timestamp()),
+            (end, session.end.timestamp() if session.end is not None else float("inf")),
+            (session.samples, session.samples),
+            (session.interval_seconds or "", session.interval_seconds or 0),
+            (session.measurement_mode or "-", session.measurement_mode or ""),
+            (session.target_count, session.target_count),
+            (len(session.segments), len(session.segments)),
+        ]
+        for column, (value, sort_value) in enumerate(values):
+            item = table.item(row, column)
+            if item is None:
+                item = SortableTableWidgetItem()
+                table.setItem(row, column, item)
+            item.setText(str(value))
+            item.setData(Qt.UserRole, sort_value)
+            item.setData(SESSION_ID_ROLE, session.session_id)
+            if session.last_error:
+                item.setToolTip(session.last_error)
+            else:
+                item.setToolTip("")
+    if rows_changed:
+        table.resizeColumnsToContents()
+    table.setSortingEnabled(sorting_enabled)
+
+
+def _session_state_sort_key(state: str) -> int:
+    return {
+        "Active": 0,
+        "Archived": 1,
+        "Pause": 2,
+        "Will Delete": 3,
+    }.get(state, 99)
 
 
 def fmt_ms(value: float | None) -> str:
