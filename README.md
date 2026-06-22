@@ -59,6 +59,27 @@ python scripts\verify_release.py --target <FIELD_TARGET>
 
 생성 결과는 `dist\NetworkPathDiagnostics\NetworkPathDiagnostics.exe`에 위치합니다.
 
+## GitHub Release publish
+
+Use this after local work has been committed. The script builds the Windows EXE,
+runs release verification, creates a ZIP package under `release\`, creates a Git
+tag, and uploads the ZIP as a GitHub Release asset. The EXE/ZIP are not committed
+to the repository.
+
+Requirements:
+- GitHub CLI: https://cli.github.com/
+- One-time login: `gh auth login`
+
+```powershell
+.\scripts\publish_release.ps1
+```
+
+Packaging-only check without upload:
+
+```powershell
+.\scripts\publish_release.ps1 -SkipUpload -SkipBuild -SkipVerify -AllowDirty
+```
+
 ## 운영 개선 사항
 
 - 장시간 측정 중 화면 그래프와 최근 관측치는 제한된 버퍼만 유지합니다.
