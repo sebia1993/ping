@@ -61,7 +61,7 @@ from app.storage.session_index import SessionIndexStore, TraceSessionRecord, ses
 from app.storage.session_log import iter_observations, iter_observations_in_range, session_log_bounds
 from app.storage.statistics_exporter import TIMEZONE_LOCAL, TIMEZONE_UTC, StatisticsExportOptions
 from app.storage.target_summary_exporter import TargetSummaryExportRow, export_target_summary_csv
-from app.utils.filename import default_export_path
+from app.utils.filename import default_export_path, safe_target_name
 from app.utils.validators import IPV4_ONLY_MESSAGE, parse_ipv4_targets, validate_target
 
 STATISTICS_SCOPE_ALL = "all"
@@ -110,6 +110,7 @@ class MainWindow(QMainWindow):
         self.route_changes: list[RouteChange] = []
         self.alert_events: list[AlertEvent] = []
         self.alert_event_actions: dict[str, list[str]] = {}
+        self.pending_alert_image_keys: set[str] = set()
         self.active_alert_keys: set[str] = set()
         self.metric_value_labels: dict[str, QLabel] = {}
 
@@ -361,6 +362,7 @@ class MainWindow(QMainWindow):
         self.alert_comment_action_check = QCheckBox("Comment")
         self.alert_comment_action_check.setChecked(True)
         self.alert_beep_action_check = QCheckBox("Beep")
+        self.alert_image_action_check = QCheckBox("Image")
         for label, spin in [
             ("Loss", self.loss_threshold_spin),
             ("Window", self.loss_window_spin),
@@ -375,6 +377,7 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.alert_timeline_action_check)
         alert_rule_row.addWidget(self.alert_comment_action_check)
         alert_rule_row.addWidget(self.alert_beep_action_check)
+        alert_rule_row.addWidget(self.alert_image_action_check)
         alert_rule_row.addStretch(1)
         self.alerts_box = QTextEdit()
         self.alerts_box.setReadOnly(True)
@@ -541,6 +544,7 @@ class MainWindow(QMainWindow):
         self.route_changes = []
         self.alert_events = []
         self.alert_event_actions = {}
+        self.pending_alert_image_keys = set()
         self.active_alert_keys = set()
         self._clear_focus_state()
         self._clear_timeline_state()
@@ -693,6 +697,7 @@ class MainWindow(QMainWindow):
         self._sync_route_changes_box()
         self.graph.set_annotations(self._timeline_annotations())
         self._update_graph_detail()
+        self._save_pending_alert_images()
 
     def on_hop_selection_changed(self) -> None:
         selected_items = self.table.selectedItems()
@@ -763,6 +768,7 @@ class MainWindow(QMainWindow):
         self.graph.set_points(self.target_history)
         self.graph.set_annotations(self._timeline_annotations())
         self._update_graph_detail()
+        self._save_pending_alert_images()
         self.analysis_box.setPlainText("\n".join(f"- {line}" for line in analysis))
         self._set_export_enabled(self._has_export_data())
 
@@ -1059,6 +1065,8 @@ class MainWindow(QMainWindow):
         actions = self._selected_alert_actions()
         if "beep" in actions:
             QApplication.beep()
+        if "image" in actions:
+            self.pending_alert_image_keys.add(event.key)
         if not actions:
             return []
         append_alert_action(
@@ -1078,7 +1086,37 @@ class MainWindow(QMainWindow):
             actions.append("comment")
         if self.alert_beep_action_check.isChecked():
             actions.append("beep")
+        if self.alert_image_action_check.isChecked():
+            actions.append("image")
         return actions
+
+    def _save_pending_alert_images(self) -> None:
+        if not self.pending_alert_image_keys:
+            return
+        for key in list(self.pending_alert_image_keys):
+            event = next((item for item in self.alert_events if item.key == key), None)
+            if event is None or not self._alert_event_has_action(event, "image"):
+                self.pending_alert_image_keys.discard(key)
+                continue
+            try:
+                saved_path = self._save_graph_png(self._alert_image_path(event))
+            except (OSError, RuntimeError) as exc:
+                self.status_label.setText(f"Alert image save failed: {exc}")
+            else:
+                self.status_label.setText(f"Alert image saved: {saved_path}")
+            finally:
+                self.pending_alert_image_keys.discard(key)
+
+    def _alert_image_path(self, event: AlertEvent) -> Path:
+        if self.alert_action_log_path is not None:
+            base = self.alert_action_log_path.parent / "alert_images"
+        else:
+            base = Path.cwd() / "exports" / "alert_images"
+        stamp = event.timestamp.strftime("%Y%m%d_%H%M%S")
+        target = safe_target_name(self.current_target or "target")
+        title = safe_target_name(event.title)
+        key = safe_target_name(event.key)[:80]
+        return base / f"alert_{target}_{stamp}_{title}_{key}.png"
 
     def _alert_event_has_action(self, event: AlertEvent, action: str) -> bool:
         actions = self.alert_event_actions.get(event.key)
@@ -1298,6 +1336,7 @@ class MainWindow(QMainWindow):
         self.route_changes = []
         self.alert_events = []
         self.alert_event_actions = {}
+        self.pending_alert_image_keys = set()
         self.active_alert_keys = set()
         self._clear_focus_state()
         self._clear_timeline_state()
