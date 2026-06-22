@@ -5,7 +5,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.storage.alert_action_log import alert_action_log_path_for_session
@@ -149,6 +149,34 @@ class SessionIndexStore:
     def recover_missing_sessions(self) -> list[TraceSessionRecord]:
         with self._lock:
             return self._merge_recovered_records(self._read_records())
+
+    def recover_stale_active_sessions(
+        self,
+        *,
+        stale_after: timedelta,
+        now: datetime | None = None,
+    ) -> list[TraceSessionRecord]:
+        now = now or datetime.now()
+        cutoff = now - stale_after
+        recovered: list[TraceSessionRecord] = []
+        with self._lock:
+            records = self._read_records()
+            updated: list[TraceSessionRecord] = []
+            for record in records:
+                if record.state == SESSION_STATE_ACTIVE and _session_last_seen(record) < cutoff:
+                    paused = _replace_record(
+                        record,
+                        state=SESSION_STATE_PAUSED,
+                        end=record.end or record.start,
+                        last_error="Recovered stale active session after restart",
+                    )
+                    recovered.append(paused)
+                    updated.append(paused)
+                else:
+                    updated.append(record)
+            if recovered:
+                self._write_records(updated)
+        return recovered
 
     def find_session(self, session_id: str) -> TraceSessionRecord | None:
         return next((record for record in self._read_records() if record.session_id == session_id), None)
@@ -391,6 +419,10 @@ def _optional_int(value: object) -> int | None:
 
 def _max_datetime(current: datetime | None, candidate: datetime) -> datetime:
     return candidate if current is None or candidate > current else current
+
+
+def _session_last_seen(record: TraceSessionRecord) -> datetime:
+    return record.end or record.start
 
 
 def _merge_segments(

@@ -68,6 +68,8 @@ STATISTICS_SCOPE_ALL = "all"
 STATISTICS_SCOPE_VISIBLE = "visible"
 STATISTICS_SCOPE_FOCUS = "focus"
 STATISTICS_SCOPE_CUSTOM = "custom"
+STALE_ACTIVE_SESSION_RECOVERY_SECONDS = 3600
+
 
 class MainWindow(QMainWindow):
     def __init__(self, worker_factory=None) -> None:
@@ -1112,6 +1114,10 @@ class MainWindow(QMainWindow):
     def _sync_sessions_box(self) -> None:
         if not hasattr(self, "sessions_box"):
             return
+        if not bool(self.worker and self.worker.isRunning()):
+            self.session_index_store.recover_stale_active_sessions(
+                stale_after=timedelta(seconds=STALE_ACTIVE_SESSION_RECOVERY_SECONDS)
+            )
         sessions = self.session_index_store.list_sessions()[:6]
         self._sync_session_combo(sessions)
         if not sessions:

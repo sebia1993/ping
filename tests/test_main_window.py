@@ -14,7 +14,7 @@ from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopInfo, HopObservation, 
 from app.core.route_history import RouteHistory
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.route_log import RouteLogWriter, route_log_path_for_session
-from app.storage.session_index import SESSION_STATE_ARCHIVED, SessionIndexStore
+from app.storage.session_index import SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
 from app.storage.session_log import SessionLogWriter
 from app.storage.statistics_exporter import TIMEZONE_UTC
 from app.ui import main_window as main_window_module
@@ -92,6 +92,35 @@ def test_main_window_renders_session_index_summary(qt_app, tmp_path) -> None:
         assert window.session_combo.count() == 1
         assert window.open_session_button.isEnabled() is True
         assert window.export_session_button.isEnabled() is True
+    finally:
+        window.close()
+
+
+def test_main_window_recovers_stale_active_sessions_in_session_list(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime.now()
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "stale.samples.csv"
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("stale.routes.csv"),
+        started_at=now - timedelta(hours=3),
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(record.session_id, 1, now - timedelta(hours=2), segments=[sample_path])
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        recovered = store.find_session(record.session_id)
+        assert recovered is not None
+        assert recovered.state == SESSION_STATE_PAUSED
+        assert SESSION_STATE_PAUSED in window.sessions_box.toPlainText()
+        assert window.session_combo.count() == 1
     finally:
         window.close()
 

@@ -10,7 +10,7 @@ from app.storage.excel_exporter import export_xlsx
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.report_writer import write_text_report
 from app.storage import session_index as session_index_module
-from app.storage.session_index import SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
+from app.storage.session_index import SESSION_STATE_ACTIVE, SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
 from app.storage.session_log import (
     SessionLogWriter,
     iter_observations_in_range,
@@ -354,6 +354,58 @@ def test_session_index_registers_updates_and_filters_sessions(tmp_path) -> None:
     assert sessions[0].route_path == route_path
     assert sessions[0].target_count == 3
     assert active_sessions == []
+
+
+def test_session_index_recovers_stale_active_sessions_as_paused(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    stale_path = tmp_path / "198.51.100.10" / "2026-01" / "stale.samples.csv"
+    recent_path = tmp_path / "203.0.113.20" / "2026-01" / "recent.samples.csv"
+    archived_path = tmp_path / "203.0.113.30" / "2026-01" / "archived.samples.csv"
+    stale = store.register_session(
+        target="198.51.100.10",
+        sample_path=stale_path,
+        route_path=stale_path.with_name("stale.routes.csv"),
+        started_at=now - timedelta(hours=3),
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(stale.session_id, 1, now - timedelta(hours=2), segments=[stale_path])
+    recent = store.register_session(
+        target="203.0.113.20",
+        sample_path=recent_path,
+        route_path=recent_path.with_name("recent.routes.csv"),
+        started_at=now - timedelta(minutes=15),
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    archived = store.register_session(
+        target="203.0.113.30",
+        sample_path=archived_path,
+        route_path=archived_path.with_name("archived.routes.csv"),
+        started_at=now - timedelta(hours=4),
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(archived.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now - timedelta(hours=3))
+
+    recovered = store.recover_stale_active_sessions(stale_after=timedelta(hours=1), now=now)
+
+    assert [record.session_id for record in recovered] == [stale.session_id]
+    stale_record = store.find_session(stale.session_id)
+    recent_record = store.find_session(recent.session_id)
+    archived_record = store.find_session(archived.session_id)
+    assert stale_record is not None
+    assert stale_record.state == SESSION_STATE_PAUSED
+    assert stale_record.end == now - timedelta(hours=2)
+    assert stale_record.last_error == "Recovered stale active session after restart"
+    assert recent_record is not None
+    assert recent_record.state == SESSION_STATE_ACTIVE
+    assert archived_record is not None
+    assert archived_record.state == SESSION_STATE_ARCHIVED
 
 
 def test_session_index_recovers_sessions_from_existing_logs_when_index_missing(tmp_path) -> None:
