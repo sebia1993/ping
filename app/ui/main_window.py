@@ -1839,24 +1839,32 @@ class MainWindow(QMainWindow):
 
     def _record_alert_actions(self, event: AlertEvent) -> list[str]:
         actions = self._selected_alert_actions(event)
-        if "beep" in actions:
-            QApplication.beep()
-        if "image" in actions:
-            self.pending_alert_image_keys.add(event.key)
-        if "email" in actions:
-            self._send_alert_email_action(event)
-        if "rest" in actions:
-            self._send_alert_rest_action(event)
-        if "executable" in actions:
-            self._run_alert_executable_action(event)
-        if not actions:
+        recorded_actions: list[str] = []
+        for action in actions:
+            if action == "beep":
+                QApplication.beep()
+                recorded_actions.append(action)
+            elif action == "image":
+                self.pending_alert_image_keys.add(event.key)
+                recorded_actions.append(action)
+            elif action == "email":
+                recorded_actions.append("email" if self._send_alert_email_action(event) else "email_failed")
+            elif action == "rest":
+                recorded_actions.append("rest" if self._send_alert_rest_action(event) else "rest_failed")
+            elif action == "executable":
+                recorded_actions.append(
+                    "executable" if self._run_alert_executable_action(event) else "executable_failed"
+                )
+            else:
+                recorded_actions.append(action)
+        if not recorded_actions:
             return []
         append_alert_action(
             self.alert_action_log_path,
             event,
-            actions=actions,
+            actions=recorded_actions,
         )
-        return actions
+        return recorded_actions
 
     def _selected_alert_actions(self, event: AlertEvent | None = None) -> list[str]:
         if not hasattr(self, "alert_timeline_action_check"):
@@ -1943,10 +1951,10 @@ class MainWindow(QMainWindow):
             password_env=self.alert_email_password_env_edit.text().strip(),
         )
 
-    def _send_alert_email_action(self, event: AlertEvent) -> None:
+    def _send_alert_email_action(self, event: AlertEvent) -> bool:
         config = self._alert_email_config()
         if config is None:
-            return
+            return False
         subject = f"[NetworkPathDiagnostics] {event.severity.upper()} {event.title}"
         body = "\n".join(
             [
@@ -1973,6 +1981,8 @@ class MainWindow(QMainWindow):
             )
         except (OSError, smtplib.SMTPException, ValueError) as exc:
             self.status_label.setText(f"Alert email action failed: {exc}")
+            return False
+        return True
 
     def _send_alert_email(
         self,
@@ -2010,10 +2020,10 @@ class MainWindow(QMainWindow):
             return ""
         return self.alert_rest_url_edit.text().strip()
 
-    def _send_alert_rest_action(self, event: AlertEvent) -> None:
+    def _send_alert_rest_action(self, event: AlertEvent) -> bool:
         url = self._alert_rest_url()
         if not url:
-            return
+            return False
         payload = {
             "key": event.key,
             "timestamp": event.timestamp.isoformat(timespec="seconds"),
@@ -2029,6 +2039,8 @@ class MainWindow(QMainWindow):
             self._post_alert_webhook(url, payload)
         except (OSError, ValueError, urllib.error.URLError):
             self.status_label.setText("Alert REST action failed")
+            return False
+        return True
 
     def _post_alert_webhook(self, url: str, payload: dict[str, object]) -> None:
         request = urllib.request.Request(
@@ -2049,10 +2061,10 @@ class MainWindow(QMainWindow):
         path = Path(os.path.expandvars(value)).expanduser()
         return path if path.is_file() else None
 
-    def _run_alert_executable_action(self, event: AlertEvent) -> None:
+    def _run_alert_executable_action(self, event: AlertEvent) -> bool:
         path = self._alert_executable_path()
         if path is None:
-            return
+            return False
         env = dict(os.environ)
         env.update(
             {
@@ -2067,6 +2079,8 @@ class MainWindow(QMainWindow):
             self._launch_alert_executable(path, event, env)
         except (OSError, ValueError) as exc:
             self.status_label.setText(f"Alert executable action failed: {exc}")
+            return False
+        return True
 
     def _launch_alert_executable(self, path: Path, _event: AlertEvent, env: dict[str, str]) -> None:
         subprocess.Popen(

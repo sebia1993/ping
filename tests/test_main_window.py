@@ -2970,6 +2970,53 @@ def test_main_window_alert_executable_action_launches_configured_file(qt_app, tm
         window.close()
 
 
+def test_main_window_marks_failed_external_alert_actions_in_log(qt_app, tmp_path, monkeypatch) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    executable_path = tmp_path / "alert-action.exe"
+    executable_path.write_bytes(b"stub")
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.alert_route_adjust_action_check.setChecked(False)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_log_action_check.setChecked(False)
+        window.alert_beep_action_check.setChecked(False)
+        window.alert_image_action_check.setChecked(False)
+
+        window.alert_rest_action_check.setChecked(True)
+        window.alert_rest_url_edit.setText("https://collector.example/alerts")
+        monkeypatch.setattr(window, "_post_alert_webhook", lambda *_args: (_ for _ in ()).throw(OSError("rest down")))
+        assert window._record_alert_actions(
+            AlertEvent("rest-key", now, now, now, "warning", "REST alert", "REST failed")
+        ) == ["rest_failed"]
+
+        window.alert_rest_action_check.setChecked(False)
+        window.alert_email_action_check.setChecked(True)
+        window.alert_email_server_edit.setText("smtp.example:2525")
+        window.alert_email_to_edit.setText("ops@example.com")
+        monkeypatch.setattr(window, "_send_alert_email", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("smtp down")))
+        assert window._record_alert_actions(
+            AlertEvent("email-key", now, now, now, "warning", "Email alert", "Email failed")
+        ) == ["email_failed"]
+
+        window.alert_email_action_check.setChecked(False)
+        window.alert_executable_action_check.setChecked(True)
+        window.alert_executable_path_edit.setText(str(executable_path))
+        monkeypatch.setattr(window, "_launch_alert_executable", lambda *_args: (_ for _ in ()).throw(OSError("run down")))
+        assert window._record_alert_actions(
+            AlertEvent("exe-key", now, now, now, "warning", "Run alert", "Run failed")
+        ) == ["executable_failed"]
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert [row["actions"] for row in rows] == ["rest_failed", "email_failed", "executable_failed"]
+        assert window.status_label.text().startswith("Alert executable action failed:")
+    finally:
+        window.close()
+
+
 def test_main_window_records_sample_count_alert_and_recovery(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)

@@ -11,6 +11,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, selected-target group saving, and live selected-target count in the summary line.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
+- Alert action logging distinguishes failed external actions as `email_failed`, `rest_failed`, and `executable_failed` so operators can see when an action was attempted but did not complete.
 - Timeline UX has a separate main-screen status chip for visible timeline range, distinct from the focus-period chip.
 - Main-screen timeline controls can apply 60s/10m/1h/6h/24h/48h visible ranges and reset focus/timeline back to current samples.
 - Statistics export supports grouping, timezone, empty-range protection, and scope selection: All time, Visible timeline, Focus period, Custom range.
@@ -92,6 +93,7 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 3. Expand the alert system.
    - The current project supports configurable loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, and alert-ended events.
    - It can run selected actions on alert start and/or recovery: timeline annotation, comment, log, beep, image save, email, REST call, and executable launch.
+   - External action failures are now visible in the alert action log instead of being hidden behind the configured action name.
    - Route Adjustment is exposed as an alert action for Final Hop Only sessions: target alerts can switch to Full Route, respect the configured alert thresholds, and optionally restore Final Hop Only on recovery.
    - Remaining parity work includes richer action templates and stronger operator guidance around alert presets.
    - References:
