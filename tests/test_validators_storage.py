@@ -356,6 +356,52 @@ def test_session_index_registers_updates_and_filters_sessions(tmp_path) -> None:
     assert active_sessions == []
 
 
+def test_session_index_recovers_sessions_from_existing_logs_when_index_missing(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path, max_rows_per_file=2) as writer:
+        writer.write_many(
+            [
+                HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+                HopObservation(now + timedelta(seconds=1), 0, "203.0.113.20", "Target", True, 20.0, STATUS_OK, True),
+                HopObservation(now + timedelta(seconds=2), 1, "192.0.2.1", "gateway", True, 2.0, STATUS_OK),
+            ]
+        )
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    record = sessions[0]
+    assert record.target == "198.51.100.10"
+    assert record.sample_path == sample_path
+    assert record.start == now
+    assert record.end == now + timedelta(seconds=2)
+    assert record.samples == 3
+    assert record.state == SESSION_STATE_ARCHIVED
+    assert record.target_count == 2
+    assert len(record.segments) == 2
+    assert record.last_error == "Recovered from session log scan"
+    assert store.path.exists()
+    assert store.find_session(record.session_id) is not None
+
+
+def test_session_index_recovers_sessions_from_logs_when_index_is_corrupt(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    store.path.write_text("{bad json", encoding="utf-8")
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].target == "198.51.100.10"
+    assert sessions[0].samples == 1
+    assert store.find_session(sessions[0].session_id) is not None
+
+
 def test_session_index_retries_transient_replace_permission_error(tmp_path, monkeypatch) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 1, 12, 0, 0)

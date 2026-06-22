@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.storage.alert_action_log import alert_action_log_path_for_session
 from app.storage.route_log import route_log_path_for_session
+from app.storage.session_log import iter_observations, session_log_segment_index
 
 
 SESSION_STATE_ACTIVE = "Active"
@@ -158,11 +159,11 @@ class SessionIndexStore:
 
     def _read_records(self) -> list[TraceSessionRecord]:
         if not self.path.exists():
-            return []
+            return self._recover_records_from_logs()
         try:
             data = json.loads(_read_text_with_retries(self.path))
         except (OSError, json.JSONDecodeError):
-            return []
+            return self._recover_records_from_logs()
         rows = data.get("sessions", []) if isinstance(data, dict) else []
         records: list[TraceSessionRecord] = []
         for row in rows:
@@ -170,6 +171,17 @@ class SessionIndexStore:
                 records.append(_record_from_row(row))
             except (KeyError, TypeError, ValueError):
                 continue
+        if rows and not records:
+            return self._recover_records_from_logs()
+        return records
+
+    def _recover_records_from_logs(self) -> list[TraceSessionRecord]:
+        records = _recover_records_from_logs(self.path.parent)
+        if records:
+            try:
+                self._write_records(records)
+            except OSError:
+                pass
         return records
 
     def _write_records(self, records: list[TraceSessionRecord]) -> None:
@@ -196,6 +208,62 @@ class SessionIndexStore:
 
 def _session_id(sample_path: Path) -> str:
     return sample_path.stem
+
+
+def _recover_records_from_logs(root: Path) -> list[TraceSessionRecord]:
+    if not root.exists():
+        return []
+    recovered: list[TraceSessionRecord] = []
+    for sample_path in sorted(root.rglob("*.samples.csv")):
+        record = _record_from_sample_log(sample_path)
+        if record is not None:
+            recovered.append(record)
+    return recovered
+
+
+def _record_from_sample_log(sample_path: Path) -> TraceSessionRecord | None:
+    segments = tuple(segment for segment in session_log_segment_index(sample_path) if segment.rows > 0)
+    if not segments:
+        return None
+    starts = [segment.start for segment in segments if segment.start is not None]
+    ends = [segment.end for segment in segments if segment.end is not None]
+    if not starts or not ends:
+        return None
+    target_addresses = _target_addresses_from_log(sample_path)
+    target = target_addresses[0] if target_addresses else _target_from_sample_path(sample_path)
+    route_path = route_log_path_for_session(sample_path)
+    return TraceSessionRecord(
+        session_id=_session_id(sample_path),
+        target=target,
+        sample_path=sample_path,
+        route_path=route_path if route_path is not None and route_path.exists() else None,
+        start=min(starts),
+        end=max(ends),
+        samples=sum(segment.rows for segment in segments),
+        state=SESSION_STATE_ARCHIVED,
+        target_count=max(1, len(target_addresses)),
+        segments=tuple(segment.path for segment in segments),
+        last_error="Recovered from session log scan",
+    )
+
+
+def _target_addresses_from_log(sample_path: Path) -> list[str]:
+    targets: list[str] = []
+    seen: set[str] = set()
+    for observation in iter_observations(sample_path):
+        if observation.hop_index != 0 and not observation.is_target:
+            continue
+        if not observation.address or observation.address in seen:
+            continue
+        targets.append(observation.address)
+        seen.add(observation.address)
+    return targets
+
+
+def _target_from_sample_path(sample_path: Path) -> str:
+    if _is_year_month_folder(sample_path.parent.name):
+        return sample_path.parent.parent.name
+    return sample_path.parent.name or "target"
 
 
 def _read_text_with_retries(path: Path) -> str:
