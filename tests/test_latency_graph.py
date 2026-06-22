@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QEvent, QPointF, Qt
@@ -274,6 +275,54 @@ def test_graph_detail_saves_selected_range_png(qt_app, tmp_path) -> None:
         assert path.exists()
         assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
         assert "PNG saved:" in detail.timeline_status_label.text()
+    finally:
+        detail.close()
+
+
+def test_graph_detail_saves_visible_csv_samples(qt_app, tmp_path) -> None:
+    detail = GraphDetailWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(
+            now + timedelta(seconds=index),
+            0,
+            "198.51.100.10",
+            "Target",
+            True,
+            20.0 + index,
+            STATUS_OK,
+            True,
+        )
+        for index in range(10)
+    ]
+    path = tmp_path / "visible.csv"
+
+    try:
+        detail.set_data("198.51.100.10", _snapshot(0, "198.51.100.10", None, is_target=True), history)
+        detail.graph.zoom_in()
+
+        saved = detail.save_visible_csv(path)
+
+        assert saved == path
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.reader(handle))
+        assert rows[0] == [
+            "series_key",
+            "series_label",
+            "timestamp",
+            "address",
+            "kind",
+            "hop",
+            "hostname",
+            "success",
+            "latency_ms",
+            "status",
+        ]
+        assert [row[2] for row in rows[1:]] == [
+            point.timestamp.isoformat(timespec="seconds") for point in history[3:]
+        ]
+        assert {row[0] for row in rows[1:]} == {"target"}
+        assert "CSV saved:" in detail.timeline_status_label.text()
     finally:
         detail.close()
 

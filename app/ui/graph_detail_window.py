@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import HopObservation, MetricSnapshot
+from app.storage.session_log import OBSERVATION_HEADERS, observation_to_row
 from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries, series_color_hex
 from app.ui.table_panels import fmt_ms
 from app.utils.filename import default_export_path
@@ -207,6 +209,9 @@ class GraphDetailWindow(QMainWindow):
         annotate_button.clicked.connect(self.add_annotation_from_selection)
         save_png_button = QPushButton("Save PNG")
         save_png_button.clicked.connect(lambda: self.save_png())
+        save_csv_button = QPushButton("Save CSV")
+        save_csv_button.setToolTip("Save visible timeline samples as CSV")
+        save_csv_button.clicked.connect(lambda: self.save_visible_csv())
         clear_button = QPushButton("Clear range")
         clear_button.clicked.connect(self.graph.clear_selection)
         apply_focus_button = QPushButton("Apply focus")
@@ -227,6 +232,7 @@ class GraphDetailWindow(QMainWindow):
         top_row.addWidget(self.annotation_input, 1)
         top_row.addWidget(annotate_button)
         top_row.addWidget(save_png_button)
+        top_row.addWidget(save_csv_button)
         top_row.addWidget(apply_focus_button)
         top_row.addWidget(clear_button)
         top_row.addWidget(clear_focus_button)
@@ -509,11 +515,49 @@ class GraphDetailWindow(QMainWindow):
         self.timeline_status_label.setText(f"PNG saved: {selected_path}")
         return selected_path
 
+    def save_visible_csv(self, path: Path | None = None) -> Path | None:
+        rows = self._visible_csv_rows()
+        if not rows:
+            self.timeline_status_label.setText("No visible graph samples to export")
+            return None
+        selected_path = path or self._select_csv_path()
+        if selected_path is None:
+            return None
+        if selected_path.suffix.lower() != ".csv":
+            selected_path = selected_path.with_suffix(".csv")
+        selected_path.parent.mkdir(parents=True, exist_ok=True)
+        with selected_path.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["series_key", "series_label", *OBSERVATION_HEADERS])
+            for series, observation in rows:
+                writer.writerow([series.key, series.label, *observation_to_row(observation)])
+        self.timeline_status_label.setText(f"CSV saved: {selected_path} ({len(rows)} samples)")
+        return selected_path
+
     def _select_png_path(self) -> Path | None:
         default = default_export_path(self._target or "target", "png", Path.cwd() / "exports")
         default.parent.mkdir(parents=True, exist_ok=True)
         selected, _ = QFileDialog.getSaveFileName(self, "Save PNG", str(default), "PNG Files (*.png)")
         return Path(selected) if selected else None
+
+    def _select_csv_path(self) -> Path | None:
+        default = default_export_path(self._target or "target", "csv", Path.cwd() / "exports")
+        default.parent.mkdir(parents=True, exist_ok=True)
+        selected, _ = QFileDialog.getSaveFileName(self, "Save CSV", str(default), "CSV Files (*.csv)")
+        return Path(selected) if selected else None
+
+    def _visible_csv_rows(self) -> list[tuple[TimelineSeries, HopObservation]]:
+        visible_range = self.graph.visible_datetime_range()
+        if visible_range is None:
+            return []
+        start, end = visible_range
+        rows = [
+            (series, point)
+            for series in self._current_series()
+            for point in series.points
+            if start <= point.timestamp <= end
+        ]
+        return sorted(rows, key=lambda item: (item[1].timestamp, item[1].hop_index, item[0].label))
 
     def _current_annotation_series_key(self) -> str | None:
         mode = self.view_combo.currentData()
