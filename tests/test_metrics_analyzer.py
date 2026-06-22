@@ -85,6 +85,10 @@ def test_analyzer_flags_segment_loss_after_specific_hop() -> None:
     assert any("Hop 2 이후" in line and "해당 구간 이후 장애 가능성" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_SEGMENT_LOSS_AFTER_HOP:") and "Hop 2" in line for line in analysis)
     assert any(line.startswith("CAUSE_ISP_OR_UPSTREAM_SEGMENT:") and "Hop 2" in line for line in analysis)
+    assert any(
+        line.startswith("CAUSE_PROVIDER_OR_BORDER_HANDOFF:") and "Hop 2" in line
+        for line in analysis
+    )
 
 
 def test_analyzer_flags_target_only_loss() -> None:
@@ -102,6 +106,21 @@ def test_analyzer_flags_target_only_loss() -> None:
     assert any(line.startswith("CAUSE_FIREWALL_OR_TARGET_FILTER:") for line in analysis)
 
 
+def test_analyzer_flags_target_only_full_timeout_as_icmp_or_firewall_block() -> None:
+    snapshots = [
+        _snapshot(1, loss=0, status=STATUS_OK),
+        _snapshot(2, loss=0, status=STATUS_OK),
+        _snapshot(3, loss=0, status=STATUS_OK),
+    ]
+    target = _snapshot(0, loss=100, status=STATUS_TIMEOUT)
+
+    analysis = analyze_path(snapshots, target)
+
+    assert any(line.startswith("ANALYSIS_TARGET_ONLY_LOSS_OR_FILTER:") for line in analysis)
+    assert any(line.startswith("CAUSE_TARGET_ICMP_OR_FIREWALL_BLOCK:") for line in analysis)
+    assert any("TCP Connect" in line and "443" in line for line in analysis)
+
+
 def test_analyzer_flags_latency_jump_after_hop() -> None:
     snapshots = [
         _snapshot(1, loss=0, status=STATUS_OK, avg_latency=5.0),
@@ -115,6 +134,10 @@ def test_analyzer_flags_latency_jump_after_hop() -> None:
     assert any("Hop 3 이후 평균 지연시간" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION:") for line in analysis)
     assert any(line.startswith("CAUSE_BANDWIDTH_SATURATION:") for line in analysis)
+    assert any(
+        line.startswith("CAUSE_PROVIDER_OR_BORDER_CONGESTION:") and "Hop 3" in line
+        for line in analysis
+    )
 
 
 def test_analyzer_treats_middle_hop_only_latency_as_icmp_deprioritization() -> None:

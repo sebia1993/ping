@@ -83,6 +83,16 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
         else:
             earlier_loss = [snapshot for snapshot in sampled_hops[:-1] if _lossy(snapshot)]
             if not earlier_loss:
+                target_only_code = (
+                    "CAUSE_TARGET_ICMP_OR_FIREWALL_BLOCK"
+                    if final.loss_percent >= 100.0
+                    else "CAUSE_FIREWALL_OR_TARGET_FILTER"
+                )
+                target_only_action = (
+                    "Confirm whether the host blocks ICMP, then retry with TCP Connect on the real service port such as 443."
+                    if final.loss_percent >= 100.0
+                    else "Confirm the service port, host firewall, upstream filtering, and test with TCP Connect on the expected port."
+                )
                 analysis.append(
                     "최종 대상에서 주로 손실이 보입니다. 대상 서버, 방화벽, 서비스 구간 문제 가능성이 있습니다."
                 )
@@ -95,9 +105,9 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                 )
                 analysis.append(
                     _cause_line(
-                        "CAUSE_FIREWALL_OR_TARGET_FILTER",
+                        target_only_code,
                         "Earlier hops are healthy, but the final target shows loss or timeout.",
-                        "Confirm the service port, host firewall, upstream filtering, and test with TCP Connect on the expected port.",
+                        target_only_action,
                     )
                 )
 
@@ -235,6 +245,11 @@ def _detect_segment_issue(
                     f"Loss starts at Hop {snapshot.hop_index} and is inherited by later hops.",
                     cause_action,
                 ),
+                _cause_line(
+                    _provider_handoff_code(snapshot),
+                    f"The first affected hop is Hop {snapshot.hop_index}; later hops and the final target inherit the loss.",
+                    _provider_handoff_action(snapshot),
+                ),
             ]
 
     previous_avg = None
@@ -256,6 +271,11 @@ def _detect_segment_issue(
                     "CAUSE_BANDWIDTH_SATURATION",
                     f"Average latency jumps by at least {LATENCY_JUMP_MS:.0f} ms at Hop {snapshot.hop_index}.",
                     "Check interface utilization, upload/download saturation, VPN load, QoS, and congestion at the same time window.",
+                ),
+                _cause_line(
+                    "CAUSE_PROVIDER_OR_BORDER_CONGESTION",
+                    f"Latency growth starts at Hop {snapshot.hop_index} and is inherited by the final target.",
+                    "Send a focused report with the exact bad time window, the first affected hop, and user-impact notes.",
                 ),
             ]
         previous_avg = snapshot.avg_latency_ms
@@ -338,6 +358,21 @@ def _latency_jump_is_inherited(
     if final is not None and final.avg_latency_ms is not None:
         latencies.append(final.avg_latency_ms)
     return len(latencies) >= 2 and all(latency >= threshold for latency in latencies)
+
+
+def _provider_handoff_code(snapshot: MetricSnapshot) -> str:
+    if snapshot.hop_index <= 1:
+        return "CAUSE_LOCAL_ACCESS_LINK"
+    return "CAUSE_PROVIDER_OR_BORDER_HANDOFF"
+
+
+def _provider_handoff_action(snapshot: MetricSnapshot) -> str:
+    if snapshot.hop_index <= 1:
+        return "Test wired, check Wi-Fi/AP, gateway, local switch port, and local link errors before escalating."
+    return (
+        f"Build a report for the provider showing Hop {snapshot.hop_index} as the first affected hop, "
+        "the final target impact, and any user-impact comments."
+    )
 
 
 def _diagnostic_line(code: str, summary: str, action: str) -> str:
