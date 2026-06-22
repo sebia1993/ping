@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Name = "NetworkPathDiagnostics",
     [string]$Tag = "",
     [string]$Title = "",
