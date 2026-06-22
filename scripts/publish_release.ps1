@@ -23,6 +23,24 @@ function Require-Command {
     }
 }
 
+function Resolve-CommandPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [string[]]$FallbackPaths = @()
+    )
+
+    $Found = Get-Command $Command -ErrorAction SilentlyContinue
+    if ($Found) {
+        return $Found.Source
+    }
+    foreach ($Path in $FallbackPaths) {
+        if (Test-Path -LiteralPath $Path) {
+            return $Path
+        }
+    }
+    return ""
+}
+
 function Invoke-Checked {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -45,8 +63,15 @@ Set-Location -LiteralPath $Root.Path
 
 Require-Command "git" "Install Git for Windows and retry."
 Require-Command "python" "Install Python and retry."
+$GhCommand = Resolve-CommandPath "gh" @(
+    "C:\Program Files\GitHub CLI\gh.exe",
+    "C:\Program Files (x86)\GitHub CLI\gh.exe",
+    "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe"
+)
 if (-not $SkipUpload) {
-    Require-Command "gh" "Install GitHub CLI from https://cli.github.com/ and run: gh auth login"
+    if (-not $GhCommand) {
+        throw "gh command was not found. Install GitHub CLI from https://cli.github.com/ and run: gh auth login"
+    }
 }
 
 $Branch = (& git rev-parse --abbrev-ref HEAD).Trim()
@@ -77,7 +102,7 @@ if ($LASTEXITCODE -ne 0 -or -not $Head) {
 }
 
 if (-not $SkipUpload) {
-    $AuthOutput = (& gh auth status 2>&1)
+    $AuthOutput = (& $GhCommand auth status 2>&1)
     if ($LASTEXITCODE -ne 0) {
         throw "GitHub CLI is not authenticated. Run: gh auth login"
     }
@@ -158,7 +183,7 @@ if ($Prerelease) {
     $ReleaseArgs += "--prerelease"
 }
 
-Invoke-Checked "gh" $ReleaseArgs
+Invoke-Checked $GhCommand $ReleaseArgs
 
 Write-Host "GitHub Release published: $Tag"
 Write-Host "EXE: $($ExeItem.FullName) ($($ExeItem.Length) bytes)"
