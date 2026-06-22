@@ -1476,6 +1476,7 @@ class MainWindow(QMainWindow):
             self.sessions_box.setPlainText("No saved sessions.")
             return
         lines = [self._session_manager_summary(sessions, filtered_sessions, visible_sessions)]
+        lines.append(_session_storage_summary(filtered_sessions if self._session_filter_text() else sessions))
         if not filtered_sessions:
             lines.append("No saved sessions match filter.")
             self.sessions_box.setPlainText("\n".join(lines))
@@ -2510,6 +2511,43 @@ def _session_export_folder(record: TraceSessionRecord, index: int) -> str:
     return f"{index:03d}_{target}_{timestamp}_{session_id}"
 
 
+def _session_storage_summary(sessions: list[TraceSessionRecord]) -> str:
+    targets = {session.target for session in sessions if session.target}
+    buckets: set[tuple[str, str]] = set()
+    segment_count = 0
+    for session in sessions:
+        for month in _session_storage_months(session):
+            buckets.add((session.target, month))
+        segment_count += len(_session_storage_segment_paths(session))
+    return (
+        f"Storage: targets {len(targets)} | "
+        f"target-month buckets {len(buckets)} | segments {segment_count}"
+    )
+
+
+def _session_storage_months(session: TraceSessionRecord) -> set[str]:
+    months: set[str] = set()
+    for path in _session_storage_segment_paths(session):
+        parent = path.parent.name
+        if _is_year_month_text(parent):
+            months.add(parent)
+    if not months:
+        months.add(session.start.strftime("%Y-%m"))
+    return months
+
+
+def _session_storage_segment_paths(session: TraceSessionRecord) -> tuple[Path, ...]:
+    seen: set[str] = set()
+    paths: list[Path] = []
+    for path in (session.sample_path, *session.segments):
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return tuple(paths)
+
+
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
     parts = [part for part in value.split(":") if part]
     mode = (
@@ -2528,6 +2566,13 @@ def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
             except ValueError:
                 tcp_port = None
     return mode, probe_engine, tcp_port
+
+
+def _is_year_month_text(value: str) -> bool:
+    if len(value) != 7 or value[4] != "-":
+        return False
+    year, month = value.split("-", 1)
+    return year.isdigit() and month.isdigit() and 1 <= int(month) <= 12
 
 
 def _alert_event_from_action_row(row: dict[str, str], index: int) -> AlertEvent | None:

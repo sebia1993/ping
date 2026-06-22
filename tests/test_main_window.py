@@ -111,12 +111,55 @@ def test_main_window_renders_session_index_summary(qt_app, tmp_path) -> None:
 
         text = window.sessions_box.toPlainText()
         assert "Archived" in text
+        assert "Storage: targets 1 | target-month buckets 1 | segments 1" in text
         assert "198.51.100.10" in text
         assert "samples 12" in text
         assert "full_route" in text
         assert window.session_combo.count() == 1
         assert window.open_session_button.isEnabled() is True
         assert window.export_session_button.isEnabled() is True
+    finally:
+        window.close()
+
+
+def test_main_window_session_manager_reports_storage_buckets(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    first_path = tmp_path / "198.51.100.10" / "2026-01" / "multi.samples.csv"
+    first_segment = tmp_path / "198.51.100.10" / "2026-02" / "multi.part1.samples.csv"
+    second_path = tmp_path / "203.0.113.10" / "2026-02" / "session.samples.csv"
+    for path in (first_path, first_segment, second_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("header\n", encoding="utf-8")
+    first = store.register_session(
+        target="198.51.100.10",
+        sample_path=first_path,
+        route_path=first_path.with_name("multi.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(first.session_id, 10, now + timedelta(days=32), segments=[first_path, first_segment])
+    store.finish_session(first.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(days=32))
+    second = store.register_session(
+        target="203.0.113.10",
+        sample_path=second_path,
+        route_path=second_path.with_name("session.routes.csv"),
+        started_at=now + timedelta(days=33),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(second.session_id, 4, now + timedelta(days=33, seconds=5), segments=[second_path])
+    store.finish_session(second.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(days=33, seconds=5))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        assert "Storage: targets 2 | target-month buckets 3 | segments 3" in window.sessions_box.toPlainText()
     finally:
         window.close()
 
@@ -206,6 +249,7 @@ def test_main_window_filters_saved_sessions(qt_app, tmp_path) -> None:
         window.session_filter_edit.setText("203.0.113")
         text = window.sessions_box.toPlainText()
         assert text.splitlines()[0] == "Sessions: 1/2 | Will Delete 1"
+        assert "Storage: targets 1 | target-month buckets 1 | segments 1" in text
         assert "203.0.113.10" in text
         assert "198.51.100.10" not in text
         assert window.session_combo.count() == 1
@@ -222,6 +266,7 @@ def test_main_window_filters_saved_sessions(qt_app, tmp_path) -> None:
         window.session_filter_edit.setText("no-match")
         text = window.sessions_box.toPlainText()
         assert text.splitlines()[0] == "Sessions: 0/2"
+        assert "Storage: targets 0 | target-month buckets 0 | segments 0" in text
         assert "No saved sessions match filter." in text
         assert window.session_combo.count() == 0
     finally:
