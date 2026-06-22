@@ -37,6 +37,9 @@ class TraceSessionRecord:
     state: str
     interval_seconds: int | None = None
     measurement_mode: str = ""
+    probe_engine: str = ""
+    tcp_port: int | None = None
+    route_probe_engine: str = ""
     target_count: int = 1
     segments: tuple[Path, ...] = ()
     last_error: str = ""
@@ -69,9 +72,15 @@ class SessionIndexStore:
         interval_seconds: int | None,
         measurement_mode: str,
         target_count: int,
+        probe_engine: str | None = None,
+        tcp_port: int | None = None,
+        route_probe_engine: str | None = None,
     ) -> TraceSessionRecord:
         """새 측정이 시작될 때 세션 인덱스에 Active 레코드를 등록합니다."""
 
+        fallback_probe_engine, fallback_tcp_port, fallback_route_engine = _probe_fields_from_measurement_mode(
+            measurement_mode
+        )
         record = TraceSessionRecord(
             session_id=_session_id(sample_path),
             target=target,
@@ -83,6 +92,9 @@ class SessionIndexStore:
             state=SESSION_STATE_ACTIVE,
             interval_seconds=interval_seconds,
             measurement_mode=measurement_mode,
+            probe_engine=probe_engine or fallback_probe_engine,
+            tcp_port=tcp_port if tcp_port is not None else fallback_tcp_port,
+            route_probe_engine=route_probe_engine or fallback_route_engine,
             target_count=target_count,
             segments=(sample_path,),
         )
@@ -436,6 +448,9 @@ def _record_to_row(record: TraceSessionRecord) -> dict[str, object]:
         "state": record.state,
         "interval_seconds": record.interval_seconds,
         "measurement_mode": record.measurement_mode,
+        "probe_engine": record.probe_engine,
+        "tcp_port": record.tcp_port,
+        "route_probe_engine": record.route_probe_engine,
         "target_count": record.target_count,
         "segments": [str(path) for path in record.segments],
         "last_error": record.last_error,
@@ -445,6 +460,10 @@ def _record_to_row(record: TraceSessionRecord) -> dict[str, object]:
 def _record_from_row(row: dict[str, object]) -> TraceSessionRecord:
     end_value = str(row.get("end") or "")
     route_value = str(row.get("route_path") or "")
+    measurement_mode = str(row.get("measurement_mode") or "")
+    fallback_probe_engine, fallback_tcp_port, fallback_route_engine = _probe_fields_from_measurement_mode(
+        measurement_mode
+    )
     return TraceSessionRecord(
         session_id=str(row["session_id"]),
         target=str(row["target"]),
@@ -455,7 +474,10 @@ def _record_from_row(row: dict[str, object]) -> TraceSessionRecord:
         samples=int(row.get("samples") or 0),
         state=str(row.get("state") or SESSION_STATE_ARCHIVED),
         interval_seconds=_optional_int(row.get("interval_seconds")),
-        measurement_mode=str(row.get("measurement_mode") or ""),
+        measurement_mode=measurement_mode,
+        probe_engine=str(row.get("probe_engine") or fallback_probe_engine),
+        tcp_port=_optional_int_or_default(row.get("tcp_port"), fallback_tcp_port),
+        route_probe_engine=str(row.get("route_probe_engine") or fallback_route_engine),
         target_count=int(row.get("target_count") or 1),
         segments=tuple(Path(str(path)) for path in row.get("segments", []) or []),
         last_error=str(row.get("last_error") or ""),
@@ -474,6 +496,9 @@ def _replace_record(record: TraceSessionRecord, **updates) -> TraceSessionRecord
         "state": record.state,
         "interval_seconds": record.interval_seconds,
         "measurement_mode": record.measurement_mode,
+        "probe_engine": record.probe_engine,
+        "tcp_port": record.tcp_port,
+        "route_probe_engine": record.route_probe_engine,
         "target_count": record.target_count,
         "segments": record.segments,
         "last_error": record.last_error,
@@ -486,6 +511,36 @@ def _optional_int(value: object) -> int | None:
     if value in (None, ""):
         return None
     return int(value)
+
+
+def _optional_int_or_default(value: object, default: int | None) -> int | None:
+    if value in (None, ""):
+        return default
+    return int(value)
+
+
+def _probe_fields_from_measurement_mode(value: str) -> tuple[str, int | None, str]:
+    parts = [part for part in value.split(":") if part]
+    mode = parts[0] if parts else ""
+    probe_engine = ""
+    tcp_port: int | None = None
+    for part in parts[1:]:
+        if part in {"icmp", "tcp_connect"}:
+            probe_engine = part
+        elif part.startswith("port"):
+            try:
+                tcp_port = int(part.removeprefix("port"))
+            except ValueError:
+                tcp_port = None
+    if not probe_engine and mode:
+        probe_engine = "icmp"
+    if mode == "final_hop_only":
+        route_probe_engine = "disabled"
+    elif mode == "full_route":
+        route_probe_engine = "tracert/ICMP"
+    else:
+        route_probe_engine = ""
+    return probe_engine, tcp_port, route_probe_engine
 
 
 def _max_datetime(current: datetime | None, candidate: datetime) -> datetime:

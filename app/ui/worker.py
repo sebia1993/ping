@@ -408,6 +408,9 @@ class MeasurementWorker(QThread):
                 interval_seconds=self.interval_seconds,
                 measurement_mode=self._session_measurement_mode(),
                 target_count=len(self.targets),
+                probe_engine=self.probe_engine,
+                tcp_port=self.tcp_port if self.probe_engine == PROBE_ENGINE_TCP_CONNECT else None,
+                route_probe_engine=self._route_probe_label(),
             )
             session_id = session_record.session_id
             session_log = _AsyncSessionLogWriter(

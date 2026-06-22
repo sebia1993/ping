@@ -150,7 +150,7 @@ def test_main_window_renders_session_index_summary(qt_app, tmp_path) -> None:
         assert "Storage: targets 1 | target-month buckets 1 | segments 1" in text
         assert "198.51.100.10" in text
         assert "samples 12" in text
-        assert "full_route" in text
+        assert "Full Route / ICMP" in text
         assert window.session_combo.count() == 1
         assert window.open_session_button.isEnabled() is True
         assert window.export_session_button.isEnabled() is True
@@ -197,7 +197,9 @@ def test_main_window_renders_and_selects_session_table_rows(qt_app, tmp_path) ->
         assert window.session_table.rowCount() == 2
         assert window.session_table.item(0, 1).text() == "203.0.113.10"
         assert window.session_table.item(0, 4).text() == "7"
-        assert window.session_table.item(0, 6).text() == "final_hop_only:tcp_connect:port443"
+        assert window.session_table.item(0, 6).text() == "Final Hop Only"
+        assert window.session_table.item(0, 7).text() == "TCP Connect"
+        assert window.session_table.item(0, 8).text() == "443"
         assert window.session_table.item(0, 0).data(SESSION_ID_ROLE) == second.session_id
 
         first_row = next(
@@ -707,6 +709,8 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         assert "203.0.113.10" in manifest
         assert "198.51.100.10" not in manifest
         assert "final_hop_only:tcp_connect:port443" in manifest
+        assert "probe_engine,tcp_port,route_probe_engine" in manifest
+        assert "tcp_connect,443,disabled" in manifest
         assert any(name.endswith("/second.samples.csv") for name in names)
         assert not any(name.endswith("/first.samples.csv") for name in names)
         assert "Visible sessions ZIP saved" in window.status_label.text()

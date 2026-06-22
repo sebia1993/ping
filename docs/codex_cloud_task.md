@@ -10,7 +10,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Session segment metadata is written through atomic temp-file replace with transient PermissionError retries, matching the session index hardening style.
 - All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, selected-target group saving, and live selected-target count in the summary line.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
-- Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
+- Probe engine UI supports ICMP and TCP Connect, with diagnostics and session metadata that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
 - Alert action logging distinguishes failed external actions as `email_failed`, `rest_failed`, and `executable_failed` so operators can see when an action was attempted but did not complete.
 - Timeline UX has a separate main-screen status chip for visible timeline range, distinct from the focus-period chip.
 - Main-screen timeline controls can apply 60s/10m/1h/6h/24h/48h visible ranges and reset focus/timeline back to current samples.

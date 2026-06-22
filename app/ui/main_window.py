@@ -2197,7 +2197,7 @@ class MainWindow(QMainWindow):
                         f"end {end}",
                         session.target,
                         f"samples {session.samples}",
-                        session.measurement_mode or "-",
+                        _session_probe_summary(session),
                     ]
                 )
             )
@@ -2406,6 +2406,9 @@ class MainWindow(QMainWindow):
             "samples",
             "interval_seconds",
             "measurement_mode",
+            "probe_engine",
+            "tcp_port",
+            "route_probe_engine",
             "target_count",
             "sample_path",
             "route_path",
@@ -2435,6 +2438,9 @@ class MainWindow(QMainWindow):
                         "samples": record.samples,
                         "interval_seconds": record.interval_seconds or "",
                         "measurement_mode": record.measurement_mode,
+                        "probe_engine": record.probe_engine,
+                        "tcp_port": record.tcp_port or "",
+                        "route_probe_engine": record.route_probe_engine,
                         "target_count": record.target_count,
                         "sample_path": str(record.sample_path),
                         "route_path": str(record.route_path or ""),
@@ -2612,7 +2618,7 @@ class MainWindow(QMainWindow):
                 interval_index = self.interval_combo.findText(interval_text)
             self.interval_combo.setCurrentIndex(interval_index)
 
-        mode, probe_engine, tcp_port = _parse_session_measurement_mode(record.measurement_mode)
+        mode, probe_engine, tcp_port = _session_runtime_fields(record)
         mode_index = self.measurement_mode_combo.findData(mode)
         if mode_index >= 0:
             self.measurement_mode_combo.setCurrentIndex(mode_index)
@@ -3299,6 +3305,10 @@ def _session_matches_filter(session: TraceSessionRecord, terms: list[str]) -> bo
         session.target,
         session.state,
         session.measurement_mode,
+        session.probe_engine,
+        str(session.tcp_port or ""),
+        session.route_probe_engine,
+        _session_probe_summary(session),
         str(session.interval_seconds or ""),
         str(session.target_count),
         str(session.sample_path),
@@ -3417,6 +3427,37 @@ def _set_interval_combo_value(combo: QComboBox, value: object) -> None:
         combo.addItem(interval)
         index = combo.findText(interval)
     combo.setCurrentIndex(index)
+
+
+def _session_runtime_fields(session: TraceSessionRecord) -> tuple[str, str, int | None]:
+    mode, legacy_probe_engine, legacy_tcp_port = _parse_session_measurement_mode(session.measurement_mode)
+    probe_engine = session.probe_engine or legacy_probe_engine
+    tcp_port = session.tcp_port if session.tcp_port is not None else legacy_tcp_port
+    return mode, probe_engine, tcp_port
+
+
+def _session_probe_summary(session: TraceSessionRecord) -> str:
+    mode, probe_engine, tcp_port = _session_runtime_fields(session)
+    parts = [_session_mode_label(mode), _probe_engine_label(probe_engine)]
+    if tcp_port is not None:
+        parts.append(f"port {tcp_port}")
+    if session.route_probe_engine:
+        parts.append(f"route {session.route_probe_engine}")
+    return " / ".join(part for part in parts if part and part != "-")
+
+
+def _session_mode_label(value: str) -> str:
+    return {
+        MEASUREMENT_MODE_FULL_ROUTE: "Full Route",
+        MEASUREMENT_MODE_FINAL_HOP_ONLY: "Final Hop Only",
+    }.get(value, value or "-")
+
+
+def _probe_engine_label(value: str) -> str:
+    return {
+        PROBE_ENGINE_ICMP: "ICMP",
+        PROBE_ENGINE_TCP_CONNECT: "TCP Connect",
+    }.get(value, value or "-")
 
 
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:

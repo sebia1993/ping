@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation, MetricSnapshot
@@ -501,7 +502,69 @@ def test_session_index_registers_updates_and_filters_sessions(tmp_path) -> None:
     assert sessions[0].state == SESSION_STATE_ARCHIVED
     assert sessions[0].route_path == route_path
     assert sessions[0].target_count == 3
+    assert sessions[0].probe_engine == "icmp"
+    assert sessions[0].tcp_port is None
+    assert sessions[0].route_probe_engine == "tracert/ICMP"
     assert active_sessions == []
+
+
+def test_session_index_persists_structured_probe_fields(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "203.0.113.10" / "2026-01" / "tcp.samples.csv"
+
+    record = store.register_session(
+        target="203.0.113.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("tcp.routes.csv"),
+        started_at=now,
+        interval_seconds=5,
+        measurement_mode="final_hop_only:tcp_connect:port8443",
+        target_count=2,
+        probe_engine="tcp_connect",
+        tcp_port=8443,
+        route_probe_engine="disabled",
+    )
+
+    loaded = store.find_session(record.session_id)
+
+    assert loaded is not None
+    assert loaded.probe_engine == "tcp_connect"
+    assert loaded.tcp_port == 8443
+    assert loaded.route_probe_engine == "disabled"
+
+
+def test_session_index_reads_legacy_measurement_mode_probe_fields(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "203.0.113.10" / "2026-01" / "legacy.samples.csv"
+    sample_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "sessions": [
+            {
+                "session_id": sample_path.stem,
+                "target": "203.0.113.10",
+                "sample_path": str(sample_path),
+                "route_path": "",
+                "start": "2026-01-01T12:00:00",
+                "end": "",
+                "samples": 0,
+                "state": SESSION_STATE_ACTIVE,
+                "interval_seconds": 5,
+                "measurement_mode": "final_hop_only:tcp_connect:port443",
+                "target_count": 1,
+                "segments": [str(sample_path)],
+                "last_error": "",
+            }
+        ],
+    }
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    [record] = store.list_sessions()
+
+    assert record.probe_engine == "tcp_connect"
+    assert record.tcp_port == 443
+    assert record.route_probe_engine == "disabled"
 
 
 def test_session_index_recovers_stale_active_sessions_as_paused(tmp_path) -> None:

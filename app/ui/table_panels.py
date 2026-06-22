@@ -52,6 +52,8 @@ SESSION_HEADERS = [
     "Samples",
     "Interval",
     "Mode",
+    "Engine",
+    "Port",
     "Targets",
     "Segments",
 ]
@@ -245,7 +247,9 @@ def update_session_table(table: QTableWidget, sessions: object) -> None:
             (end, session.end.timestamp() if session.end is not None else float("inf")),
             (session.samples, session.samples),
             (session.interval_seconds or "", session.interval_seconds or 0),
-            (session.measurement_mode or "-", session.measurement_mode or ""),
+            (_session_mode_label(session), _session_mode_sort_key(session)),
+            (_session_probe_label(session), _session_probe_sort_key(session)),
+            (_session_tcp_port_label(session), _session_tcp_port_sort_key(session)),
             (session.target_count, session.target_count),
             (len(session.segments), len(session.segments)),
         ]
@@ -313,6 +317,68 @@ def _session_state_sort_key(state: str) -> int:
         "Pause": 2,
         "Will Delete": 3,
     }.get(state, 99)
+
+
+def _session_mode_label(session: object) -> str:
+    mode = _session_mode_value(session)
+    return {
+        "full_route": "Full Route",
+        "final_hop_only": "Final Hop Only",
+    }.get(mode, mode or "-")
+
+
+def _session_probe_label(session: object) -> str:
+    probe_engine = _session_probe_value(session)
+    return {
+        "icmp": "ICMP",
+        "tcp_connect": "TCP Connect",
+    }.get(probe_engine, probe_engine or "-")
+
+
+def _session_tcp_port_label(session: object) -> str:
+    tcp_port = _session_tcp_port_value(session)
+    return str(tcp_port) if tcp_port is not None else "-"
+
+
+def _session_mode_sort_key(session: object) -> str:
+    return _session_mode_value(session)
+
+
+def _session_probe_sort_key(session: object) -> str:
+    return _session_probe_value(session)
+
+
+def _session_tcp_port_sort_key(session: object) -> int:
+    return _session_tcp_port_value(session) or 0
+
+
+def _session_mode_value(session: object) -> str:
+    measurement_mode = str(getattr(session, "measurement_mode", "") or "")
+    parts = [part for part in measurement_mode.split(":") if part]
+    return parts[0] if parts else measurement_mode
+
+
+def _session_probe_value(session: object) -> str:
+    probe_engine = str(getattr(session, "probe_engine", "") or "")
+    if probe_engine:
+        return probe_engine
+    measurement_mode = str(getattr(session, "measurement_mode", "") or "")
+    return next((part for part in measurement_mode.split(":") if part in {"icmp", "tcp_connect"}), "")
+
+
+def _session_tcp_port_value(session: object) -> int | None:
+    tcp_port = getattr(session, "tcp_port", None)
+    if tcp_port not in (None, ""):
+        return int(tcp_port)
+    measurement_mode = str(getattr(session, "measurement_mode", "") or "")
+    for part in measurement_mode.split(":"):
+        if not part.startswith("port"):
+            continue
+        try:
+            return int(part.removeprefix("port"))
+        except ValueError:
+            return None
+    return None
 
 
 def _alert_severity_sort_key(severity: str) -> int:
