@@ -2245,6 +2245,7 @@ class MainWindow(QMainWindow):
 
     def refresh_saved_sessions(self) -> None:
         self.session_index_store.recover_missing_sessions()
+        self.session_index_store.reconcile_session_log_metadata()
         self._sync_sessions_box()
         self.status_label.setText("Session list refreshed from saved logs")
 

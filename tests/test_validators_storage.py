@@ -622,6 +622,117 @@ def test_session_index_recovers_stale_active_sessions_as_paused(tmp_path) -> Non
     assert archived_record.state == SESSION_STATE_ARCHIVED
 
 
+def test_session_index_recovers_stale_active_session_metadata_from_log(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "stale.samples.csv"
+    log_start = now - timedelta(hours=2)
+    with SessionLogWriter(sample_path, max_rows_per_file=2) as writer:
+        writer.write_many(
+            [
+                HopObservation(log_start, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+                HopObservation(
+                    log_start + timedelta(seconds=1),
+                    0,
+                    "198.51.100.10",
+                    "Target",
+                    False,
+                    None,
+                    STATUS_TIMEOUT,
+                    True,
+                ),
+                HopObservation(log_start + timedelta(seconds=2), 1, "192.0.2.1", "gateway", True, 2.0, STATUS_OK),
+            ]
+        )
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("stale.routes.csv"),
+        started_at=now - timedelta(hours=3),
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    recovered = store.recover_stale_active_sessions(stale_after=timedelta(hours=1), now=now)
+
+    assert [item.session_id for item in recovered] == [record.session_id]
+    stale_record = store.find_session(record.session_id)
+    assert stale_record is not None
+    assert stale_record.state == SESSION_STATE_PAUSED
+    assert stale_record.samples == 3
+    assert stale_record.end == log_start + timedelta(seconds=2)
+    assert len(stale_record.segments) == 2
+    assert stale_record.last_error == "Recovered stale active session after restart"
+
+
+def test_session_index_reconciles_existing_record_metadata_from_log(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path, max_rows_per_file=2) as writer:
+        writer.write_many(
+            [
+                HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+                HopObservation(now + timedelta(seconds=1), 0, "203.0.113.20", "Target", True, 20.0, STATUS_OK, True),
+                HopObservation(now + timedelta(seconds=2), 1, "192.0.2.1", "gateway", True, 2.0, STATUS_OK),
+            ]
+        )
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=5,
+        measurement_mode="final_hop_only:tcp_connect:port443",
+        target_count=1,
+        probe_engine="tcp_connect",
+        tcp_port=443,
+        route_probe_engine="disabled",
+    )
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+
+    reconciled = store.reconcile_session_log_metadata()
+
+    assert [item.session_id for item in reconciled] == [record.session_id]
+    refreshed = store.find_session(record.session_id)
+    assert refreshed is not None
+    assert refreshed.state == SESSION_STATE_ARCHIVED
+    assert refreshed.samples == 3
+    assert refreshed.end == now + timedelta(seconds=2)
+    assert refreshed.target_count == 2
+    assert len(refreshed.segments) == 2
+    assert refreshed.measurement_mode == "final_hop_only:tcp_connect:port443"
+    assert refreshed.probe_engine == "tcp_connect"
+    assert refreshed.tcp_port == 443
+    assert refreshed.route_probe_engine == "disabled"
+    assert refreshed.last_error == ""
+
+
+def test_session_index_reconcile_does_not_reduce_configured_target_count(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "multi.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("multi.routes.csv"),
+        started_at=now,
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=5,
+    )
+
+    store.reconcile_session_log_metadata()
+
+    refreshed = store.find_session(record.session_id)
+    assert refreshed is not None
+    assert refreshed.samples == 1
+    assert refreshed.target_count == 5
+
+
 def test_session_index_reconciles_missing_session_files_as_will_delete(tmp_path) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 1, 12, 0, 0)

@@ -460,6 +460,45 @@ def test_main_window_refresh_sessions_recovers_missing_saved_logs(qt_app, tmp_pa
         window.close()
 
 
+def test_main_window_refresh_sessions_reconciles_existing_log_metadata(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many(
+            [
+                HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+                HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", True, 11.0, STATUS_OK, True),
+            ]
+        )
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        assert "samples 0" in window.sessions_box.toPlainText()
+
+        window.refresh_saved_sessions()
+
+        refreshed = store.find_session(record.session_id)
+        assert refreshed is not None
+        assert refreshed.samples == 2
+        assert "samples 2" in window.sessions_box.toPlainText()
+        assert window.status_label.text() == "Session list refreshed from saved logs"
+    finally:
+        window.close()
+
+
 def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)

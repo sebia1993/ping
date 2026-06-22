@@ -197,10 +197,11 @@ class SessionIndexStore:
             updated: list[TraceSessionRecord] = []
             for record in records:
                 if record.state == SESSION_STATE_ACTIVE and _session_last_seen(record) < cutoff:
+                    refreshed = _record_with_reconciled_log_metadata(record)
                     paused = _replace_record(
-                        record,
+                        refreshed,
                         state=SESSION_STATE_PAUSED,
-                        end=record.end or record.start,
+                        end=refreshed.end or refreshed.start,
                         last_error="Recovered stale active session after restart",
                     )
                     recovered.append(paused)
@@ -233,6 +234,28 @@ class SessionIndexStore:
             if updated_records:
                 self._write_records(updated)
         return updated_records
+
+    def reconcile_session_log_metadata(self) -> list[TraceSessionRecord]:
+        """이미 등록된 세션의 요약 정보를 실제 CSV 세그먼트 기준으로 다시 맞춥니다.
+
+        강제 종료나 일시적인 인덱스 쓰기 실패가 있으면 `session_index.json`에는
+        세션이 남아 있어도 샘플 수/세그먼트 목록이 실제 CSV보다 뒤처질 수 있습니다.
+        수동 새로고침에서 이 보정을 수행하면 Session Manager가 저장된 로그를 더
+        정확하게 보여줄 수 있습니다.
+        """
+
+        reconciled: list[TraceSessionRecord] = []
+        with self._lock:
+            records = self._read_records()
+            updated: list[TraceSessionRecord] = []
+            for record in records:
+                refreshed = _record_with_reconciled_log_metadata(record)
+                if refreshed != record:
+                    reconciled.append(refreshed)
+                updated.append(refreshed)
+            if reconciled:
+                self._write_records(updated)
+        return reconciled
 
     def find_session(self, session_id: str) -> TraceSessionRecord | None:
         return next((record for record in self._read_records() if record.session_id == session_id), None)
@@ -380,6 +403,27 @@ def _record_from_sample_log(sample_path: Path) -> TraceSessionRecord | None:
         target_count=max(1, len(target_addresses)),
         segments=tuple(segment.path for segment in segments),
         last_error="Recovered from session log scan",
+    )
+
+
+def _record_with_reconciled_log_metadata(record: TraceSessionRecord) -> TraceSessionRecord:
+    if record.state == SESSION_STATE_WILL_DELETE or not record.sample_path.exists():
+        return record
+    recovered = _record_from_sample_log(record.sample_path)
+    if recovered is None:
+        return record
+    route_path = record.route_path
+    if route_path is None and recovered.route_path is not None:
+        route_path = recovered.route_path
+    return _replace_record(
+        record,
+        target=record.target or recovered.target,
+        route_path=route_path,
+        start=min(record.start, recovered.start),
+        end=recovered.end or record.end,
+        samples=recovered.samples,
+        target_count=max(record.target_count, recovered.target_count),
+        segments=recovered.segments,
     )
 
 
