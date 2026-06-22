@@ -79,6 +79,10 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_log_action_check.isChecked() is False
         assert window.alert_beep_action_check.isChecked() is False
         assert window.alert_image_action_check.isChecked() is False
+        assert window.alert_email_action_check.isChecked() is False
+        assert window.alert_email_server_edit.text() == ""
+        assert window.alert_email_to_edit.text() == ""
+        assert window.alert_email_from_edit.text() == ""
         assert window.alert_rest_action_check.isChecked() is False
         assert window.alert_rest_url_edit.text() == ""
         assert window.alert_executable_action_check.isChecked() is False
@@ -2199,6 +2203,10 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.alert_log_action_check.setChecked(True)
         window.alert_beep_action_check.setChecked(True)
         window.alert_image_action_check.setChecked(True)
+        window.alert_email_action_check.setChecked(True)
+        window.alert_email_server_edit.setText("smtp.example:2525")
+        window.alert_email_to_edit.setText("ops@example.com")
+        window.alert_email_from_edit.setText("npd@example.com")
         window.alert_rest_action_check.setChecked(True)
         window.alert_rest_url_edit.setText("https://collector.example/alerts")
         window.alert_executable_action_check.setChecked(True)
@@ -2217,6 +2225,10 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert data["rules"]["route_ip"] == "203.0.113.50"
         assert data["actions"]["timeline"] is False
         assert data["actions"]["log"] is True
+        assert data["actions"]["email"] is True
+        assert data["actions"]["email_server"] == "smtp.example:2525"
+        assert data["actions"]["email_to"] == "ops@example.com"
+        assert data["actions"]["email_from"] == "npd@example.com"
         assert data["actions"]["executable_path"] == r"C:\Tools\alert.exe"
 
         window.loss_alert_check.setChecked(True)
@@ -2241,6 +2253,10 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.alert_log_action_check.setChecked(False)
         window.alert_beep_action_check.setChecked(False)
         window.alert_image_action_check.setChecked(False)
+        window.alert_email_action_check.setChecked(False)
+        window.alert_email_server_edit.clear()
+        window.alert_email_to_edit.clear()
+        window.alert_email_from_edit.clear()
         window.alert_rest_action_check.setChecked(False)
         window.alert_rest_url_edit.clear()
         window.alert_executable_action_check.setChecked(False)
@@ -2270,6 +2286,10 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.alert_log_action_check.isChecked() is True
         assert window.alert_beep_action_check.isChecked() is True
         assert window.alert_image_action_check.isChecked() is True
+        assert window.alert_email_action_check.isChecked() is True
+        assert window.alert_email_server_edit.text() == "smtp.example:2525"
+        assert window.alert_email_to_edit.text() == "ops@example.com"
+        assert window.alert_email_from_edit.text() == "npd@example.com"
         assert window.alert_rest_action_check.isChecked() is True
         assert window.alert_rest_url_edit.text() == "https://collector.example/alerts"
         assert window.alert_executable_action_check.isChecked() is True
@@ -2385,6 +2405,52 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
                 },
             )
         ]
+    finally:
+        window.close()
+
+
+def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, monkeypatch) -> None:
+    sent: list[tuple[str, int, str, str, str, str]] = []
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 90.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=90.0, is_target=True)
+
+    def fake_send_email(host: str, port: int, sender: str, recipient: str, subject: str, body: str) -> None:
+        sent.append((host, port, sender, recipient, subject, body))
+
+    monkeypatch.setattr(window, "_send_alert_email", fake_send_email)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(80)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_email_action_check.setChecked(True)
+        window.alert_email_server_edit.setText("smtp.example:2525")
+        window.alert_email_to_edit.setText("ops@example.com")
+        window.alert_email_from_edit.setText("npd@example.com")
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["actions"] == "email"
+        assert sent
+        host, port, sender, recipient, subject, body = sent[0]
+        assert (host, port, sender, recipient) == (
+            "smtp.example",
+            2525,
+            "npd@example.com",
+            "ops@example.com",
+        )
+        assert "Latency alert" in subject
+        assert "Target: 198.51.100.10" in body
+        assert "Target latency 90.0 ms >= 80 ms" in body
     finally:
         window.close()
 

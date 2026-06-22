@@ -4,11 +4,13 @@ import csv
 import io
 import json
 import os
+import smtplib
 import subprocess
 import urllib.error
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QDateTime, Qt, QTime
@@ -101,6 +103,8 @@ STATISTICS_SCOPE_CUSTOM = "custom"
 STALE_ACTIVE_SESSION_RECOVERY_SECONDS = 3600
 SESSION_MANAGER_DISPLAY_LIMIT = 100
 ALERT_REST_TIMEOUT_SECONDS = 3.0
+ALERT_EMAIL_TIMEOUT_SECONDS = 5.0
+DEFAULT_ALERT_EMAIL_FROM = "network-path-diagnostics@localhost"
 
 
 class MainWindow(QMainWindow):
@@ -479,6 +483,16 @@ class MainWindow(QMainWindow):
         self.alert_log_action_check = QCheckBox("Log")
         self.alert_beep_action_check = QCheckBox("Beep")
         self.alert_image_action_check = QCheckBox("Image")
+        self.alert_email_action_check = QCheckBox("Email")
+        self.alert_email_server_edit = QLineEdit()
+        self.alert_email_server_edit.setPlaceholderText("smtp.example:25")
+        self.alert_email_server_edit.setMinimumWidth(130)
+        self.alert_email_to_edit = QLineEdit()
+        self.alert_email_to_edit.setPlaceholderText("to@example.com")
+        self.alert_email_to_edit.setMinimumWidth(140)
+        self.alert_email_from_edit = QLineEdit()
+        self.alert_email_from_edit.setPlaceholderText("from@example.com")
+        self.alert_email_from_edit.setMinimumWidth(140)
         self.alert_rest_action_check = QCheckBox("REST")
         self.alert_rest_url_edit = QLineEdit()
         self.alert_rest_url_edit.setPlaceholderText("https://example/api/alert")
@@ -514,6 +528,10 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.alert_log_action_check)
         alert_rule_row.addWidget(self.alert_beep_action_check)
         alert_rule_row.addWidget(self.alert_image_action_check)
+        alert_rule_row.addWidget(self.alert_email_action_check)
+        alert_rule_row.addWidget(self.alert_email_server_edit)
+        alert_rule_row.addWidget(self.alert_email_to_edit)
+        alert_rule_row.addWidget(self.alert_email_from_edit)
         alert_rule_row.addWidget(self.alert_rest_action_check)
         alert_rule_row.addWidget(self.alert_rest_url_edit)
         alert_rule_row.addWidget(self.alert_executable_action_check)
@@ -1538,6 +1556,10 @@ class MainWindow(QMainWindow):
                 "log": self.alert_log_action_check.isChecked(),
                 "beep": self.alert_beep_action_check.isChecked(),
                 "image": self.alert_image_action_check.isChecked(),
+                "email": self.alert_email_action_check.isChecked(),
+                "email_server": self.alert_email_server_edit.text().strip(),
+                "email_to": self.alert_email_to_edit.text().strip(),
+                "email_from": self.alert_email_from_edit.text().strip(),
                 "rest": self.alert_rest_action_check.isChecked(),
                 "rest_url": self.alert_rest_url_edit.text().strip(),
                 "executable": self.alert_executable_action_check.isChecked(),
@@ -1573,6 +1595,13 @@ class MainWindow(QMainWindow):
         _set_check_value(self.alert_log_action_check, actions.get("log"))
         _set_check_value(self.alert_beep_action_check, actions.get("beep"))
         _set_check_value(self.alert_image_action_check, actions.get("image"))
+        _set_check_value(self.alert_email_action_check, actions.get("email"))
+        if "email_server" in actions:
+            self.alert_email_server_edit.setText(str(actions.get("email_server") or ""))
+        if "email_to" in actions:
+            self.alert_email_to_edit.setText(str(actions.get("email_to") or ""))
+        if "email_from" in actions:
+            self.alert_email_from_edit.setText(str(actions.get("email_from") or ""))
         _set_check_value(self.alert_rest_action_check, actions.get("rest"))
         if "rest_url" in actions:
             self.alert_rest_url_edit.setText(str(actions.get("rest_url") or ""))
@@ -1606,6 +1635,8 @@ class MainWindow(QMainWindow):
             QApplication.beep()
         if "image" in actions:
             self.pending_alert_image_keys.add(event.key)
+        if "email" in actions:
+            self._send_alert_email_action(event)
         if "rest" in actions:
             self._send_alert_rest_action(event)
         if "executable" in actions:
@@ -1634,6 +1665,12 @@ class MainWindow(QMainWindow):
         if self.alert_image_action_check.isChecked():
             actions.append("image")
         if (
+            hasattr(self, "alert_email_action_check")
+            and self.alert_email_action_check.isChecked()
+            and self._alert_email_config() is not None
+        ):
+            actions.append("email")
+        if (
             hasattr(self, "alert_rest_action_check")
             and self.alert_rest_action_check.isChecked()
             and self._alert_rest_url()
@@ -1646,6 +1683,64 @@ class MainWindow(QMainWindow):
         ):
             actions.append("executable")
         return actions
+
+    def _alert_email_config(self) -> tuple[str, int, str, str] | None:
+        if not hasattr(self, "alert_email_server_edit"):
+            return None
+        server = self.alert_email_server_edit.text().strip()
+        recipient = self.alert_email_to_edit.text().strip()
+        if not server or not recipient:
+            return None
+        host = server
+        port = 25
+        if ":" in server:
+            candidate_host, candidate_port = server.rsplit(":", 1)
+            if candidate_port.isdigit():
+                host = candidate_host.strip()
+                port = int(candidate_port)
+        if not host or not (1 <= port <= 65535):
+            return None
+        sender = self.alert_email_from_edit.text().strip() or DEFAULT_ALERT_EMAIL_FROM
+        return host, port, sender, recipient
+
+    def _send_alert_email_action(self, event: AlertEvent) -> None:
+        config = self._alert_email_config()
+        if config is None:
+            return
+        host, port, sender, recipient = config
+        subject = f"[NetworkPathDiagnostics] {event.severity.upper()} {event.title}"
+        body = "\n".join(
+            [
+                f"Target: {self.current_target or '-'}",
+                f"Severity: {event.severity}",
+                f"Title: {event.title}",
+                f"Message: {event.message}",
+                f"Start: {event.start.isoformat(timespec='seconds')}",
+                f"End: {event.end.isoformat(timespec='seconds')}",
+                f"Key: {event.key}",
+            ]
+        )
+        try:
+            self._send_alert_email(host, port, sender, recipient, subject, body)
+        except (OSError, smtplib.SMTPException, ValueError) as exc:
+            self.status_label.setText(f"Alert email action failed: {exc}")
+
+    def _send_alert_email(
+        self,
+        host: str,
+        port: int,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+    ) -> None:
+        message = EmailMessage()
+        message["From"] = sender
+        message["To"] = recipient
+        message["Subject"] = subject
+        message.set_content(body)
+        with smtplib.SMTP(host, port, timeout=ALERT_EMAIL_TIMEOUT_SECONDS) as smtp:
+            smtp.send_message(message)
 
     def _alert_rest_url(self) -> str:
         if not hasattr(self, "alert_rest_url_edit"):
