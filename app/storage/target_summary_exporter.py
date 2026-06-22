@@ -20,6 +20,8 @@ TARGET_SUMMARY_HEADERS = [
     "timeout_count",
     "jitter_ms",
     "samples",
+    "interval_seconds",
+    "interval_source",
     "score",
 ]
 
@@ -41,6 +43,8 @@ class TargetSummaryExportRow:
     jitter_ms: float | None
     samples: int
     score: float
+    interval_seconds: int | None = None
+    interval_source: str = ""
 
 
 def export_target_summary_csv(path: Path, rows: list[TargetSummaryExportRow]) -> Path:
@@ -66,6 +70,8 @@ def export_target_summary_csv(path: Path, rows: list[TargetSummaryExportRow]) ->
                 row.timeout_count,
                 _fmt(row.jitter_ms),
                 row.samples,
+                "" if row.interval_seconds is None else row.interval_seconds,
+                row.interval_source,
                 f"{row.score:.3f}",
             ])
     return path

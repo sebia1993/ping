@@ -25,6 +25,8 @@ def test_export_target_summary_csv_writes_operator_summary(tmp_path) -> None:
                 jitter_ms=7.4,
                 samples=4,
                 score=50107.4,
+                interval_seconds=5,
+                interval_source="target",
             )
         ],
     )
@@ -49,6 +51,8 @@ def test_export_target_summary_csv_writes_operator_summary(tmp_path) -> None:
             "timeout_count": "1",
             "jitter_ms": "7.4",
             "samples": "4",
+            "interval_seconds": "5",
+            "interval_source": "target",
             "score": "50107.400",
         }
     ]

@@ -126,6 +126,7 @@ class MainWindow(QMainWindow):
         # 세션이 시작되면 Worker가 CSV 경로를 알려 주고, 그때 export/복구 버튼이 활성화됩니다.
         self.current_target = ""
         self.current_targets: list[str] = []
+        self.target_interval_overrides: dict[str, int] = {}
         self.session_log_path: Path | None = None
         self.route_log_path: Path | None = None
         self.alert_action_log_path: Path | None = None
@@ -781,6 +782,7 @@ class MainWindow(QMainWindow):
         # 3단계: 이전 측정의 화면 상태를 비우고 새 세션 상태로 바꿉니다.
         self.current_target = target
         self.current_targets = targets
+        self.target_interval_overrides = {}
         self.session_log_path = None
         self.route_log_path = None
         self.alert_action_log_path = None
@@ -887,9 +889,12 @@ class MainWindow(QMainWindow):
         targets = self._selected_target_addresses()
         if targets and hasattr(self.worker, "set_target_interval_seconds"):
             self.worker.set_target_interval_seconds(targets, interval)
+            self._record_target_interval_overrides(targets, interval)
             self.status_label.setText(f"Runtime interval applied to {len(targets)} target(s): {interval}s")
             return
         self.worker.set_interval_seconds(interval)
+        self.target_interval_overrides.clear()
+        self._refresh_target_interval_view()
         self.status_label.setText(f"Runtime interval applied: {interval}s")
 
     def apply_visible_interval(self) -> None:
@@ -901,7 +906,18 @@ class MainWindow(QMainWindow):
             return
         interval = int(self.interval_combo.currentText())
         self.worker.set_target_interval_seconds(targets, interval)
+        self._record_target_interval_overrides(targets, interval)
         self.status_label.setText(f"Runtime interval applied to visible {len(targets)} target(s): {interval}s")
+
+    def _record_target_interval_overrides(self, targets: list[str], interval_seconds: int) -> None:
+        for target in targets:
+            if target in self.current_targets:
+                self.target_interval_overrides[target] = interval_seconds
+        self._refresh_target_interval_view()
+
+    def _refresh_target_interval_view(self) -> None:
+        if hasattr(self, "target_table") and self.target_snapshots:
+            self._render_current_view()
 
     def _pause_targets(self, targets: list[str]) -> None:
         if not targets or not self.worker or not hasattr(self.worker, "pause_targets"):
@@ -1060,9 +1076,15 @@ class MainWindow(QMainWindow):
         target_snapshots = self._visible_target_snapshots()
         target_snapshot = self._display_target_snapshot()
         analysis = self._display_analysis()
+        interval_seconds_by_target, interval_source_by_target = self._target_interval_display_maps(target_snapshots)
 
         update_hop_table(self.table, snapshots)
-        update_target_table(self.target_table, target_snapshots)
+        update_target_table(
+            self.target_table,
+            target_snapshots,
+            interval_seconds_by_target=interval_seconds_by_target,
+            interval_source_by_target=interval_source_by_target,
+        )
         if getattr(self, "problem_sort_check", None) is not None and self.problem_sort_check.isChecked():
             self._apply_target_problem_sort()
         self._update_all_targets_summary(target_snapshots)
@@ -1095,6 +1117,38 @@ class MainWindow(QMainWindow):
             if _target_snapshot_matches_filter(snapshot, terms, state_filter)
         ]
 
+    def _target_interval_display_maps(
+        self,
+        snapshots: list[MetricSnapshot],
+    ) -> tuple[dict[str, int | None], dict[str, str]]:
+        intervals: dict[str, int | None] = {}
+        sources: dict[str, str] = {}
+        base_interval = self._runtime_base_interval_seconds()
+        for snapshot in snapshots:
+            address = snapshot.address or ""
+            if not address:
+                continue
+            if address in self.target_interval_overrides:
+                intervals[address] = self.target_interval_overrides[address]
+                sources[address] = "target"
+            else:
+                intervals[address] = base_interval
+                sources[address] = "global" if base_interval is not None else ""
+        return intervals, sources
+
+    def _runtime_base_interval_seconds(self) -> int | None:
+        if self.worker is not None and hasattr(self.worker, "interval_seconds"):
+            try:
+                return int(getattr(self.worker, "interval_seconds"))
+            except (TypeError, ValueError):
+                return None
+        if hasattr(self, "interval_combo"):
+            try:
+                return int(self.interval_combo.currentText())
+            except ValueError:
+                return None
+        return None
+
     def _target_filter_text(self) -> str:
         if not hasattr(self, "target_filter_edit"):
             return ""
@@ -1114,7 +1168,12 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "target_summary_status_label"):
             return
         total_count = len(self._display_target_snapshots())
-        self.target_summary_status_label.setText(_all_targets_summary_line(snapshots, total_count=total_count))
+        summary = _all_targets_summary_line(snapshots, total_count=total_count)
+        visible_targets = {snapshot.address for snapshot in snapshots if snapshot.address}
+        override_count = len([target for target in self.target_interval_overrides if target in visible_targets])
+        if override_count:
+            summary = f"{summary} | Interval overrides {override_count}"
+        self.target_summary_status_label.setText(summary)
 
     def on_session_log_ready(self, path: str) -> None:
         """Worker가 만든 세션 CSV 경로를 받아 Session Manager와 export 기능을 연결합니다."""
@@ -2322,11 +2381,13 @@ class MainWindow(QMainWindow):
 
     def _target_summary_export_rows(self, snapshots: list[MetricSnapshot]) -> list[TargetSummaryExportRow]:
         rows: list[TargetSummaryExportRow] = []
+        interval_seconds_by_target, interval_source_by_target = self._target_interval_display_maps(snapshots)
         for snapshot in snapshots:
             failed = snapshot.sent - snapshot.received
+            address = snapshot.address or ""
             rows.append(
                 TargetSummaryExportRow(
-                    target=snapshot.address or "",
+                    target=address,
                     status=display_status(snapshot),
                     current_latency_ms=snapshot.current_latency_ms,
                     avg_latency_ms=snapshot.avg_latency_ms,
@@ -2341,6 +2402,8 @@ class MainWindow(QMainWindow):
                     jitter_ms=snapshot.jitter_ms,
                     samples=snapshot.samples,
                     score=target_problem_score(snapshot),
+                    interval_seconds=interval_seconds_by_target.get(address),
+                    interval_source=interval_source_by_target.get(address, ""),
                 )
             )
         return rows

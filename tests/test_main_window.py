@@ -1018,6 +1018,11 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         window.resume_all_targets()
         window.interval_combo.setCurrentText("5")
         window.apply_runtime_interval()
+        interval_column = TARGET_HEADERS.index("Interval")
+        interval_source_column = TARGET_HEADERS.index("Interval Source")
+        assert "Interval overrides 1" in window.target_summary_status_label.text()
+        assert window.target_table.item(1, interval_column).text() == "5s"
+        assert window.target_table.item(1, interval_source_column).text() == "target"
         window.target_table.clearSelection()
         window.interval_combo.setCurrentText("2")
         window.apply_runtime_interval()
@@ -1026,6 +1031,9 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         assert worker.resumed_calls == [["203.0.113.10"], ["198.51.100.10", "203.0.113.10"]]
         assert worker.target_interval_updates == [(["203.0.113.10"], 5)]
         assert worker.interval_updates == [2]
+        assert "Interval overrides" not in window.target_summary_status_label.text()
+        assert window.target_table.item(0, interval_column).text() == "2s"
+        assert window.target_table.item(1, interval_column).text() == "2s"
         assert window.apply_interval_button.isEnabled() is True
     finally:
         window.close()
@@ -1106,11 +1114,14 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         assert worker.paused_calls == [["203.0.113.10", "203.0.113.20"]]
         assert worker.resumed_calls == [["203.0.113.10", "203.0.113.20"]]
         assert worker.target_interval_updates == [(["203.0.113.10", "203.0.113.20"], 5)]
+        assert "Interval overrides 2" in window.target_summary_status_label.text()
 
         window.target_filter_edit.setText("203.0.113.20")
 
         assert window.target_table.rowCount() == 1
         assert window.target_table.item(0, 0).text() == "203.0.113.20"
+        assert window.target_table.item(0, TARGET_HEADERS.index("Interval")).text() == "5s"
+        assert window.target_table.item(0, TARGET_HEADERS.index("Interval Source")).text() == "target"
         assert window.export_target_summary_button.isEnabled() is True
 
         window.target_filter_edit.setText("no-match")
@@ -1383,6 +1394,7 @@ def test_main_window_exports_target_summary_csv(qt_app, tmp_path, monkeypatch) -
     try:
         window.current_target = "198.51.100.10"
         window.current_targets = ["198.51.100.10", "203.0.113.10"]
+        window.target_interval_overrides = {"203.0.113.10": 5}
         window.on_measurement_updated(
             [],
             healthy,
@@ -1406,6 +1418,10 @@ def test_main_window_exports_target_summary_csv(qt_app, tmp_path, monkeypatch) -
         assert rows[0]["status"] == "CRITICAL"
         assert rows[0]["failed"] == "1"
         assert rows[0]["loss_percent"] == "40.0"
+        assert rows[0]["interval_seconds"] == "5"
+        assert rows[0]["interval_source"] == "target"
+        assert rows[1]["interval_seconds"] == "1"
+        assert rows[1]["interval_source"] == "global"
         assert "Target summary CSV saved" in window.status_label.text()
     finally:
         window.close()

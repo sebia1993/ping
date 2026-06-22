@@ -38,8 +38,10 @@ TARGET_HEADERS = [
     "실패",
 ]
 
-
+TARGET_HEADERS.extend(["Interval", "Interval Source"])
 TARGET_HEADERS.append("Score")
+TARGET_INTERVAL_COLUMN = TARGET_HEADERS.index("Interval")
+TARGET_INTERVAL_SOURCE_COLUMN = TARGET_HEADERS.index("Interval Source")
 TARGET_SCORE_COLUMN = len(TARGET_HEADERS) - 1
 
 SESSION_HEADERS = [
@@ -179,7 +181,15 @@ def update_hop_table(table: QTableWidget, snapshots: list[MetricSnapshot]) -> No
             item.setBackground(row_color(snapshot))
 
 
-def update_target_table(table: QTableWidget, snapshots: list[MetricSnapshot]) -> None:
+def update_target_table(
+    table: QTableWidget,
+    snapshots: list[MetricSnapshot],
+    *,
+    interval_seconds_by_target: dict[str, int | None] | None = None,
+    interval_source_by_target: dict[str, str] | None = None,
+) -> None:
+    interval_seconds_by_target = interval_seconds_by_target or {}
+    interval_source_by_target = interval_source_by_target or {}
     sorting_enabled = table.isSortingEnabled()
     table.setSortingEnabled(False)
     rows_changed = table.rowCount() != len(snapshots)
@@ -188,8 +198,11 @@ def update_target_table(table: QTableWidget, snapshots: list[MetricSnapshot]) ->
     for row, snapshot in enumerate(snapshots):
         failed = snapshot.sent - snapshot.received
         score = target_problem_score(snapshot)
+        address = snapshot.address or ""
+        interval_seconds = interval_seconds_by_target.get(address)
+        interval_source = interval_source_by_target.get(address, "")
         values = [
-            (snapshot.address or "", snapshot.address or ""),
+            (address, address),
             (display_status(snapshot), score),
             (fmt_ms(snapshot.current_latency_ms), snapshot.current_latency_ms if snapshot.current_latency_ms is not None else -1),
             (fmt_ms(snapshot.avg_latency_ms), snapshot.avg_latency_ms if snapshot.avg_latency_ms is not None else -1),
@@ -199,6 +212,8 @@ def update_target_table(table: QTableWidget, snapshots: list[MetricSnapshot]) ->
             (snapshot.sent, snapshot.sent),
             (snapshot.received, snapshot.received),
             (failed, failed),
+            ("" if interval_seconds is None else f"{interval_seconds}s", interval_seconds or 0),
+            (interval_source, interval_source),
             (f"{score:.3f}", score),
         ]
         for column, (value, sort_value) in enumerate(values):
