@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import subprocess
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -72,7 +75,12 @@ from app.ui.worker import (
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.route_log import route_changes_in_range, route_log_path_for_session
-from app.storage.session_index import SessionIndexStore, TraceSessionRecord, session_index_root_for_sample_path
+from app.storage.session_index import (
+    SessionIndexStore,
+    TraceSessionRecord,
+    session_data_paths,
+    session_index_root_for_sample_path,
+)
 from app.storage.session_log import iter_observations, iter_observations_in_range, session_log_bounds
 from app.storage.statistics_exporter import TIMEZONE_LOCAL, TIMEZONE_UTC, StatisticsExportOptions
 from app.storage.target_summary_exporter import TargetSummaryExportRow, export_target_summary_csv
@@ -496,6 +504,8 @@ class MainWindow(QMainWindow):
         self.resume_session_button.clicked.connect(self.resume_selected_session)
         self.export_session_button = QPushButton("Export")
         self.export_session_button.clicked.connect(self.export_selected_session)
+        self.export_visible_sessions_button = QPushButton("Export visible")
+        self.export_visible_sessions_button.clicked.connect(self.export_visible_sessions)
         self.delete_session_button = QPushButton("Delete")
         self.delete_session_button.clicked.connect(self.delete_selected_session)
         self.refresh_sessions_button = QPushButton("Refresh")
@@ -513,6 +523,7 @@ class MainWindow(QMainWindow):
         sessions_header.addWidget(self.open_session_button)
         sessions_header.addWidget(self.resume_session_button)
         sessions_header.addWidget(self.export_session_button)
+        sessions_header.addWidget(self.export_visible_sessions_button)
         sessions_header.addWidget(self.delete_session_button)
         sessions_header.addWidget(self.refresh_sessions_button)
         sessions_header.addWidget(QLabel("Keep"))
@@ -1517,6 +1528,10 @@ class MainWindow(QMainWindow):
             return ""
         return self.session_filter_edit.text().strip()
 
+    def _visible_session_records(self) -> list[TraceSessionRecord]:
+        sessions = self.session_index_store.list_sessions()
+        return self._filtered_session_records(sessions)[:SESSION_MANAGER_DISPLAY_LIMIT]
+
     def refresh_saved_sessions(self) -> None:
         self.session_index_store.recover_missing_sessions()
         self._sync_sessions_box()
@@ -1542,6 +1557,8 @@ class MainWindow(QMainWindow):
         self.open_session_button.setEnabled(can_switch_session)
         self.resume_session_button.setEnabled(can_switch_session)
         self.export_session_button.setEnabled(has_sessions)
+        if hasattr(self, "export_visible_sessions_button"):
+            self.export_visible_sessions_button.setEnabled(has_sessions)
         self.delete_session_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
         if hasattr(self, "prune_sessions_button"):
             self.prune_sessions_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
@@ -1597,6 +1614,82 @@ class MainWindow(QMainWindow):
         self.export_worker.finished.connect(self.on_export_finished)
         self._set_exporting(True)
         self.export_worker.start()
+
+    def export_visible_sessions(self) -> None:
+        if self.export_worker and self.export_worker.isRunning():
+            QMessageBox.information(self, "Export", "An export is already running.")
+            return
+        records = self._visible_session_records()
+        if not records:
+            self.status_label.setText("No visible saved sessions to export")
+            return
+        path = self._select_save_path("visible_sessions.zip", "ZIP Files (*.zip)", target="visible_sessions")
+        if not path:
+            return
+        try:
+            saved_path, file_count = self._write_visible_sessions_zip(path, records)
+        except OSError as exc:
+            QMessageBox.warning(self, "Export error", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"Visible sessions ZIP saved: {saved_path} ({len(records)} session(s), {file_count} file(s))")
+
+    def _write_visible_sessions_zip(
+        self,
+        path: Path,
+        records: list[TraceSessionRecord],
+    ) -> tuple[Path, int]:
+        if path.suffix.lower() != ".zip":
+            path = path.with_suffix(".zip")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_buffer = io.StringIO()
+        fieldnames = [
+            "session_id",
+            "target",
+            "state",
+            "start",
+            "end",
+            "samples",
+            "interval_seconds",
+            "measurement_mode",
+            "target_count",
+            "sample_path",
+            "route_path",
+            "last_error",
+            "exported_file_count",
+        ]
+        writer = csv.DictWriter(manifest_buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        file_count = 0
+        with zipfile.ZipFile(path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for index, record in enumerate(records, start=1):
+                folder = _session_export_folder(record, index)
+                exported_for_session = 0
+                for data_path in session_data_paths(record):
+                    if not data_path.exists() or not data_path.is_file():
+                        continue
+                    archive.write(data_path, f"{folder}/{data_path.name}")
+                    exported_for_session += 1
+                file_count += exported_for_session
+                writer.writerow(
+                    {
+                        "session_id": record.session_id,
+                        "target": record.target,
+                        "state": record.state,
+                        "start": record.start.isoformat(),
+                        "end": record.end.isoformat() if record.end is not None else "",
+                        "samples": record.samples,
+                        "interval_seconds": record.interval_seconds or "",
+                        "measurement_mode": record.measurement_mode,
+                        "target_count": record.target_count,
+                        "sample_path": str(record.sample_path),
+                        "route_path": str(record.route_path or ""),
+                        "last_error": record.last_error,
+                        "exported_file_count": exported_for_session,
+                    }
+                )
+            archive.writestr("session_manifest.csv", manifest_buffer.getvalue())
+        return path, file_count
 
     def delete_selected_session(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -2156,6 +2249,8 @@ class MainWindow(QMainWindow):
             self.open_session_button.setEnabled(has_sessions and not running)
             self.resume_session_button.setEnabled(has_sessions and not running)
             self.delete_session_button.setEnabled(has_sessions and not running)
+            if hasattr(self, "export_visible_sessions_button"):
+                self.export_visible_sessions_button.setEnabled(has_sessions)
             if hasattr(self, "prune_sessions_button"):
                 self.prune_sessions_button.setEnabled(has_sessions and not running)
         self.interval_combo.setEnabled(True)
@@ -2203,6 +2298,8 @@ class MainWindow(QMainWindow):
         self._sync_statistics_range_controls(exporting=exporting)
         if hasattr(self, "export_session_button"):
             self.export_session_button.setEnabled(not exporting and self.session_combo.count() > 0)
+        if hasattr(self, "export_visible_sessions_button"):
+            self.export_visible_sessions_button.setEnabled(not exporting and self.session_combo.count() > 0)
         if hasattr(self, "resume_session_button"):
             self.resume_session_button.setEnabled(
                 not exporting
@@ -2404,6 +2501,13 @@ def _session_matches_filter(session: TraceSessionRecord, terms: list[str]) -> bo
     ]
     haystack = " ".join(value for value in values if value).casefold()
     return all(term in haystack for term in terms)
+
+
+def _session_export_folder(record: TraceSessionRecord, index: int) -> str:
+    timestamp = record.start.strftime("%Y%m%d_%H%M%S")
+    target = safe_target_name(record.target)
+    session_id = safe_target_name(record.session_id)
+    return f"{index:03d}_{target}_{timestamp}_{session_id}"
 
 
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:

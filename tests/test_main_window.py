@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -514,6 +515,66 @@ def test_main_window_exports_selected_saved_session(qt_app, tmp_path, monkeypatc
         assert worker.kwargs["analysis"]
         assert worker.started is True
         assert window.export_session_button.isEnabled() is False
+    finally:
+        window.close()
+
+
+def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkeypatch) -> None:
+    export_path = tmp_path / "visible_sessions.zip"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "ZIP Files (*.zip)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    first_path = tmp_path / "198.51.100.10" / "2026-01" / "first.samples.csv"
+    first_path.parent.mkdir(parents=True, exist_ok=True)
+    first_path.write_text("first\n", encoding="utf-8")
+    first_route_path = first_path.with_name("first.routes.csv")
+    first_route_path.write_text("route\n", encoding="utf-8")
+    first = store.register_session(
+        target="198.51.100.10",
+        sample_path=first_path,
+        route_path=first_route_path,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(first.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=2))
+    second_path = tmp_path / "203.0.113.10" / "2026-01" / "second.samples.csv"
+    second_path.parent.mkdir(parents=True, exist_ok=True)
+    second_path.write_text("second\n", encoding="utf-8")
+    second = store.register_session(
+        target="203.0.113.10",
+        sample_path=second_path,
+        route_path=second_path.with_name("second.routes.csv"),
+        started_at=now + timedelta(minutes=1),
+        interval_seconds=5,
+        measurement_mode="final_hop_only:tcp_connect:port443",
+        target_count=2,
+    )
+    store.finish_session(second.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(minutes=1, seconds=2))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_filter_edit.setText("203.0.113")
+
+        window.export_visible_sessions()
+
+        assert export_path.exists()
+        with zipfile.ZipFile(export_path) as archive:
+            names = archive.namelist()
+            manifest = archive.read("session_manifest.csv").decode("utf-8")
+        assert "203.0.113.10" in manifest
+        assert "198.51.100.10" not in manifest
+        assert "final_hop_only:tcp_connect:port443" in manifest
+        assert any(name.endswith("/second.samples.csv") for name in names)
+        assert not any(name.endswith("/first.samples.csv") for name in names)
+        assert "Visible sessions ZIP saved" in window.status_label.text()
     finally:
         window.close()
 
