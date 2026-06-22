@@ -259,16 +259,35 @@ class MainWindow(QMainWindow):
         hint.setObjectName("muted")
         self.target_summary_status_label = QLabel("Targets: 0")
         self.target_summary_status_label.setObjectName("muted")
+        self.target_filter_edit = QLineEdit()
+        self.target_filter_edit.setPlaceholderText("Filter targets")
+        self.target_filter_edit.setClearButtonEnabled(True)
+        self.target_filter_edit.setMinimumWidth(160)
+        self.target_filter_edit.textChanged.connect(lambda *_args: self._sync_target_filter())
+        self.target_status_filter_combo = QComboBox()
+        self.target_status_filter_combo.addItem("All states", "")
+        self.target_status_filter_combo.addItem("Problem", "problem")
+        self.target_status_filter_combo.addItem("Critical", "CRITICAL")
+        self.target_status_filter_combo.addItem("Warning", "WARNING")
+        self.target_status_filter_combo.addItem("OK", "OK")
+        self.target_status_filter_combo.addItem("Paused", "PAUSED")
+        self.target_status_filter_combo.currentIndexChanged.connect(lambda *_args: self._sync_target_filter())
         self.pause_selected_targets_button = QPushButton("Pause selected")
         self.pause_selected_targets_button.clicked.connect(self.pause_selected_targets)
         self.resume_selected_targets_button = QPushButton("Resume selected")
         self.resume_selected_targets_button.clicked.connect(self.resume_selected_targets)
+        self.pause_visible_targets_button = QPushButton("Pause visible")
+        self.pause_visible_targets_button.clicked.connect(self.pause_visible_targets)
+        self.resume_visible_targets_button = QPushButton("Resume visible")
+        self.resume_visible_targets_button.clicked.connect(self.resume_visible_targets)
         self.pause_all_targets_button = QPushButton("Pause all")
         self.pause_all_targets_button.clicked.connect(self.pause_all_targets)
         self.resume_all_targets_button = QPushButton("Resume all")
         self.resume_all_targets_button.clicked.connect(self.resume_all_targets)
         self.apply_interval_button = QPushButton("Apply interval")
         self.apply_interval_button.clicked.connect(self.apply_runtime_interval)
+        self.apply_visible_interval_button = QPushButton("Apply visible")
+        self.apply_visible_interval_button.clicked.connect(self.apply_visible_interval)
         self.export_target_summary_button = QPushButton("Export summary")
         self.export_target_summary_button.clicked.connect(self.save_target_summary_csv)
         self.problem_sort_check = QCheckBox("Problem first")
@@ -279,12 +298,20 @@ class MainWindow(QMainWindow):
         header.addWidget(hint)
         header.addWidget(self.problem_sort_check)
         header.addWidget(self.export_target_summary_button)
-        header.addWidget(self.pause_selected_targets_button)
-        header.addWidget(self.resume_selected_targets_button)
-        header.addWidget(self.pause_all_targets_button)
-        header.addWidget(self.resume_all_targets_button)
-        header.addWidget(self.apply_interval_button)
+        controls = QHBoxLayout()
+        controls.addWidget(self.target_filter_edit)
+        controls.addWidget(self.target_status_filter_combo)
+        controls.addStretch(1)
+        controls.addWidget(self.pause_selected_targets_button)
+        controls.addWidget(self.resume_selected_targets_button)
+        controls.addWidget(self.pause_visible_targets_button)
+        controls.addWidget(self.resume_visible_targets_button)
+        controls.addWidget(self.pause_all_targets_button)
+        controls.addWidget(self.resume_all_targets_button)
+        controls.addWidget(self.apply_interval_button)
+        controls.addWidget(self.apply_visible_interval_button)
         layout.addLayout(header)
+        layout.addLayout(controls)
         layout.addWidget(self.target_table)
         return panel
 
@@ -688,6 +715,20 @@ class MainWindow(QMainWindow):
     def resume_all_targets(self) -> None:
         self._resume_targets(list(self.current_targets))
 
+    def pause_visible_targets(self) -> None:
+        targets = self._visible_target_addresses()
+        if not targets:
+            self.status_label.setText("No visible targets to pause")
+            return
+        self._pause_targets(targets)
+
+    def resume_visible_targets(self) -> None:
+        targets = self._visible_target_addresses()
+        if not targets:
+            self.status_label.setText("No visible targets to resume")
+            return
+        self._resume_targets(targets)
+
     def apply_runtime_interval(self) -> None:
         if not self.worker or not hasattr(self.worker, "set_interval_seconds"):
             return
@@ -699,6 +740,17 @@ class MainWindow(QMainWindow):
             return
         self.worker.set_interval_seconds(interval)
         self.status_label.setText(f"Runtime interval applied: {interval}s")
+
+    def apply_visible_interval(self) -> None:
+        if not self.worker or not hasattr(self.worker, "set_target_interval_seconds"):
+            return
+        targets = self._visible_target_addresses()
+        if not targets:
+            self.status_label.setText("No visible targets for interval update")
+            return
+        interval = int(self.interval_combo.currentText())
+        self.worker.set_target_interval_seconds(targets, interval)
+        self.status_label.setText(f"Runtime interval applied to visible {len(targets)} target(s): {interval}s")
 
     def _pause_targets(self, targets: list[str]) -> None:
         if not targets or not self.worker or not hasattr(self.worker, "pause_targets"):
@@ -727,6 +779,9 @@ class MainWindow(QMainWindow):
             if item is not None and item.text():
                 addresses.append(item.text())
         return addresses
+
+    def _visible_target_addresses(self) -> list[str]:
+        return [snapshot.address for snapshot in self._visible_target_snapshots() if snapshot.address]
 
     def on_target_double_clicked(self, row: int, _column: int) -> None:
         item = self.target_table.item(row, 0)
@@ -762,6 +817,10 @@ class MainWindow(QMainWindow):
 
     def _apply_target_problem_sort(self) -> None:
         self.target_table.sortItems(TARGET_SCORE_COLUMN, Qt.DescendingOrder)
+
+    def _sync_target_filter(self) -> None:
+        if hasattr(self, "target_table"):
+            self._render_current_view()
 
     def on_status_message(self, message: str) -> None:
         self.status_label.setText(message)
@@ -843,7 +902,7 @@ class MainWindow(QMainWindow):
 
     def _render_current_view(self) -> None:
         snapshots = self._display_snapshots()
-        target_snapshots = self._display_target_snapshots()
+        target_snapshots = self._visible_target_snapshots()
         target_snapshot = self._display_target_snapshot()
         analysis = self._display_analysis()
 
@@ -869,6 +928,28 @@ class MainWindow(QMainWindow):
     def _display_target_snapshots(self) -> list[MetricSnapshot]:
         return self.focus_target_snapshots if self.focus_range is not None else self.target_snapshots
 
+    def _visible_target_snapshots(self) -> list[MetricSnapshot]:
+        snapshots = self._display_target_snapshots()
+        terms = self._target_filter_text().casefold().split()
+        state_filter = self._target_status_filter()
+        if not terms and not state_filter:
+            return snapshots
+        return [
+            snapshot
+            for snapshot in snapshots
+            if _target_snapshot_matches_filter(snapshot, terms, state_filter)
+        ]
+
+    def _target_filter_text(self) -> str:
+        if not hasattr(self, "target_filter_edit"):
+            return ""
+        return self.target_filter_edit.text().strip()
+
+    def _target_status_filter(self) -> str:
+        if not hasattr(self, "target_status_filter_combo"):
+            return ""
+        return str(self.target_status_filter_combo.currentData() or "")
+
     def _display_analysis(self) -> list[str]:
         if self.focus_range is None:
             return self.analysis
@@ -877,7 +958,8 @@ class MainWindow(QMainWindow):
     def _update_all_targets_summary(self, snapshots: list[MetricSnapshot]) -> None:
         if not hasattr(self, "target_summary_status_label"):
             return
-        self.target_summary_status_label.setText(_all_targets_summary_line(snapshots))
+        total_count = len(self._display_target_snapshots())
+        self.target_summary_status_label.setText(_all_targets_summary_line(snapshots, total_count=total_count))
 
     def on_session_log_ready(self, path: str) -> None:
         self.session_log_path = Path(path)
@@ -1829,7 +1911,7 @@ class MainWindow(QMainWindow):
         if self.export_worker and self.export_worker.isRunning():
             QMessageBox.information(self, "Export", "An export is already running.")
             return
-        snapshots = list(self._display_target_snapshots())
+        snapshots = list(self._visible_target_snapshots())
         if not snapshots:
             self.status_label.setText("No target summary data to export")
             return
@@ -2082,9 +2164,12 @@ class MainWindow(QMainWindow):
         for button_name in (
             "pause_selected_targets_button",
             "resume_selected_targets_button",
+            "pause_visible_targets_button",
+            "resume_visible_targets_button",
             "pause_all_targets_button",
             "resume_all_targets_button",
             "apply_interval_button",
+            "apply_visible_interval_button",
         ):
             button = getattr(self, button_name, None)
             if button is not None:
@@ -2150,7 +2235,7 @@ class MainWindow(QMainWindow):
         )
 
     def _has_target_summary_data(self) -> bool:
-        return bool(self._display_target_snapshots())
+        return bool(self._visible_target_snapshots())
 
     def _set_state_chip(self, text: str, tone: str) -> None:
         self.session_state_label.setText(text)
@@ -2236,9 +2321,11 @@ def _format_duration(seconds: int) -> str:
     return f"{seconds // 86400}d"
 
 
-def _all_targets_summary_line(snapshots: list[MetricSnapshot]) -> str:
+def _all_targets_summary_line(snapshots: list[MetricSnapshot], *, total_count: int | None = None) -> str:
+    total = len(snapshots) if total_count is None else total_count
+    label = f"Targets: {len(snapshots)}/{total}" if total != len(snapshots) else f"Targets: {len(snapshots)}"
     if not snapshots:
-        return "Targets: 0"
+        return label
     statuses = [display_status(snapshot) for snapshot in snapshots]
     critical = statuses.count("CRITICAL")
     warning = statuses.count("WARNING")
@@ -2246,7 +2333,7 @@ def _all_targets_summary_line(snapshots: list[MetricSnapshot]) -> str:
     ok = statuses.count("OK")
     other = len(snapshots) - critical - warning - paused - ok
     parts = [
-        f"Targets: {len(snapshots)}",
+        label,
         f"OK {ok}",
         f"Warning {warning}",
         f"Critical {critical}",
@@ -2262,6 +2349,28 @@ def _all_targets_summary_line(snapshots: list[MetricSnapshot]) -> str:
     max_latency_text = f"{fmt_ms(max_latency)} ms" if max_latency is not None else "-"
     parts.extend([f"worst loss {worst_loss:.1f}%", f"max latency {max_latency_text}"])
     return " | ".join(parts)
+
+
+def _target_snapshot_matches_filter(snapshot: MetricSnapshot, terms: list[str], state_filter: str) -> bool:
+    status = display_status(snapshot)
+    if state_filter == "problem":
+        if status not in {"WARNING", "CRITICAL"}:
+            return False
+    elif state_filter and status != state_filter:
+        return False
+    values = [
+        snapshot.address or "",
+        snapshot.hostname or "",
+        status,
+        fmt_ms(snapshot.current_latency_ms),
+        fmt_ms(snapshot.avg_latency_ms),
+        f"{snapshot.loss_percent:.1f}",
+        str(snapshot.sent),
+        str(snapshot.received),
+        str(snapshot.timeout_count),
+    ]
+    haystack = " ".join(value for value in values if value).casefold()
+    return all(term in haystack for term in terms)
 
 
 def _apply_default_font() -> None:
