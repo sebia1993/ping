@@ -38,6 +38,7 @@ from app.ui.main_window import (
     STATISTICS_SCOPE_FOCUS,
     STATISTICS_SCOPE_VISIBLE,
     TABLE_HEADERS,
+    TARGET_GROUP_PRESET_VERSION,
     TARGET_HEADERS,
 )
 from app.ui.worker import (
@@ -1090,7 +1091,15 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         window.save_target_group_preset()
 
         data = json.loads(preset_path.read_text(encoding="utf-8"))
-        assert data["version"] == 1
+        assert data["version"] == TARGET_GROUP_PRESET_VERSION
+        assert data["name"] == "target_group"
+        assert datetime.fromisoformat(data["created_at"])
+        assert data["source"] == "all"
+        assert data["summary"]["target_count"] == 2
+        assert data["summary"]["trace_target"] == "203.0.113.20"
+        assert data["summary"]["measurement_mode"] == MEASUREMENT_MODE_FINAL_HOP_ONLY
+        assert data["summary"]["probe_engine"] == PROBE_ENGINE_TCP_CONNECT
+        assert data["summary"]["tcp_port"] == 8443
         assert data["targets"] == ["198.51.100.10", "203.0.113.20"]
         assert data["trace_target"] == "203.0.113.20"
         assert data["settings"]["interval_seconds"] == 5
@@ -1121,7 +1130,85 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
         assert window.tcp_port_spin.value() == 8443
         assert window.tcp_port_spin.isEnabled() is True
+        assert window.status_label.text() == "Target group loaded: 2 target(s) | target_group"
+    finally:
+        window.close()
+
+
+def test_main_window_loads_legacy_target_group_preset(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "legacy_group.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "targets": ["198.51.100.10", "203.0.113.20"],
+                "trace_target": "203.0.113.20",
+                "settings": {
+                    "interval_seconds": 5,
+                    "unlimited": False,
+                    "count": 25,
+                    "measurement_mode": MEASUREMENT_MODE_FINAL_HOP_ONLY,
+                    "probe_engine": PROBE_ENGINE_TCP_CONNECT,
+                    "tcp_port": 8443,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow()
+
+    try:
+        window.load_target_group_preset()
+
+        assert window.target_input.toPlainText().splitlines() == ["198.51.100.10", "203.0.113.20"]
+        assert window.trace_target_combo.currentText() == "203.0.113.20"
+        assert window.interval_combo.currentText() == "5"
+        assert window.unlimited_check.isChecked() is False
+        assert window.count_spin.value() == 25
+        assert window.measurement_mode_combo.currentData() == MEASUREMENT_MODE_FINAL_HOP_ONLY
+        assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
+        assert window.tcp_port_spin.value() == 8443
         assert window.status_label.text() == "Target group loaded: 2 target(s)"
+    finally:
+        window.close()
+
+
+def test_main_window_rejects_target_group_summary_count_mismatch(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "bad_group.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": TARGET_GROUP_PRESET_VERSION,
+                "name": "bad_group",
+                "source": "all",
+                "summary": {"target_count": 3},
+                "targets": ["198.51.100.10", "203.0.113.20"],
+                "trace_target": "198.51.100.10",
+                "settings": {"interval_seconds": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow()
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+
+    try:
+        window.load_target_group_preset()
+
+        assert "target_count does not match" in warnings[-1]
+        assert "target_count does not match" in window.status_label.text()
+        assert window.target_input.toPlainText() == ""
     finally:
         window.close()
 
@@ -1157,9 +1244,13 @@ def test_main_window_saves_selected_target_group_from_summary(qt_app, tmp_path, 
         window.save_selected_target_group_preset()
 
         data = json.loads(preset_path.read_text(encoding="utf-8"))
+        assert data["version"] == TARGET_GROUP_PRESET_VERSION
+        assert data["name"] == "selected_target_group"
+        assert data["source"] == "selected"
+        assert data["summary"]["target_count"] == 2
         assert data["targets"] == ["203.0.113.20", "203.0.113.30"]
         assert data["trace_target"] == "203.0.113.20"
-        assert window.status_label.text() == f"Target group saved: {preset_path}"
+        assert window.status_label.text() == f"Target group saved: {preset_path} (2 target(s))"
     finally:
         window.close()
 

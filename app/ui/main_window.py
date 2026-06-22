@@ -118,6 +118,7 @@ ALERT_EMAIL_SECURITY_MODES = {
 GRAPH_PNG_SCOPE_TIMELINE = "timeline"
 GRAPH_PNG_SCOPE_TRACE = "trace"
 GRAPH_PNG_SCOPE_BOTH = "both"
+TARGET_GROUP_PRESET_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -794,16 +795,16 @@ class MainWindow(QMainWindow):
         if not targets:
             QMessageBox.warning(self, "Target group", "저장할 대상 IPv4 주소를 입력하세요.")
             return
-        self._save_target_group_preset(targets)
+        self._save_target_group_preset(targets, source="all")
 
     def save_selected_target_group_preset(self) -> None:
         targets = self._selected_target_addresses()
         if not targets:
             self.status_label.setText("No selected targets to save")
             return
-        self._save_target_group_preset(targets)
+        self._save_target_group_preset(targets, source="selected")
 
-    def _save_target_group_preset(self, targets: list[str]) -> None:
+    def _save_target_group_preset(self, targets: list[str], *, source: str) -> None:
         path = self._select_save_path("target_group.json", "JSON Files (*.json)", target="target_group")
         if not path:
             return
@@ -811,12 +812,13 @@ class MainWindow(QMainWindow):
             path = path.with_suffix(".json")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(self._target_group_preset(targets), indent=2), encoding="utf-8")
+            preset = self._target_group_preset(targets, name=path.stem, source=source)
+            path.write_text(json.dumps(preset, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
             QMessageBox.warning(self, "Target group", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"Target group saved: {path}")
+        self.status_label.setText(f"Target group saved: {path} ({len(targets)} target(s))")
 
     def load_target_group_preset(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
@@ -837,33 +839,50 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Target group", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"Target group loaded: {len(targets)} target(s)")
+        group_name = _target_group_display_name(data)
+        label = f" | {group_name}" if group_name else ""
+        self.status_label.setText(f"Target group loaded: {len(targets)} target(s){label}")
 
-    def _target_group_preset(self, targets: list[str]) -> dict[str, object]:
+    def _target_group_preset(self, targets: list[str], *, name: str, source: str) -> dict[str, object]:
         trace_target = self.trace_target_combo.currentText().strip()
         if trace_target not in targets:
             trace_target = targets[0]
+        measurement_mode = self.measurement_mode_combo.currentData() or MEASUREMENT_MODE_FULL_ROUTE
+        probe_engine = self.probe_engine_combo.currentData() or PROBE_ENGINE_ICMP
+        tcp_port = self.tcp_port_spin.value()
         return {
-            "version": 1,
+            "version": TARGET_GROUP_PRESET_VERSION,
+            "name": name,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source": source,
+            "summary": {
+                "target_count": len(targets),
+                "trace_target": trace_target,
+                "measurement_mode": measurement_mode,
+                "probe_engine": probe_engine,
+                "tcp_port": tcp_port,
+            },
             "targets": targets,
             "trace_target": trace_target,
             "settings": {
                 "interval_seconds": int(self.interval_combo.currentText()),
                 "unlimited": self.unlimited_check.isChecked(),
                 "count": self.count_spin.value(),
-                "measurement_mode": self.measurement_mode_combo.currentData() or MEASUREMENT_MODE_FULL_ROUTE,
-                "probe_engine": self.probe_engine_combo.currentData() or PROBE_ENGINE_ICMP,
-                "tcp_port": self.tcp_port_spin.value(),
+                "measurement_mode": measurement_mode,
+                "probe_engine": probe_engine,
+                "tcp_port": tcp_port,
             },
         }
 
     def _apply_target_group_preset(self, data: dict[str, object]) -> list[str]:
+        _validate_target_group_preset_version(data.get("version"))
         target_values = data.get("targets")
         if not isinstance(target_values, list):
             raise ValueError("Target group JSON must contain a targets list.")
         targets, invalid = parse_ipv4_targets("\n".join(str(target) for target in target_values))
         if invalid or not targets:
             raise ValueError("Target group JSON must contain valid IPv4 targets.")
+        _validate_target_group_summary(data.get("summary"), target_count=len(targets))
         settings = data.get("settings", {})
         if settings is None:
             settings = {}
@@ -3384,6 +3403,41 @@ def _session_storage_segment_paths(session: TraceSessionRecord) -> tuple[Path, .
         seen.add(key)
         paths.append(path)
     return tuple(paths)
+
+
+def _validate_target_group_preset_version(value: object) -> None:
+    if value in (None, ""):
+        return
+    try:
+        version = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Target group JSON has an invalid version.") from exc
+    if version < 1 or version > TARGET_GROUP_PRESET_VERSION:
+        raise ValueError(f"Target group JSON version is not supported: {version}")
+
+
+def _validate_target_group_summary(summary: object, *, target_count: int) -> None:
+    if summary in (None, ""):
+        return
+    if not isinstance(summary, dict):
+        raise ValueError("Target group JSON has invalid summary metadata.")
+    expected_count = summary.get("target_count")
+    if expected_count in (None, ""):
+        return
+    try:
+        expected_count_int = int(expected_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Target group JSON has invalid target_count metadata.") from exc
+    if expected_count_int != target_count:
+        raise ValueError("Target group JSON target_count does not match the targets list.")
+
+
+def _target_group_display_name(data: dict[str, object]) -> str:
+    name = str(data.get("name") or "").strip()
+    if name:
+        return name
+    source = str(data.get("source") or "").strip()
+    return source
 
 
 def _set_spin_value(spin: QSpinBox, value: object) -> None:

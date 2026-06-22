@@ -104,6 +104,7 @@ python scripts\soak_test.py --profile ui
 - CSV/XLSX/Report 저장은 백그라운드 작업으로 실행되어 큰 결과를 저장해도 UI 응답성을 유지합니다.
 - IPv4 대상은 기본 최대 50개까지 측정하며, 초과 입력 시 처음 50개 사용 여부를 확인합니다.
 - 선택된 IPv4 대상 Ping은 즉시 시작하고, Tracert 결과는 완료되는 대로 Hop 테이블에 반영합니다.
+- 대상 그룹 JSON에는 이름, 생성 시각, 저장 출처, 대상 수, 측정 설정 요약이 남아 여러 그룹 파일을 구분하기 쉽습니다.
 - Session Manager와 세션 ZIP manifest에 Mode, Engine, TCP Port가 분리되어 남아 재개/감사 시 확인하기 쉽습니다.
 - 저장된 세션에서 Resume 후 Start하면 새 세션에 원본 세션 ID가 남아 이어 측정한 이력을 추적할 수 있습니다.
 - 세션 로그 저장 오류가 발생하면 세션이 `Pause` 상태와 원인 코드로 남아 다음 실행에서 원인을 확인할 수 있습니다.
