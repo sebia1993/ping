@@ -214,6 +214,23 @@ def test_text_report_contains_evidence_annotations(tmp_path) -> None:
     assert "ISP handoff degraded" in text
 
 
+def test_text_report_groups_cause_evidence_summary(tmp_path) -> None:
+    path = tmp_path / "cause_report.txt"
+    cause_line = (
+        "CAUSE_PROVIDER_OR_BORDER_HANDOFF: Evidence: Loss starts at Hop 2 and reaches the target. "
+        "Action: Send a focused report to the provider."
+    )
+
+    write_text_report(path, "8.8.8.8", [_sample_snapshot()], ["Target path needs review", cause_line, cause_line])
+
+    text = path.read_text(encoding="utf-8")
+    summary = text.split("Analysis:", 1)[0]
+    assert "Cause Evidence Summary:" in summary
+    assert summary.count("CAUSE_PROVIDER_OR_BORDER_HANDOFF") == 1
+    assert "Loss starts at Hop 2 and reaches the target." in summary
+    assert "Send a focused report to the provider." in summary
+
+
 def test_html_report_contains_printable_sections_and_escapes_values(tmp_path) -> None:
     path = tmp_path / "report.html"
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -244,6 +261,27 @@ def test_html_report_contains_printable_sections_and_escapes_values(tmp_path) ->
     assert "<h2>Hop Metrics</h2>" in html
     assert "operator &lt;note&gt;" in html
     assert "ISP handoff degraded" in html
+
+
+def test_html_report_groups_cause_evidence_summary_and_escapes_values(tmp_path) -> None:
+    path = tmp_path / "cause_report.html"
+
+    write_html_report(
+        path,
+        "8.8.8.8",
+        [_sample_snapshot()],
+        [
+            "CAUSE_FIREWALL_OR_TARGET_FILTER: Evidence: Target <host> times out while earlier hops are healthy. "
+            "Action: Test TCP 443 & firewall policy."
+        ],
+    )
+
+    html = path.read_text(encoding="utf-8")
+    assert "<h2>Cause Evidence Summary</h2>" in html
+    assert "Cause Code" in html
+    assert "CAUSE_FIREWALL_OR_TARGET_FILTER" in html
+    assert "Target &lt;host&gt; times out while earlier hops are healthy." in html
+    assert "Test TCP 443 &amp; firewall policy." in html
 
 
 def test_annotations_in_range_keeps_overlapping_events() -> None:

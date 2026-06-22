@@ -19,6 +19,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Statistics export supports grouping, timezone, empty-range protection, and scope selection: All time, Visible timeline, Focus period, Custom range.
 - Report export supports TXT and printable HTML templates with target, range, analysis, evidence annotations, and hop metrics.
 - Text report export now removes the old corrupted duplicate target label so generated reports show clean English/Korean target metadata.
+- Report export now groups `CAUSE_*` analysis lines into a dedicated Cause Evidence Summary so provider-escalation evidence and recommended actions are easier to scan.
 - PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.
@@ -52,7 +53,8 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 3. Strengthen analysis logic.
    - Cause codes now cover local LAN/Wi-Fi, local access link, ISP/upstream segment, provider/border handoff, provider/border congestion, intermediate-hop ICMP rate-limit/deprioritization, target ICMP/firewall block, and target/service filtering.
    - Keep final-destination-first interpretation.
-   - Continue improving operator-facing explanations and report evidence grouping for provider escalation.
+   - Report evidence grouping is now available in TXT and HTML reports through the Cause Evidence Summary section.
+   - Continue improving operator-facing explanations when multiple symptoms overlap.
 
 4. Extend deterministic soak coverage.
    - The release verifier now covers a short 50-target simulated soak.

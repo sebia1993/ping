@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from pathlib import Path
 
 from app.core.models import MetricSnapshot
 from app.storage.export_annotations import ExportAnnotation
+
+
+@dataclass(frozen=True)
+class CauseEvidence:
+    code: str
+    evidence: str
+    action: str
 
 
 def write_text_report(
@@ -24,6 +32,11 @@ def write_text_report(
     ]
     if focus_range is not None:
         lines.append(f"Range: {_format_range(focus_range)}")
+    cause_evidence = _cause_evidence_items(analysis)
+    if cause_evidence:
+        lines.extend(["", "Cause Evidence Summary:"])
+        for item in cause_evidence:
+            lines.append(f"- {item.code}: Evidence: {item.evidence} Action: {item.action}")
     lines.extend(["", "Analysis:"])
     lines.extend(f"- {line}" for line in analysis)
     if annotations:
@@ -89,6 +102,8 @@ def write_html_report(
         "<h1>Network Path Diagnostics Report</h1>",
         f'<p class="meta"><strong>Target:</strong> {escape(target or "-")}</p>',
         f'<p class="meta"><strong>Range:</strong> {escape(_format_range(focus_range))}</p>',
+        "<h2>Cause Evidence Summary</h2>",
+        _html_cause_table(_cause_evidence_items(analysis)),
         "<h2>Analysis</h2>",
         _html_list(analysis),
         "<h2>Hop Metrics</h2>",
@@ -116,6 +131,46 @@ def _html_list(items: list[str]) -> str:
     if not items:
         return "<p>No analysis messages.</p>"
     return "<ul>" + "".join(f"<li>{escape(item)}</li>" for item in items) + "</ul>"
+
+
+def _cause_evidence_items(analysis: list[str]) -> list[CauseEvidence]:
+    items: list[CauseEvidence] = []
+    seen: set[tuple[str, str, str]] = set()
+    for line in analysis:
+        if not line.startswith("CAUSE_"):
+            continue
+        try:
+            code, remainder = line.split(": Evidence:", 1)
+            evidence, action = remainder.split(" Action:", 1)
+        except ValueError:
+            continue
+        item = CauseEvidence(code.strip(), evidence.strip(), action.strip())
+        key = (item.code, item.evidence, item.action)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    return items
+
+
+def _html_cause_table(items: list[CauseEvidence]) -> str:
+    if not items:
+        return "<p>No cause evidence found in the current analysis.</p>"
+    rows = [
+        "<table>",
+        "<thead><tr><th>Cause Code</th><th>Evidence</th><th>Recommended Action</th></tr></thead>",
+        "<tbody>",
+    ]
+    for item in items:
+        rows.append(
+            "<tr>"
+            f"<td>{escape(item.code)}</td>"
+            f"<td>{escape(item.evidence)}</td>"
+            f"<td>{escape(item.action)}</td>"
+            "</tr>"
+        )
+    rows.extend(["</tbody>", "</table>"])
+    return "".join(rows)
 
 
 def _html_hop_table(snapshots: list[MetricSnapshot]) -> str:
