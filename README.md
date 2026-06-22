@@ -105,6 +105,7 @@ python scripts\soak_test.py --profile ui
 - IPv4 대상은 기본 최대 50개까지 측정하며, 초과 입력 시 처음 50개 사용 여부를 확인합니다.
 - 선택된 IPv4 대상 Ping은 즉시 시작하고, Tracert 결과는 완료되는 대로 Hop 테이블에 반영합니다.
 - Session Manager와 세션 ZIP manifest에 Mode, Engine, TCP Port가 분리되어 남아 재개/감사 시 확인하기 쉽습니다.
+- 저장된 세션에서 Resume 후 Start하면 새 세션에 원본 세션 ID가 남아 이어 측정한 이력을 추적할 수 있습니다.
 - EXE 빌드는 사용하지 않는 대형 모듈을 제외해 배포 크기를 줄입니다.
 
 ## 주의

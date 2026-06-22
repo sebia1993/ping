@@ -657,6 +657,7 @@ def test_worker_can_write_session_logs_under_custom_root(monkeypatch, tmp_path) 
         max_cycles=2,
         session_log_root=log_root,
     )
+    worker.resumed_from_session_id = "previous-session"
     log_paths: list[str] = []
     worker.session_log_ready.connect(log_paths.append)
 
@@ -671,6 +672,7 @@ def test_worker_can_write_session_logs_under_custom_root(monkeypatch, tmp_path) 
     assert sessions[0].sample_path == log_path
     assert sessions[0].samples >= 2
     assert sessions[0].state == SESSION_STATE_ARCHIVED
+    assert sessions[0].resumed_from_session_id == "previous-session"
 
 
 def test_worker_thread_start_stop_repeats_without_lingering(monkeypatch) -> None:

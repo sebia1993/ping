@@ -40,6 +40,7 @@ class TraceSessionRecord:
     probe_engine: str = ""
     tcp_port: int | None = None
     route_probe_engine: str = ""
+    resumed_from_session_id: str = ""
     target_count: int = 1
     segments: tuple[Path, ...] = ()
     last_error: str = ""
@@ -75,6 +76,7 @@ class SessionIndexStore:
         probe_engine: str | None = None,
         tcp_port: int | None = None,
         route_probe_engine: str | None = None,
+        resumed_from_session_id: str = "",
     ) -> TraceSessionRecord:
         """새 측정이 시작될 때 세션 인덱스에 Active 레코드를 등록합니다."""
 
@@ -95,6 +97,7 @@ class SessionIndexStore:
             probe_engine=probe_engine or fallback_probe_engine,
             tcp_port=tcp_port if tcp_port is not None else fallback_tcp_port,
             route_probe_engine=route_probe_engine or fallback_route_engine,
+            resumed_from_session_id=resumed_from_session_id,
             target_count=target_count,
             segments=(sample_path,),
         )
@@ -451,6 +454,7 @@ def _record_to_row(record: TraceSessionRecord) -> dict[str, object]:
         "probe_engine": record.probe_engine,
         "tcp_port": record.tcp_port,
         "route_probe_engine": record.route_probe_engine,
+        "resumed_from_session_id": record.resumed_from_session_id,
         "target_count": record.target_count,
         "segments": [str(path) for path in record.segments],
         "last_error": record.last_error,
@@ -478,6 +482,7 @@ def _record_from_row(row: dict[str, object]) -> TraceSessionRecord:
         probe_engine=str(row.get("probe_engine") or fallback_probe_engine),
         tcp_port=_optional_int_or_default(row.get("tcp_port"), fallback_tcp_port),
         route_probe_engine=str(row.get("route_probe_engine") or fallback_route_engine),
+        resumed_from_session_id=str(row.get("resumed_from_session_id") or ""),
         target_count=int(row.get("target_count") or 1),
         segments=tuple(Path(str(path)) for path in row.get("segments", []) or []),
         last_error=str(row.get("last_error") or ""),
@@ -499,6 +504,7 @@ def _replace_record(record: TraceSessionRecord, **updates) -> TraceSessionRecord
         "probe_engine": record.probe_engine,
         "tcp_port": record.tcp_port,
         "route_probe_engine": record.route_probe_engine,
+        "resumed_from_session_id": record.resumed_from_session_id,
         "target_count": record.target_count,
         "segments": record.segments,
         "last_error": record.last_error,

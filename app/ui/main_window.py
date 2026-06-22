@@ -155,6 +155,8 @@ class MainWindow(QMainWindow):
         self.current_target = ""
         self.current_targets: list[str] = []
         self.target_interval_overrides: dict[str, int] = {}
+        self.pending_resume_session_id = ""
+        self.pending_resume_targets: list[str] = []
         self.session_log_path: Path | None = None
         self.route_log_path: Path | None = None
         self.alert_action_log_path: Path | None = None
@@ -944,6 +946,7 @@ class MainWindow(QMainWindow):
         max_cycles = None if self.unlimited_check.isChecked() else self.count_spin.value()
         measurement_mode = self.measurement_mode_combo.currentData() or MEASUREMENT_MODE_FULL_ROUTE
         probe_engine = self.probe_engine_combo.currentData()
+        resumed_from_session_id = self._consume_resume_source_for_targets(targets)
 
         # 4단계: 실제 측정은 별도 QThread인 Worker에서 진행합니다.
         # 아래 connect들은 Worker 결과가 도착했을 때 어떤 화면 함수를 호출할지 연결합니다.
@@ -959,6 +962,7 @@ class MainWindow(QMainWindow):
             auto_full_route_on_alert=self._route_adjustment_start_enabled(),
             auto_restore_final_hop_on_recovery=self._route_adjustment_recovery_enabled(),
         )
+        setattr(self.worker, "resumed_from_session_id", resumed_from_session_id)
         self.worker.trace_completed.connect(self.on_trace_completed)
         if hasattr(self.worker, "route_changed"):
             self.worker.route_changed.connect(self.on_route_changed)
@@ -2189,18 +2193,18 @@ class MainWindow(QMainWindow):
             return
         for session in visible_sessions:
             end = session.end.strftime("%H:%M:%S") if session.end is not None else "running"
-            lines.append(
-                " | ".join(
-                    [
-                        session.state,
-                        session.start.strftime("%Y-%m-%d %H:%M:%S"),
-                        f"end {end}",
-                        session.target,
-                        f"samples {session.samples}",
-                        _session_probe_summary(session),
-                    ]
-                )
-            )
+            row_parts = [
+                session.state,
+                session.start.strftime("%Y-%m-%d %H:%M:%S"),
+                f"end {end}",
+                session.target,
+                f"samples {session.samples}",
+                _session_probe_summary(session),
+            ]
+            resume_summary = _session_resume_summary(session)
+            if resume_summary:
+                row_parts.append(resume_summary)
+            lines.append(" | ".join(row_parts))
         self.sessions_box.setPlainText("\n".join(lines))
 
     def _session_manager_summary(
@@ -2409,6 +2413,7 @@ class MainWindow(QMainWindow):
             "probe_engine",
             "tcp_port",
             "route_probe_engine",
+            "resumed_from_session_id",
             "target_count",
             "sample_path",
             "route_path",
@@ -2441,6 +2446,7 @@ class MainWindow(QMainWindow):
                         "probe_engine": record.probe_engine,
                         "tcp_port": record.tcp_port or "",
                         "route_probe_engine": record.route_probe_engine,
+                        "resumed_from_session_id": record.resumed_from_session_id,
                         "target_count": record.target_count,
                         "sample_path": str(record.sample_path),
                         "route_path": str(record.route_path or ""),
@@ -2576,6 +2582,8 @@ class MainWindow(QMainWindow):
             return
         self.current_target = record.target if record.target in targets else targets[0]
         self.current_targets = targets
+        self.pending_resume_session_id = record.session_id
+        self.pending_resume_targets = list(targets)
         self.target_input.setPlainText("\n".join(targets))
         self.refresh_trace_targets()
         if self.trace_target_combo.findText(self.current_target) >= 0:
@@ -2584,6 +2592,17 @@ class MainWindow(QMainWindow):
         self.status_label.setText(
             f"Resume prepared: {len(targets)} target(s), press Start to create a new session"
         )
+
+    def _consume_resume_source_for_targets(self, targets: list[str]) -> str:
+        if not self.pending_resume_session_id:
+            return ""
+        source_session_id = self.pending_resume_session_id
+        expected_targets = set(self.pending_resume_targets)
+        self.pending_resume_session_id = ""
+        self.pending_resume_targets = []
+        if expected_targets and expected_targets == set(targets):
+            return source_session_id
+        return ""
 
     def _targets_for_session_resume(self, record: TraceSessionRecord) -> list[str]:
         targets: list[str] = []
@@ -3308,7 +3327,9 @@ def _session_matches_filter(session: TraceSessionRecord, terms: list[str]) -> bo
         session.probe_engine,
         str(session.tcp_port or ""),
         session.route_probe_engine,
+        session.resumed_from_session_id,
         _session_probe_summary(session),
+        _session_resume_summary(session),
         str(session.interval_seconds or ""),
         str(session.target_count),
         str(session.sample_path),
@@ -3444,6 +3465,12 @@ def _session_probe_summary(session: TraceSessionRecord) -> str:
     if session.route_probe_engine:
         parts.append(f"route {session.route_probe_engine}")
     return " / ".join(part for part in parts if part and part != "-")
+
+
+def _session_resume_summary(session: TraceSessionRecord) -> str:
+    if not session.resumed_from_session_id:
+        return ""
+    return f"resumed from {session.resumed_from_session_id}"
 
 
 def _session_mode_label(value: str) -> str:

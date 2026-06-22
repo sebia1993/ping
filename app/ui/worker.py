@@ -292,6 +292,7 @@ class MeasurementWorker(QThread):
         self.auto_full_route_on_alert = bool(auto_full_route_on_alert)
         self.auto_restore_final_hop_on_recovery = bool(auto_restore_final_hop_on_recovery)
         self.session_log_root = Path(session_log_root) if session_log_root is not None else None
+        self.resumed_from_session_id = ""
         # 아래 값들은 UI 버튼에서 들어오는 중지/일시정지/간격 변경 요청을 안전하게 반영하기 위한 상태입니다.
         self._stop_event = threading.Event()
         self._control_lock = threading.Lock()
@@ -411,6 +412,7 @@ class MeasurementWorker(QThread):
                 probe_engine=self.probe_engine,
                 tcp_port=self.tcp_port if self.probe_engine == PROBE_ENGINE_TCP_CONNECT else None,
                 route_probe_engine=self._route_probe_label(),
+                resumed_from_session_id=self.resumed_from_session_id,
             )
             session_id = session_record.session_id
             session_log = _AsyncSessionLogWriter(

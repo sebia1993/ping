@@ -524,6 +524,7 @@ def test_session_index_persists_structured_probe_fields(tmp_path) -> None:
         probe_engine="tcp_connect",
         tcp_port=8443,
         route_probe_engine="disabled",
+        resumed_from_session_id="previous-session",
     )
 
     loaded = store.find_session(record.session_id)
@@ -532,6 +533,7 @@ def test_session_index_persists_structured_probe_fields(tmp_path) -> None:
     assert loaded.probe_engine == "tcp_connect"
     assert loaded.tcp_port == 8443
     assert loaded.route_probe_engine == "disabled"
+    assert loaded.resumed_from_session_id == "previous-session"
 
 
 def test_session_index_reads_legacy_measurement_mode_probe_fields(tmp_path) -> None:
@@ -565,6 +567,7 @@ def test_session_index_reads_legacy_measurement_mode_probe_fields(tmp_path) -> N
     assert record.probe_engine == "tcp_connect"
     assert record.tcp_port == 443
     assert record.route_probe_engine == "disabled"
+    assert record.resumed_from_session_id == ""
 
 
 def test_session_index_recovers_stale_active_sessions_as_paused(tmp_path) -> None:

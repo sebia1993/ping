@@ -261,10 +261,7 @@ def update_session_table(table: QTableWidget, sessions: object) -> None:
             item.setText(str(value))
             item.setData(Qt.UserRole, sort_value)
             item.setData(SESSION_ID_ROLE, session.session_id)
-            if session.last_error:
-                item.setToolTip(session.last_error)
-            else:
-                item.setToolTip("")
+            item.setToolTip(_session_tooltip(session))
     if rows_changed:
         table.resizeColumnsToContents()
     table.setSortingEnabled(sorting_enabled)
@@ -379,6 +376,17 @@ def _session_tcp_port_value(session: object) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _session_tooltip(session: object) -> str:
+    lines: list[str] = []
+    last_error = str(getattr(session, "last_error", "") or "")
+    if last_error:
+        lines.append(last_error)
+    resumed_from = str(getattr(session, "resumed_from_session_id", "") or "")
+    if resumed_from:
+        lines.append(f"Resumed from: {resumed_from}")
+    return "\n".join(lines)
 
 
 def _alert_severity_sort_key(severity: str) -> int:

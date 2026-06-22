@@ -83,7 +83,7 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 2. Improve long-term storage and session recovery.
    - PingPlotter keeps saving sessions and allows operators to reopen, export, and manage them later through Session Manager.
    - PingPlotter Flex Storage separates storage by target and time range so many targets and long history can still load efficiently.
-   - The current project has segmented CSV storage, session index recovery, stale active-session recovery, retention/delete controls, resume preparation, and atomic segment-index replacement.
+   - The current project has segmented CSV storage, session index recovery, stale active-session recovery, retention/delete controls, resume preparation with source-session lineage metadata, and atomic segment-index replacement.
    - Remaining parity work is a richer session database, stronger resume semantics, retention policy presets, and faster history browsing across many target-month buckets.
    - References:
      - https://www.pingplotter.com/manual/auto-saving-data/

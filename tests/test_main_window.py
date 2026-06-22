@@ -600,6 +600,59 @@ def test_main_window_prepares_saved_session_resume_controls(qt_app, tmp_path) ->
         window.close()
 
 
+def test_main_window_marks_new_session_when_starting_from_resume(qt_app, tmp_path) -> None:
+    created_workers: list[_FakeWorker] = []
+
+    def worker_factory(**kwargs) -> "_FakeWorker":
+        worker = _FakeWorker(
+            target=str(kwargs["target"]),
+            interval_seconds=int(kwargs["interval_seconds"]),
+            max_cycles=kwargs["max_cycles"],
+            targets=list(kwargs["targets"]),
+            measurement_mode=str(kwargs["measurement_mode"]),
+            probe_engine=str(kwargs["probe_engine"]),
+            tcp_port=int(kwargs["tcp_port"]),
+        )
+        created_workers.append(worker)
+        return worker
+
+    window = MainWindow(worker_factory=worker_factory)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "resume.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+            HopObservation(now + timedelta(seconds=1), 0, "203.0.113.20", "Target", True, 20.0, STATUS_OK, True),
+        ])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=5,
+        measurement_mode="final_hop_only:icmp",
+        target_count=2,
+    )
+    store.add_samples(record.session_id, 2, now + timedelta(seconds=1), segments=[sample_path])
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=1))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+
+        window.resume_selected_session()
+        window.start_measurement()
+
+        assert len(created_workers) == 1
+        assert getattr(created_workers[0], "resumed_from_session_id") == record.session_id
+        assert window.pending_resume_session_id == ""
+        assert created_workers[0].started is True
+    finally:
+        window.close()
+
+
 def test_main_window_exports_selected_saved_session(qt_app, tmp_path, monkeypatch) -> None:
     created_workers: list[_FakeExportWorker] = []
     export_path = tmp_path / "saved_session.csv"
@@ -692,6 +745,7 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         interval_seconds=5,
         measurement_mode="final_hop_only:tcp_connect:port443",
         target_count=2,
+        resumed_from_session_id="previous-session",
     )
     store.finish_session(second.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(minutes=1, seconds=2))
 
@@ -711,6 +765,8 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         assert "final_hop_only:tcp_connect:port443" in manifest
         assert "probe_engine,tcp_port,route_probe_engine" in manifest
         assert "tcp_connect,443,disabled" in manifest
+        assert "resumed_from_session_id" in manifest
+        assert "previous-session" in manifest
         assert any(name.endswith("/second.samples.csv") for name in names)
         assert not any(name.endswith("/first.samples.csv") for name in names)
         assert "Visible sessions ZIP saved" in window.status_label.text()
