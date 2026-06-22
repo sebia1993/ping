@@ -13,6 +13,8 @@ from app.storage.route_log import route_log_path_for_session
 from app.storage.session_log import iter_observations, session_log_segment_index
 
 
+# Session Manager 화면은 원본 CSV를 매번 전부 읽지 않고 이 작은 JSON 인덱스를 먼저 봅니다.
+# 상태값은 "측정 중", "중지/복구됨", "보관됨", "삭제 예정" 정도로 이해하면 됩니다.
 SESSION_STATE_ACTIVE = "Active"
 SESSION_STATE_PAUSED = "Pause"
 SESSION_STATE_ARCHIVED = "Archived"
@@ -23,6 +25,8 @@ SESSION_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
 
 @dataclass(frozen=True)
 class TraceSessionRecord:
+    """저장된 측정 세션 하나를 Session Manager에서 다루기 위한 요약 정보입니다."""
+
     session_id: str
     target: str
     sample_path: Path
@@ -39,6 +43,12 @@ class TraceSessionRecord:
 
 
 class SessionIndexStore:
+    """CSV 세션 파일 옆에 `session_index.json`을 두고 빠르게 목록/복구/삭제를 처리합니다.
+
+    실제 측정 샘플은 CSV에 있고, 이 클래스는 그 CSV들이 어디에 있는지와 현재 상태를 기록합니다.
+    인덱스가 깨지거나 없어도 `_recover_records_from_logs()`가 CSV를 다시 훑어 복구할 수 있습니다.
+    """
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +70,8 @@ class SessionIndexStore:
         measurement_mode: str,
         target_count: int,
     ) -> TraceSessionRecord:
+        """새 측정이 시작될 때 세션 인덱스에 Active 레코드를 등록합니다."""
+
         record = TraceSessionRecord(
             session_id=_session_id(sample_path),
             target=target,
@@ -88,6 +100,8 @@ class SessionIndexStore:
         *,
         segments: list[Path] | tuple[Path, ...] | None = None,
     ) -> None:
+        """백그라운드 저장 스레드가 CSV에 쓴 샘플 수와 마지막 시간을 인덱스에 반영합니다."""
+
         if count <= 0:
             return
         with self._lock:
@@ -114,6 +128,8 @@ class SessionIndexStore:
         segments: list[Path] | tuple[Path, ...] | None = None,
         last_error: str = "",
     ) -> None:
+        """정상 종료, 중지, 오류 같은 최종 상태를 세션 인덱스에 남깁니다."""
+
         with self._lock:
             records = self._read_records()
             updated = [
@@ -156,6 +172,8 @@ class SessionIndexStore:
         stale_after: timedelta,
         now: datetime | None = None,
     ) -> list[TraceSessionRecord]:
+        """프로그램이 강제 종료되어 Active로 남은 오래된 세션을 Pause 상태로 돌립니다."""
+
         now = now or datetime.now()
         cutoff = now - stale_after
         recovered: list[TraceSessionRecord] = []
@@ -179,6 +197,8 @@ class SessionIndexStore:
         return recovered
 
     def reconcile_missing_session_files(self) -> list[TraceSessionRecord]:
+        """인덱스에는 있지만 CSV가 사라진 세션을 삭제 예정 상태로 표시합니다."""
+
         updated_records: list[TraceSessionRecord] = []
         with self._lock:
             records = self._read_records()
@@ -203,6 +223,8 @@ class SessionIndexStore:
         return next((record for record in self._read_records() if record.session_id == session_id), None)
 
     def delete_session(self, session_id: str, *, delete_files: bool = True) -> TraceSessionRecord | None:
+        """세션 인덱스에서 항목을 제거하고 필요하면 관련 CSV/알림 파일도 삭제합니다."""
+
         with self._lock:
             records = self._read_records()
             record = next((item for item in records if item.session_id == session_id), None)
@@ -280,6 +302,8 @@ class SessionIndexStore:
         return merged
 
     def _write_records(self, records: list[TraceSessionRecord]) -> None:
+        # 임시 파일에 먼저 쓰고 replace로 교체합니다. 쓰는 도중 앱이 꺼져도
+        # 기존 session_index.json이 반쯤 깨지는 상황을 줄이기 위한 방식입니다.
         payload = {
             "version": 1,
             "sessions": [_record_to_row(record) for record in sorted(records, key=lambda item: item.start)],
@@ -306,6 +330,8 @@ def _session_id(sample_path: Path) -> str:
 
 
 def _recover_records_from_logs(root: Path) -> list[TraceSessionRecord]:
+    """session_index.json이 없거나 깨졌을 때 CSV 파일을 스캔해 세션 목록을 다시 만듭니다."""
+
     if not root.exists():
         return []
     recovered: list[TraceSessionRecord] = []

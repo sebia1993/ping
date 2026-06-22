@@ -104,6 +104,12 @@ ALERT_REST_TIMEOUT_SECONDS = 3.0
 
 
 class MainWindow(QMainWindow):
+    """Windows GUI의 중심 컨트롤러입니다.
+
+    이 클래스는 직접 ping을 하지 않습니다. 사용자가 누른 버튼과 입력값을 받아
+    MeasurementWorker를 만들고, Worker가 보내는 결과를 표/그래프/세션/알림 화면에 반영합니다.
+    """
+
     def __init__(self, worker_factory=None) -> None:
         super().__init__()
         _apply_default_font()
@@ -115,11 +121,16 @@ class MainWindow(QMainWindow):
         self.graph_detail_window: GraphDetailWindow | None = None
         self.worker_factory = worker_factory or MeasurementWorker
         self.session_index_store = SessionIndexStore.create()
+
+        # 현재 실행 중인 측정 대상과 저장 파일 위치입니다.
+        # 세션이 시작되면 Worker가 CSV 경로를 알려 주고, 그때 export/복구 버튼이 활성화됩니다.
         self.current_target = ""
         self.current_targets: list[str] = []
         self.session_log_path: Path | None = None
         self.route_log_path: Path | None = None
         self.alert_action_log_path: Path | None = None
+
+        # 라이브 측정 화면에 표시되는 최신 hop/target/분석 데이터입니다.
         self.snapshots: list[MetricSnapshot] = []
         self.target_snapshot: MetricSnapshot | None = None
         self.target_snapshots: list[MetricSnapshot] = []
@@ -127,18 +138,26 @@ class MainWindow(QMainWindow):
         self.target_history: list[HopObservation] = []
         self.selected_hop_index: int | None = None
         self.analysis: list[str] = []
+
+        # focus_range는 사용자가 장애가 난 시간대만 좁혀 보는 기능입니다.
+        # 원본 데이터는 유지하고, 아래 focus_* 값만 다시 계산해서 화면에 보여줍니다.
         self.focus_range: tuple[datetime, datetime] | None = None
         self.focus_observations: list[HopObservation] = []
         self.focus_snapshots: list[MetricSnapshot] = []
         self.focus_target_snapshot: MetricSnapshot | None = None
         self.focus_target_snapshots: list[MetricSnapshot] = []
         self.focus_analysis: list[str] = []
+
+        # timeline_range는 전체 세션 중 그래프에 보이는 구간을 뜻합니다.
+        # export 옵션의 "Visible timeline"도 이 값을 기준으로 동작합니다.
         self.timeline_range: tuple[datetime, datetime] | None = None
         self.timeline_observations: list[HopObservation] = []
         self.timeline_target_history: list[HopObservation] = []
         self.timeline_snapshots: list[MetricSnapshot] = []
         self.timeline_target_snapshot: MetricSnapshot | None = None
         self.timeline_status = "Timeline source: live buffer"
+
+        # 알림과 경로 변경은 화면 표시뿐 아니라 export/report에 같이 쓰입니다.
         self.route_changes: list[RouteChange] = []
         self.alert_events: list[AlertEvent] = []
         self.alert_event_actions: dict[str, list[str]] = {}
@@ -154,6 +173,8 @@ class MainWindow(QMainWindow):
         self._sync_sessions_box()
 
     def _build_ui(self) -> None:
+        """상단 입력, 왼쪽 그래프/표, 오른쪽 세션/알림 영역을 조립합니다."""
+
         central = QWidget(self)
         central.setStyleSheet(APP_STYLE)
         root = QVBoxLayout(central)
@@ -733,6 +754,9 @@ class MainWindow(QMainWindow):
         return targets
 
     def start_measurement(self) -> None:
+        """사용자 입력을 검증한 뒤 MeasurementWorker를 만들고 측정을 시작합니다."""
+
+        # 1단계: GUI 입력값을 실제 IPv4 목록으로 정리합니다.
         targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
         if invalid:
             QMessageBox.warning(self, "입력 오류", f"{IPV4_ONLY_MESSAGE}\n\n제외된 입력: {', '.join(invalid[:8])}")
@@ -747,12 +771,14 @@ class MainWindow(QMainWindow):
         targets = limited_targets
         self._apply_trace_targets(targets)
 
+        # 2단계: tracert 기준 대상이 측정 대상 목록 안에 있는지 확인합니다.
         target = self.trace_target_combo.currentText().strip() or targets[0]
         valid, message = validate_target(target)
         if not valid or target not in targets:
             QMessageBox.warning(self, "입력 오류", message or "Tracert 대상은 등록된 IPv4 주소 중 하나여야 합니다.")
             return
 
+        # 3단계: 이전 측정의 화면 상태를 비우고 새 세션 상태로 바꿉니다.
         self.current_target = target
         self.current_targets = targets
         self.session_log_path = None
@@ -788,6 +814,9 @@ class MainWindow(QMainWindow):
         max_cycles = None if self.unlimited_check.isChecked() else self.count_spin.value()
         measurement_mode = self.measurement_mode_combo.currentData() or MEASUREMENT_MODE_FULL_ROUTE
         probe_engine = self.probe_engine_combo.currentData()
+
+        # 4단계: 실제 측정은 별도 QThread인 Worker에서 진행합니다.
+        # 아래 connect들은 Worker 결과가 도착했을 때 어떤 화면 함수를 호출할지 연결합니다.
         self.worker = self.worker_factory(
             target=target,
             interval_seconds=int(self.interval_combo.currentText()),
@@ -1009,6 +1038,8 @@ class MainWindow(QMainWindow):
         observations: object,
         target_history: object,
     ) -> None:
+        """Worker가 보낸 최신 측정 결과를 화면 상태로 저장하고 다시 그립니다."""
+
         self.snapshots = list(snapshots)
         self.target_snapshots = list(target_snapshots)
         self.target_snapshot = self._target_snapshot_for_address(self.current_target) or target_snapshot
@@ -1023,6 +1054,8 @@ class MainWindow(QMainWindow):
             self._render_current_view()
 
     def _render_current_view(self) -> None:
+        """현재 모드(전체/포커스)에 맞춰 표, 그래프, 분석 문구를 한 번에 갱신합니다."""
+
         snapshots = self._display_snapshots()
         target_snapshots = self._visible_target_snapshots()
         target_snapshot = self._display_target_snapshot()
@@ -1084,6 +1117,8 @@ class MainWindow(QMainWindow):
         self.target_summary_status_label.setText(_all_targets_summary_line(snapshots, total_count=total_count))
 
     def on_session_log_ready(self, path: str) -> None:
+        """Worker가 만든 세션 CSV 경로를 받아 Session Manager와 export 기능을 연결합니다."""
+
         self.session_log_path = Path(path)
         self.route_log_path = route_log_path_for_session(self.session_log_path)
         self.alert_action_log_path = alert_action_log_path_for_session(self.session_log_path)
@@ -1639,6 +1674,8 @@ class MainWindow(QMainWindow):
         return action in actions
 
     def _sync_alerts_box(self) -> None:
+        """알림 이벤트 목록을 표와 텍스트 요약 영역에 반영합니다."""
+
         if not hasattr(self, "alerts_box"):
             return
         if hasattr(self, "alert_table"):
@@ -1673,6 +1710,8 @@ class MainWindow(QMainWindow):
         self.route_changes_box.setPlainText("\n\n".join(blocks))
 
     def _sync_sessions_box(self) -> None:
+        """저장된 세션 목록을 읽고, 끊긴 세션/누락 파일 상태를 정리해서 보여줍니다."""
+
         if not hasattr(self, "sessions_box"):
             return
         if not bool(self.worker and self.worker.isRunning()):

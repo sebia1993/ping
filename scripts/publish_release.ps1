@@ -12,6 +12,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 이 스크립트는 로컬에서 검증된 Windows 실행 파일을 만든 뒤 ZIP으로 묶고,
+# 선택적으로 GitHub Release까지 올리는 배포 자동화입니다.
+# 평소 백업/동기화만 할 때는 Git commit/push만 쓰고, 실제 첨부 ZIP Release가 필요할 때 실행합니다.
+
 function Require-Command {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
@@ -33,6 +37,7 @@ function Resolve-CommandPath {
     if ($Found) {
         return $Found.Source
     }
+    # GitHub CLI처럼 설치되어 있어도 PATH에 없는 도구는 흔한 설치 위치를 추가로 확인합니다.
     foreach ($Path in $FallbackPaths) {
         if (Test-Path -LiteralPath $Path) {
             return $Path
@@ -61,6 +66,7 @@ function Get-SafeFileToken {
 $Root = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 Set-Location -LiteralPath $Root.Path
 
+# 배포에 필요한 기본 도구가 있는지 먼저 확인합니다.
 Require-Command "git" "Install Git for Windows and retry."
 Require-Command "python" "Install Python and retry."
 $GhCommand = Resolve-CommandPath "gh" @(
@@ -69,11 +75,14 @@ $GhCommand = Resolve-CommandPath "gh" @(
     "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe"
 )
 if (-not $SkipUpload) {
+    # GitHub Release 업로드는 GitHub CLI 로그인 상태가 필요합니다.
+    # 로그인하지 않은 PC에서는 -SkipUpload로 로컬 ZIP 생성까지만 수행할 수 있습니다.
     if (-not $GhCommand) {
         throw "gh command was not found. Install GitHub CLI from https://cli.github.com/ and run: gh auth login"
     }
 }
 
+# 브랜치와 origin remote가 없으면 GitHub에 어떤 위치로 올릴지 알 수 없으므로 중단합니다.
 $Branch = (& git rev-parse --abbrev-ref HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $Branch -or $Branch -eq "HEAD") {
     throw "Release publishing requires a normal checked-out branch."
@@ -86,6 +95,7 @@ if ($LASTEXITCODE -ne 0 -or -not $Remote) {
 
 $Status = (& git status --porcelain)
 if ($Status -and -not $AllowDirty) {
+    # 소스 변경사항이 섞인 상태에서 Release를 만들면 어떤 코드가 배포됐는지 추적하기 어렵습니다.
     throw "Working tree has uncommitted changes. Commit local work before publishing, or pass -AllowDirty for packaging-only checks."
 }
 
@@ -110,6 +120,7 @@ if (-not $SkipUpload) {
 }
 
 if (-not $SkipBuild) {
+    # PyInstaller 빌드 스크립트가 dist\<Name>\<Name>.exe를 생성합니다.
     Invoke-Checked "powershell" @(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -122,9 +133,11 @@ if (-not $SkipBuild) {
 }
 
 if (-not $SkipVerify) {
+    # 실행 파일이 실제로 뜨는지, 필수 파일이 빠지지 않았는지 검증합니다.
     Invoke-Checked "python" @("scripts\verify_release.py", "--exe")
 }
 
+# 검증된 dist 폴더 전체를 ZIP으로 묶습니다. 사용자는 이 ZIP을 받아 압축을 풀고 EXE를 실행하면 됩니다.
 $DistDir = Resolve-Path -LiteralPath (Join-Path $Root.Path "dist\$Name")
 $ExePath = Resolve-Path -LiteralPath (Join-Path $DistDir.Path "$Name.exe")
 $ReleaseDir = Join-Path $Root.Path "release"
@@ -147,6 +160,7 @@ if ($SkipUpload) {
     exit 0
 }
 
+# 여기부터는 GitHub Release에 ZIP 파일을 첨부하는 단계입니다.
 & git rev-parse -q --verify "refs/tags/$Tag" *> $null
 if ($LASTEXITCODE -eq 0) {
     throw "Git tag already exists: $Tag"

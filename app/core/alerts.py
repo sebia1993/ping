@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from app.core.models import HopObservation, MetricSnapshot
 
 
+# 알림 key는 "같은 알림이 계속 살아 있는지" 판단하는 식별자입니다.
+# 화면 표시, 복구 이벤트, 액션 로그에서 같은 key를 기준으로 상태를 맞춥니다.
 LOSS_ALERT_KEY = "target_loss_20pct_3m"
 LATENCY_ALERT_KEY = "target_latency_100ms"
 JITTER_ALERT_KEY = "target_jitter_30ms"
@@ -17,6 +19,8 @@ ROUTE_IP_ALERT_KEY_PREFIX = "route_ip_present:"
 
 @dataclass(frozen=True)
 class AlertRuleConfig:
+    """알림 설정 화면에서 사용자가 조정하는 기준값 묶음입니다."""
+
     loss_threshold_percent: float = 20.0
     loss_window_seconds: int = 180
     latency_threshold_ms: float = 100.0
@@ -31,6 +35,8 @@ class AlertRuleConfig:
 
 @dataclass(frozen=True)
 class AlertEvent:
+    """알림 하나를 화면/로그/export에 공통으로 넘기기 위한 표준 형식입니다."""
+
     key: str
     timestamp: datetime
     start: datetime
@@ -50,6 +56,12 @@ def evaluate_target_alerts(
     latency_threshold_ms: float = 100.0,
     config: AlertRuleConfig | None = None,
 ) -> tuple[set[str], list[AlertEvent]]:
+    """최종 대상의 최근 샘플을 보고 현재 활성 알림과 새 이벤트를 계산합니다.
+
+    반환값의 첫 번째 set은 "지금도 살아 있는 알림 key"이고,
+    두 번째 list는 UI와 액션 로그에 남길 구체적인 이벤트입니다.
+    """
+
     if config is not None:
         loss_threshold_percent = config.loss_threshold_percent
         loss_window_seconds = config.loss_window_seconds
@@ -182,6 +194,8 @@ def _loss_alert(
     threshold_percent: float,
     window_seconds: int,
 ) -> AlertEvent | None:
+    """정해진 시간 창 안에서 packet loss 비율이 기준을 넘는지 확인합니다."""
+
     end = points[-1].timestamp
     start = end - timedelta(seconds=window_seconds)
     window = [point for point in points if start <= point.timestamp <= end]
@@ -203,6 +217,8 @@ def _loss_alert(
 
 
 def _latency_alert(points: list[HopObservation], threshold_ms: float) -> AlertEvent | None:
+    """가장 최근 샘플의 지연 시간이 기준을 넘으면 즉시 경고합니다."""
+
     latest = points[-1]
     if not latest.success or latest.latency_ms is None or latest.latency_ms < threshold_ms:
         return None
@@ -222,6 +238,8 @@ def _jitter_alert(
     threshold_ms: float,
     window_count: int,
 ) -> AlertEvent | None:
+    """최근 N개 샘플의 지연 시간 흔들림이 큰지 확인합니다."""
+
     window_count = max(int(window_count), 2)
     if len(points) < window_count:
         return None
@@ -249,6 +267,8 @@ def _sample_count_alert(
     window_count: int,
     failure_count: int,
 ) -> AlertEvent | None:
+    """최근 N개 중 실패/고지연 샘플이 몇 개 이상인지 세는 방식의 알림입니다."""
+
     window_count = max(int(window_count), 1)
     failure_count = max(int(failure_count), 1)
     if len(points) < window_count:
@@ -280,6 +300,8 @@ def _timer_alert(
     latency_threshold_ms: float,
     window_seconds: int,
 ) -> AlertEvent | None:
+    """나쁜 상태가 끊기지 않고 일정 시간 이상 이어졌는지 확인합니다."""
+
     window_seconds = max(int(window_seconds), 1)
     latest = points[-1]
     if not _is_bad_target_point(latest, latency_threshold_ms):
@@ -313,6 +335,8 @@ def _mos_alert(
     threshold: float,
     window_seconds: int,
 ) -> AlertEvent | None:
+    """VoIP 품질을 거칠게 추정하는 MOS 값이 기준 이하인지 확인합니다."""
+
     window_seconds = max(int(window_seconds), 1)
     end = points[-1].timestamp
     start = end - timedelta(seconds=window_seconds)
@@ -334,6 +358,8 @@ def _mos_alert(
 
 
 def estimate_mos(points: list[HopObservation]) -> float:
+    """loss, latency, jitter를 이용해 1.0~5.0 범위의 단순 MOS 추정값을 계산합니다."""
+
     if not points:
         return 1.0
     total = len(points)

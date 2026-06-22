@@ -8,6 +8,10 @@ LOSS_BAD_PERCENT = 20.0
 LATENCY_JUMP_MS = 50.0
 
 
+# 이 파일은 "수집된 수치"를 사람이 이해할 수 있는 진단 문장으로 바꾸는 곳입니다.
+# 실제 ping/tracert 실행은 하지 않고, 이미 계산된 MetricSnapshot만 해석합니다.
+
+
 def _has_samples(snapshot: MetricSnapshot, minimum: int = 3) -> bool:
     return snapshot.sent >= minimum
 
@@ -21,6 +25,13 @@ def _healthy(snapshot: MetricSnapshot) -> bool:
 
 
 def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapshot | None = None) -> list[str]:
+    """PingPlotter식 해석 흐름으로 현재 경로의 의심 구간을 설명합니다.
+
+    기본 원칙은 최종 목적지에 실제 문제가 보이는지 먼저 확인하고,
+    같은 증상이 어느 hop부터 이어지는지 찾아 원인을 좁히는 것입니다.
+    중간 hop만 나쁜 경우는 ICMP rate-limit 가능성을 별도로 안내합니다.
+    """
+
     if not snapshots and target_snapshot is None:
         return [
             "아직 분석할 측정 데이터가 없습니다.",
@@ -34,6 +45,7 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
     analysis: list[str] = []
     final = target_snapshot or (snapshots[-1] if snapshots else None)
 
+    # 샘플 수가 너무 적으면 손실률/평균값이 쉽게 흔들리므로 먼저 경고합니다.
     if final and final.sent < 3:
         analysis.append("측정 표본이 아직 적습니다. 최소 3회 이상 누적 후 장애 가능성 판단의 신뢰도가 올라갑니다.")
         analysis.append(
@@ -46,6 +58,7 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
 
     sampled_hops = [snapshot for snapshot in snapshots if _has_samples(snapshot)]
 
+    # 최종 대상에 큰 손실이 있을 때는 "첫 hop부터 나쁜지", "최종 대상만 나쁜지"를 먼저 나눕니다.
     if final and _lossy(final, LOSS_BAD_PERCENT):
         first = sampled_hops[0] if sampled_hops else None
         if first and _lossy(first):
@@ -88,6 +101,7 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                 )
 
     if final and _healthy(final):
+        # 최종 대상은 정상인데 중간 hop만 나쁘면 실제 장애보다 ICMP 응답 제한일 가능성이 큽니다.
         isolated = [
             snapshot
             for snapshot in sampled_hops[:-1]
@@ -154,6 +168,8 @@ def _detect_segment_issue(
     sampled_hops: list[MetricSnapshot],
     final: MetricSnapshot | None,
 ) -> list[str]:
+    """여러 hop에 이어지는 손실이나 큰 지연 증가가 시작되는 지점을 찾습니다."""
+
     if len(sampled_hops) < 3:
         return []
 

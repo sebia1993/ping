@@ -37,6 +37,8 @@ from app.storage.session_log import SessionLogWriter
 from app.utils.validators import parse_ipv4_targets, validate_target
 
 
+# 여러 IP를 동시에 측정할 때 프로그램이 과도하게 많은 ping/tracert를 만들지 않도록
+# 제한값을 한곳에 모아 둡니다. 숫자를 바꾸면 성능과 안정성에 직접 영향이 있습니다.
 MAX_IPV4_TARGETS = 50
 RECENT_OBSERVATION_LIMIT = 300
 MAX_TARGET_PING_WORKERS = 20
@@ -58,6 +60,8 @@ PROBE_ENGINES = {PROBE_ENGINE_ICMP, PROBE_ENGINE_TCP_CONNECT}
 
 @dataclass
 class TargetProbeState:
+    """대상 IP 하나의 다음 측정 시각과 실패 누적 상태를 보관합니다."""
+
     target: str
     next_due: float = 0.0
     consecutive_failures: int = 0
@@ -79,6 +83,8 @@ class TargetProbeState:
         self.next_due = base_time + self.current_interval_seconds
 
     def _next_interval(self, base_interval_seconds: float) -> float:
+        # 연속 실패가 많은 대상은 잠시 느리게 측정합니다. 응답이 없는 IP가 많아도
+        # 전체 측정 루프가 막히지 않게 하는 안정성 장치입니다.
         if base_interval_seconds <= 0:
             return 0.0
         if self.consecutive_failures >= SLOW_BACKOFF_AFTER_FAILURES:
@@ -90,6 +96,8 @@ class TargetProbeState:
 
 @dataclass(frozen=True)
 class WorkerDiagnostics:
+    """측정 스레드 내부 상태를 UI에 보여주기 위한 요약 정보입니다."""
+
     active_ping_count: int
     pending_ping_count: int
     timeout_target_count: int
@@ -105,6 +113,8 @@ class WorkerDiagnostics:
 
 
 class _ThreadLocalPingProbePool:
+    """각 ping 작업 스레드가 자기 전용 probe를 재사용하게 해 주는 작은 풀입니다."""
+
     def __init__(self, factory: Callable[[], object]) -> None:
         self._factory = factory
         self._local = threading.local()
@@ -131,6 +141,8 @@ class _ThreadLocalPingProbePool:
 
 
 class _AsyncSessionLogWriter:
+    """측정 결과를 별도 스레드에서 저장해 UI와 ping 루프가 디스크 I/O에 묶이지 않게 합니다."""
+
     def __init__(
         self,
         writer: SessionLogWriter,
@@ -214,6 +226,12 @@ class _AsyncSessionLogWriter:
 
 
 class MeasurementWorker(QThread):
+    """대상 목록을 실제로 측정하고, 그래프/표/세션 저장소로 보낼 데이터를 만드는 작업자입니다.
+
+    MainWindow는 화면과 버튼을 담당하고, 이 클래스는 네트워크 측정의 실제 흐름을 담당합니다.
+    흐름은 대략 `입력 IP 정리 -> tracert 갱신 -> 각 대상 ping -> 통계 계산 -> CSV 저장 -> UI 신호 전송`입니다.
+    """
+
     trace_completed = Signal(object)
     route_changed = Signal(object)
     measurement_updated = Signal(object, object, object, object, object, object)
@@ -249,6 +267,7 @@ class MeasurementWorker(QThread):
         )
         self.probe_engine = probe_engine if probe_engine in PROBE_ENGINES else PROBE_ENGINE_ICMP
         self.tcp_port = max(min(int(tcp_port), 65535), 1)
+        # 아래 값들은 UI 버튼에서 들어오는 중지/일시정지/간격 변경 요청을 안전하게 반영하기 위한 상태입니다.
         self._stop_event = threading.Event()
         self._control_lock = threading.Lock()
         self._paused_targets: set[str] = set()
@@ -290,6 +309,10 @@ class MeasurementWorker(QThread):
             return set(self._paused_targets)
 
     def run(self) -> None:
+        """Qt가 별도 스레드에서 호출하는 메인 측정 루프입니다."""
+
+        # 사용자가 입력한 값은 이 지점에서 다시 IPv4 목록으로 검증합니다.
+        # GUI 검증을 통과했더라도 작업자 스레드에서 한 번 더 막아야 저장/측정 로직이 안전합니다.
         targets, invalid = parse_ipv4_targets("\n".join(self.targets or [self.target]))
         if invalid:
             self.error_message.emit(f"IPv4 주소만 입력 가능합니다: {', '.join(invalid[:5])}")
@@ -302,6 +325,8 @@ class MeasurementWorker(QThread):
         self.targets = targets
         self._route_history = RouteHistory()
 
+        # tracert 기준 대상은 전체 대상 목록 중 하나여야 합니다. 그래프의 hop 경로를
+        # 어느 대상 기준으로 그릴지 정하는 값이라서 여기서 엄격하게 확인합니다.
         valid, message = validate_target(self.target)
         if not valid or self.target not in self.targets:
             self.error_message.emit(message or "Tracert 대상은 등록된 IPv4 주소 중 하나여야 합니다.")
@@ -316,6 +341,8 @@ class MeasurementWorker(QThread):
         }
         recent_observations: deque[HopObservation] = deque(maxlen=RECENT_OBSERVATION_LIMIT)
 
+        # tracert, 최종 대상 ping, hop ping을 분리된 실행기로 돌립니다.
+        # 이렇게 나누면 느린 tracert나 중간 hop 응답 지연이 전체 대상 ping을 막지 않습니다.
         trace_executor = ThreadPoolExecutor(max_workers=1)
         target_executor = ThreadPoolExecutor(max_workers=min(max(len(self.targets), 1), MAX_TARGET_PING_WORKERS))
         hop_executor = ThreadPoolExecutor(max_workers=MAX_HOP_PING_WORKERS)
@@ -339,6 +366,8 @@ class MeasurementWorker(QThread):
         completed_normally = False
 
         try:
+            # 세션 CSV와 세션 인덱스는 측정 시작 직후 만들어 둡니다.
+            # 프로그램이 중간에 꺼져도 Session Manager가 남은 CSV를 찾아 복구할 수 있습니다.
             self._ping_probe_pool = _ThreadLocalPingProbePool(self._new_ping_probe)
             session_writer = SessionLogWriter.create(self.target)
             route_log = RouteLogWriter.create_for_session(session_writer.path)
@@ -369,6 +398,8 @@ class MeasurementWorker(QThread):
                 self._tracert_status = "final hop only"
                 self.status_message.emit("측정 중... Final Hop Only")
 
+            # 아래 while 문이 실제 장시간 측정 루프입니다. 한 바퀴마다 새 ping을 예약하고,
+            # 완료된 결과를 수집한 뒤 UI와 저장소에 반영합니다.
             while not self._stop_event.is_set():
                 round_started_at = time.monotonic()
                 is_final_round = self.max_cycles is not None and full_cycles + 1 >= self.max_cycles
@@ -712,6 +743,8 @@ class MeasurementWorker(QThread):
         target_trackers: dict[str, TargetMetricTracker],
         recent_observations: deque[HopObservation],
     ) -> None:
+        """현재까지 쌓인 측정값을 UI가 바로 그릴 수 있는 형태로 묶어서 보냅니다."""
+
         snapshots = metrics.snapshots() if metrics is not None else []
         paused_targets = self.paused_targets()
         target_snapshots = [
@@ -782,6 +815,8 @@ class MeasurementWorker(QThread):
         session_log: _AsyncSessionLogWriter,
         loop_delays: deque[float],
     ) -> None:
+        """운영자가 장시간 측정 안정성을 확인할 수 있게 내부 부하 상태를 요약합니다."""
+
         timeout_target_count = sum(1 for state in target_states.values() if state.last_status == STATUS_TIMEOUT)
         backoff_target_count = sum(
             1
@@ -853,6 +888,8 @@ class MeasurementWorker(QThread):
         *,
         first_check: bool = False,
     ) -> tuple[MetricsSession | None, list[HopInfo]]:
+        """백그라운드 tracert 결과가 준비되었으면 hop 목록과 경로 변경 기록을 갱신합니다."""
+
         if trace_future is None:
             return metrics, hops
         if metrics is not None and not trace_future.done():
@@ -937,6 +974,8 @@ class MeasurementWorker(QThread):
         return self._new_ping_probe().ping(target)
 
     def _start_trace_refresh(self, executor: ThreadPoolExecutor) -> Future[list[HopInfo]]:
+        """tracert는 느릴 수 있으므로 별도 Future로 시작하고 ping 루프는 계속 돌립니다."""
+
         self._tracert_status = "탐색 중"
         return executor.submit(self._trace_hops)
 
@@ -1019,6 +1058,8 @@ class MeasurementWorker(QThread):
         return results
 
     def _new_ping_probe(self):
+        """선택된 probe engine에 맞춰 새 ping probe를 만듭니다."""
+
         if self.ping_probe_factory:
             return self.ping_probe_factory(self.timeout_ms)
         if self.probe_engine == PROBE_ENGINE_TCP_CONNECT:
@@ -1041,6 +1082,8 @@ class MeasurementWorker(QThread):
         return "tracert/ICMP"
 
     def _normalize_targets(self, targets: list[str] | None) -> list[str]:
+        """입력 대상 목록에서 빈 값과 중복을 제거하되 입력 순서는 유지합니다."""
+
         source = targets if targets is not None else [self.target]
         normalized, _invalid = parse_ipv4_targets("\n".join(source))
         return normalized[:MAX_IPV4_TARGETS]
