@@ -417,6 +417,12 @@ class MainWindow(QMainWindow):
         self.delete_session_button.clicked.connect(self.delete_selected_session)
         self.refresh_sessions_button = QPushButton("Refresh")
         self.refresh_sessions_button.clicked.connect(self.refresh_saved_sessions)
+        self.session_retention_days_spin = QSpinBox()
+        self.session_retention_days_spin.setRange(1, 3650)
+        self.session_retention_days_spin.setValue(90)
+        self.session_retention_days_spin.setSuffix("d")
+        self.prune_sessions_button = QPushButton("Prune old")
+        self.prune_sessions_button.clicked.connect(self.prune_old_sessions)
         sessions_header.addWidget(sessions_title)
         sessions_header.addStretch(1)
         sessions_header.addWidget(self.session_combo)
@@ -425,6 +431,9 @@ class MainWindow(QMainWindow):
         sessions_header.addWidget(self.export_session_button)
         sessions_header.addWidget(self.delete_session_button)
         sessions_header.addWidget(self.refresh_sessions_button)
+        sessions_header.addWidget(QLabel("Keep"))
+        sessions_header.addWidget(self.session_retention_days_spin)
+        sessions_header.addWidget(self.prune_sessions_button)
         self.sessions_box = QTextEdit()
         self.sessions_box.setReadOnly(True)
         self.sessions_box.setMaximumHeight(118)
@@ -1258,6 +1267,8 @@ class MainWindow(QMainWindow):
         self.resume_session_button.setEnabled(can_switch_session)
         self.export_session_button.setEnabled(has_sessions)
         self.delete_session_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
+        if hasattr(self, "prune_sessions_button"):
+            self.prune_sessions_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
 
     def open_selected_session(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -1338,6 +1349,33 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Deleted session: {deleted.target}")
         self._sync_sessions_box()
         self._set_export_enabled(self._has_export_data())
+
+    def prune_old_sessions(self) -> None:
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "Session", "Stop the current measurement before pruning saved sessions.")
+            return
+        if self.export_worker and self.export_worker.isRunning():
+            QMessageBox.information(self, "Session", "Wait for the current export to finish before pruning sessions.")
+            return
+        days = int(self.session_retention_days_spin.value()) if hasattr(self, "session_retention_days_spin") else 90
+        reply = QMessageBox.question(
+            self,
+            "Prune Old Sessions",
+            (
+                f"Delete saved sessions older than {days} day(s)?\n\n"
+                "Active sessions are never pruned."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        pruned = self.session_index_store.prune_sessions_older_than(older_than=timedelta(days=days))
+        for record in pruned:
+            self._clear_deleted_session_paths(record)
+        self._sync_sessions_box()
+        self._set_export_enabled(self._has_export_data())
+        self.status_label.setText(f"Pruned {len(pruned)} saved session(s) older than {days} day(s)")
 
     def _selected_session_record(self) -> TraceSessionRecord | None:
         session_id = self.session_combo.currentData() if hasattr(self, "session_combo") else None
@@ -1842,6 +1880,8 @@ class MainWindow(QMainWindow):
             self.open_session_button.setEnabled(has_sessions and not running)
             self.resume_session_button.setEnabled(has_sessions and not running)
             self.delete_session_button.setEnabled(has_sessions and not running)
+            if hasattr(self, "prune_sessions_button"):
+                self.prune_sessions_button.setEnabled(has_sessions and not running)
         self.interval_combo.setEnabled(True)
         self.count_spin.setEnabled(not running and not self.unlimited_check.isChecked())
         self.unlimited_check.setEnabled(not running)
@@ -1892,6 +1932,12 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "delete_session_button"):
             self.delete_session_button.setEnabled(
+                not exporting
+                and self.session_combo.count() > 0
+                and not bool(self.worker and self.worker.isRunning())
+            )
+        if hasattr(self, "prune_sessions_button"):
+            self.prune_sessions_button.setEnabled(
                 not exporting
                 and self.session_combo.count() > 0
                 and not bool(self.worker and self.worker.isRunning())

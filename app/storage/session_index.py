@@ -213,6 +213,30 @@ class SessionIndexStore:
             delete_session_files(record, root=self.path.parent)
         return record
 
+    def prune_sessions_older_than(
+        self,
+        *,
+        older_than: timedelta,
+        now: datetime | None = None,
+        delete_files: bool = True,
+    ) -> list[TraceSessionRecord]:
+        cutoff = (now or datetime.now()) - older_than
+        pruned: list[TraceSessionRecord] = []
+        with self._lock:
+            records = self._read_records()
+            kept: list[TraceSessionRecord] = []
+            for record in records:
+                if record.state != SESSION_STATE_ACTIVE and _session_last_seen(record) < cutoff:
+                    pruned.append(record)
+                    continue
+                kept.append(record)
+            if pruned:
+                self._write_records(kept)
+        if delete_files:
+            for record in pruned:
+                delete_session_files(record, root=self.path.parent)
+        return pruned
+
     def _read_records(self) -> list[TraceSessionRecord]:
         if not self.path.exists():
             return self._recover_records_from_logs()

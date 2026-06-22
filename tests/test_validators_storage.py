@@ -659,6 +659,57 @@ def test_session_index_delete_removes_record_and_managed_files(tmp_path) -> None
     assert alert_path is not None and not alert_path.exists()
 
 
+def test_session_index_prunes_old_inactive_sessions_and_keeps_active(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 31, 12, 0, 0)
+    old_path = tmp_path / "198.51.100.10" / "2026-01" / "old.samples.csv"
+    active_path = tmp_path / "198.51.100.20" / "2026-01" / "active.samples.csv"
+    recent_path = tmp_path / "198.51.100.30" / "2026-01" / "recent.samples.csv"
+    for path in (old_path, active_path, recent_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("managed\n", encoding="utf-8")
+
+    old = store.register_session(
+        target="198.51.100.10",
+        sample_path=old_path,
+        route_path=old_path.with_name("old.routes.csv"),
+        started_at=now - timedelta(days=40),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(old.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now - timedelta(days=39))
+    active = store.register_session(
+        target="198.51.100.20",
+        sample_path=active_path,
+        route_path=active_path.with_name("active.routes.csv"),
+        started_at=now - timedelta(days=40),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    recent = store.register_session(
+        target="198.51.100.30",
+        sample_path=recent_path,
+        route_path=recent_path.with_name("recent.routes.csv"),
+        started_at=now - timedelta(days=2),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(recent.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now - timedelta(days=1))
+
+    pruned = store.prune_sessions_older_than(older_than=timedelta(days=30), now=now)
+
+    assert [record.session_id for record in pruned] == [old.session_id]
+    assert store.find_session(old.session_id) is None
+    assert store.find_session(active.session_id) is not None
+    assert store.find_session(recent.session_id) is not None
+    assert not old_path.exists()
+    assert active_path.exists()
+    assert recent_path.exists()
+
+
 def test_export_worker_writes_csv_from_session_log(tmp_path) -> None:
     session_path = tmp_path / "session.csv"
     writer = SessionLogWriter(session_path)

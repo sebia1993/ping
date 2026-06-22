@@ -63,6 +63,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_image_action_check.isChecked() is False
         assert window.jitter_threshold_spin.value() == 30
         assert window.timer_window_spin.value() == 5
+        assert window.session_retention_days_spin.value() == 90
         assert window.statistics_start_edit.isEnabled() is False
         assert window.statistics_end_edit.isEnabled() is False
         assert window.export_session_button.isEnabled() == (window.session_combo.count() > 0)
@@ -486,6 +487,59 @@ def test_main_window_deletes_selected_saved_session(qt_app, tmp_path, monkeypatc
         assert not route_path.exists()
         assert not alert_path.exists()
         assert window.delete_session_button.isEnabled() is False
+    finally:
+        window.close()
+
+
+def test_main_window_prunes_old_saved_sessions(qt_app, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    window = MainWindow()
+    now = datetime.now()
+    store = SessionIndexStore.create(tmp_path)
+    old_path = tmp_path / "198.51.100.10" / "2026-01" / "old.samples.csv"
+    recent_path = tmp_path / "198.51.100.20" / "2026-01" / "recent.samples.csv"
+    for path in (old_path, recent_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("header\n", encoding="utf-8")
+    old = store.register_session(
+        target="198.51.100.10",
+        sample_path=old_path,
+        route_path=old_path.with_name("old.routes.csv"),
+        started_at=now - timedelta(days=40),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(old.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now - timedelta(days=39))
+    recent = store.register_session(
+        target="198.51.100.20",
+        sample_path=recent_path,
+        route_path=recent_path.with_name("recent.routes.csv"),
+        started_at=now - timedelta(days=2),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(recent.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now - timedelta(days=1))
+
+    try:
+        window.session_index_store = store
+        window.session_retention_days_spin.setValue(30)
+        window._sync_sessions_box()
+
+        window.prune_old_sessions()
+
+        assert store.find_session(old.session_id) is None
+        assert store.find_session(recent.session_id) is not None
+        assert not old_path.exists()
+        assert recent_path.exists()
+        assert window.session_combo.count() == 1
+        assert "198.51.100.20" in window.sessions_box.toPlainText()
+        assert "Pruned 1 saved session(s) older than 30 day(s)" in window.status_label.text()
     finally:
         window.close()
 
