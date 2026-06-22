@@ -43,7 +43,14 @@ from app.ui.table_panels import (
     update_hop_table,
     update_target_table,
 )
-from app.ui.worker import MAX_IPV4_TARGETS, MEASUREMENT_MODE_FULL_ROUTE, PROBE_ENGINE_TCP_CONNECT, MeasurementWorker
+from app.ui.worker import (
+    MAX_IPV4_TARGETS,
+    MEASUREMENT_MODE_FINAL_HOP_ONLY,
+    MEASUREMENT_MODE_FULL_ROUTE,
+    PROBE_ENGINE_ICMP,
+    PROBE_ENGINE_TCP_CONNECT,
+    MeasurementWorker,
+)
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.route_log import route_changes_in_range, route_log_path_for_session
@@ -365,6 +372,8 @@ class MainWindow(QMainWindow):
         self.session_combo.setMinimumWidth(170)
         self.open_session_button = QPushButton("Open")
         self.open_session_button.clicked.connect(self.open_selected_session)
+        self.resume_session_button = QPushButton("Resume")
+        self.resume_session_button.clicked.connect(self.resume_selected_session)
         self.export_session_button = QPushButton("Export")
         self.export_session_button.clicked.connect(self.export_selected_session)
         self.delete_session_button = QPushButton("Delete")
@@ -375,6 +384,7 @@ class MainWindow(QMainWindow):
         sessions_header.addStretch(1)
         sessions_header.addWidget(self.session_combo)
         sessions_header.addWidget(self.open_session_button)
+        sessions_header.addWidget(self.resume_session_button)
         sessions_header.addWidget(self.export_session_button)
         sessions_header.addWidget(self.delete_session_button)
         sessions_header.addWidget(self.refresh_sessions_button)
@@ -1071,7 +1081,9 @@ class MainWindow(QMainWindow):
         self.session_combo.blockSignals(False)
         has_sessions = bool(sessions)
         self.session_combo.setEnabled(has_sessions)
-        self.open_session_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
+        can_switch_session = has_sessions and not bool(self.worker and self.worker.isRunning())
+        self.open_session_button.setEnabled(can_switch_session)
+        self.resume_session_button.setEnabled(can_switch_session)
         self.export_session_button.setEnabled(has_sessions)
         self.delete_session_button.setEnabled(has_sessions and not bool(self.worker and self.worker.isRunning()))
 
@@ -1083,6 +1095,15 @@ class MainWindow(QMainWindow):
         if record is None:
             return
         self._open_session_record(record)
+
+    def resume_selected_session(self) -> None:
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "Session", "Stop the current measurement before resuming a saved session.")
+            return
+        record = self._selected_session_record()
+        if record is None:
+            return
+        self._prepare_session_resume(record)
 
     def export_selected_session(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
@@ -1203,6 +1224,66 @@ class MainWindow(QMainWindow):
         self._set_state_chip("Loaded", "active")
         self.status_label.setText(f"Loaded session: {record.target}, samples {len(observations)}")
         self._sync_sessions_box()
+
+    def _prepare_session_resume(self, record: TraceSessionRecord) -> None:
+        targets = self._targets_for_session_resume(record)
+        if not targets:
+            self.status_label.setText("No saved session target is available")
+            return
+        self.current_target = record.target if record.target in targets else targets[0]
+        self.current_targets = targets
+        self.target_input.setPlainText("\n".join(targets))
+        self.refresh_trace_targets()
+        if self.trace_target_combo.findText(self.current_target) >= 0:
+            self.trace_target_combo.setCurrentText(self.current_target)
+        self._restore_session_runtime_controls(record)
+        self.status_label.setText(
+            f"Resume prepared: {len(targets)} target(s), press Start to create a new session"
+        )
+
+    def _targets_for_session_resume(self, record: TraceSessionRecord) -> list[str]:
+        targets: list[str] = []
+        for target in [record.target, *self._targets_from_session_log(record.sample_path)]:
+            if not target or target in targets:
+                continue
+            targets.append(target)
+            if len(targets) >= MAX_IPV4_TARGETS:
+                break
+        return targets
+
+    def _targets_from_session_log(self, path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        targets: list[str] = []
+        for observation in iter_observations(path):
+            if observation.hop_index != 0 and not observation.is_target:
+                continue
+            if not observation.address or observation.address in targets:
+                continue
+            targets.append(observation.address)
+            if len(targets) >= MAX_IPV4_TARGETS:
+                break
+        return targets
+
+    def _restore_session_runtime_controls(self, record: TraceSessionRecord) -> None:
+        if record.interval_seconds and record.interval_seconds > 0:
+            interval_text = str(record.interval_seconds)
+            interval_index = self.interval_combo.findText(interval_text)
+            if interval_index < 0:
+                self.interval_combo.addItem(interval_text)
+                interval_index = self.interval_combo.findText(interval_text)
+            self.interval_combo.setCurrentIndex(interval_index)
+
+        mode, probe_engine, tcp_port = _parse_session_measurement_mode(record.measurement_mode)
+        mode_index = self.measurement_mode_combo.findData(mode)
+        if mode_index >= 0:
+            self.measurement_mode_combo.setCurrentIndex(mode_index)
+        probe_index = self.probe_engine_combo.findData(probe_engine)
+        if probe_index >= 0:
+            self.probe_engine_combo.setCurrentIndex(probe_index)
+        if tcp_port is not None:
+            self.tcp_port_spin.setValue(tcp_port)
+        self._on_probe_engine_changed()
 
     def _route_change_impact_line(self, change: RouteChange) -> str:
         points = self._target_points_for_route_impact()
@@ -1475,6 +1556,7 @@ class MainWindow(QMainWindow):
             has_sessions = self.session_combo.count() > 0
             self.session_combo.setEnabled(has_sessions and not running)
             self.open_session_button.setEnabled(has_sessions and not running)
+            self.resume_session_button.setEnabled(has_sessions and not running)
             self.delete_session_button.setEnabled(has_sessions and not running)
         self.interval_combo.setEnabled(True)
         self.count_spin.setEnabled(not running and not self.unlimited_check.isChecked())
@@ -1511,6 +1593,12 @@ class MainWindow(QMainWindow):
         self.statistics_timezone_combo.setEnabled(not exporting)
         if hasattr(self, "export_session_button"):
             self.export_session_button.setEnabled(not exporting and self.session_combo.count() > 0)
+        if hasattr(self, "resume_session_button"):
+            self.resume_session_button.setEnabled(
+                not exporting
+                and self.session_combo.count() > 0
+                and not bool(self.worker and self.worker.isRunning())
+            )
         if hasattr(self, "delete_session_button"):
             self.delete_session_button.setEnabled(
                 not exporting
@@ -1628,6 +1716,26 @@ def _apply_default_font() -> None:
             if families:
                 family = families[0]
     app.setFont(QFont(family, 9))
+
+
+def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
+    parts = [part for part in value.split(":") if part]
+    mode = (
+        parts[0]
+        if parts and parts[0] in {MEASUREMENT_MODE_FULL_ROUTE, MEASUREMENT_MODE_FINAL_HOP_ONLY}
+        else MEASUREMENT_MODE_FULL_ROUTE
+    )
+    probe_engine = PROBE_ENGINE_ICMP
+    tcp_port: int | None = None
+    for part in parts[1:]:
+        if part in {PROBE_ENGINE_ICMP, PROBE_ENGINE_TCP_CONNECT}:
+            probe_engine = part
+        elif part.startswith("port"):
+            try:
+                tcp_port = int(part.removeprefix("port"))
+            except ValueError:
+                tcp_port = None
+    return mode, probe_engine, tcp_port
 
 
 APP_STYLE = """

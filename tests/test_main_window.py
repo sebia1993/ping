@@ -124,6 +124,49 @@ def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) 
         window.close()
 
 
+def test_main_window_prepares_saved_session_resume_controls(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+            HopObservation(now + timedelta(seconds=1), 0, "203.0.113.20", "Target", True, 20.0, STATUS_OK, True),
+            HopObservation(now + timedelta(seconds=2), 1, "192.0.2.1", "gateway", True, 2.0, STATUS_OK),
+        ])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=7,
+        measurement_mode=f"{MEASUREMENT_MODE_FINAL_HOP_ONLY}:{PROBE_ENGINE_TCP_CONNECT}:port8443",
+        target_count=2,
+    )
+    store.add_samples(record.session_id, 3, now + timedelta(seconds=2), segments=[sample_path])
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=2))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+
+        window.resume_selected_session()
+
+        assert window.worker is None
+        assert window.target_input.toPlainText().splitlines() == ["198.51.100.10", "203.0.113.20"]
+        assert window.trace_target_combo.currentText() == "198.51.100.10"
+        assert window.interval_combo.currentText() == "7"
+        assert window.measurement_mode_combo.currentData() == MEASUREMENT_MODE_FINAL_HOP_ONLY
+        assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
+        assert window.tcp_port_spin.value() == 8443
+        assert window.tcp_port_spin.isEnabled() is True
+        assert "Resume prepared: 2 target(s)" in window.status_label.text()
+    finally:
+        window.close()
+
+
 def test_main_window_exports_selected_saved_session(qt_app, tmp_path, monkeypatch) -> None:
     created_workers: list[_FakeExportWorker] = []
     export_path = tmp_path / "saved_session.csv"
