@@ -7,7 +7,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Python/PySide6 desktop app.
 - Multi-target measurement is implemented.
 - Session logs, session index, open/export/delete, and segmented CSV storage are implemented.
-- All Targets Summary has problem-first sorting and double-click target switching.
+- All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, and selected-target group saving.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
 - Timeline UX has a separate main-screen status chip for visible timeline range, distinct from the focus-period chip.
@@ -67,7 +67,8 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 
 1. Strengthen multi-target operations.
    - PingPlotter provides an All Targets Summary that lets operators compare many targets at a glance and change interval/config settings for multiple selected targets.
-   - The current project can measure multiple IPs, but its PingPlotter-style summary, grouping, and batch-control workflow is still weaker.
+   - The current project can measure multiple IPs, filter/sort the summary, batch-control selected/visible/problem/all target sets, and save selected targets as reusable groups.
+   - Remaining parity work is deeper grouping/profile management and richer summary-history views.
    - References:
      - https://www.pingplotter.com/manual/summary_graphs/
      - https://www.pingplotter.com/manual/tracing_to_multiple_targets/

@@ -65,6 +65,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
         assert window.save_target_group_button.text() == "Save group"
+        assert window.save_selected_target_group_button.text() == "Save selected"
         assert window.load_target_group_button.text() == "Load group"
         assert window.csv_button.isEnabled() is False
         assert window.xlsx_button.isEnabled() is False
@@ -988,6 +989,44 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         window.close()
 
 
+def test_main_window_saves_selected_target_group_from_summary(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "selected_target_group.json"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    target_one = _snapshot(0, "198.51.100.10", None, latency=10.0, is_target=True)
+    target_two = _snapshot(0, "203.0.113.20", None, latency=20.0, is_target=True)
+    target_three = _snapshot(0, "203.0.113.30", None, latency=30.0, is_target=True)
+
+    try:
+        window.target_input.setText("198.51.100.10\n203.0.113.20\n203.0.113.30")
+        window.refresh_trace_targets()
+        window.trace_target_combo.setCurrentText("198.51.100.10")
+        window.on_measurement_updated(
+            [],
+            target_one,
+            [target_one, target_two, target_three],
+            ["live"],
+            [HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)],
+            [HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)],
+        )
+
+        window.target_table.item(1, 0).setSelected(True)
+        window.target_table.item(2, 0).setSelected(True)
+        window.save_selected_target_group_preset()
+
+        data = json.loads(preset_path.read_text(encoding="utf-8"))
+        assert data["targets"] == ["203.0.113.20", "203.0.113.30"]
+        assert data["trace_target"] == "203.0.113.20"
+        assert window.status_label.text() == f"Target group saved: {preset_path}"
+    finally:
+        window.close()
+
+
 def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
     created_workers: list[_FakeWorker] = []
 
@@ -1022,6 +1061,7 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         window.refresh_trace_targets()
         window.start_measurement()
         worker = created_workers[0]
+        assert window.save_selected_target_group_button.isEnabled() is True
         window.on_measurement_updated(
             [],
             target_one,

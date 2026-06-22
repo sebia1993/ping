@@ -763,6 +763,16 @@ class MainWindow(QMainWindow):
         if not targets:
             QMessageBox.warning(self, "Target group", "저장할 대상 IPv4 주소를 입력하세요.")
             return
+        self._save_target_group_preset(targets)
+
+    def save_selected_target_group_preset(self) -> None:
+        targets = self._selected_target_addresses()
+        if not targets:
+            self.status_label.setText("No selected targets to save")
+            return
+        self._save_target_group_preset(targets)
+
+    def _save_target_group_preset(self, targets: list[str]) -> None:
         path = self._select_save_path("target_group.json", "JSON Files (*.json)", target="target_group")
         if not path:
             return
