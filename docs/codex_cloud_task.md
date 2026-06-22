@@ -11,6 +11,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Alert UI supports loss, latency, sample-count alert, route-change annotation, and alert-ended events.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
 - Statistics export supports grouping, timezone, and scope selection: All time, Visible timeline, Focus period.
+- PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.
 - Analysis logic now distinguishes middle-hop-only latency from inherited end-to-end latency, reducing false bandwidth-saturation diagnoses when the final target is healthy.
@@ -34,7 +35,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 
 2. Expand Export/Report options.
    - Add explicit Start/End Date export range controls.
-   - Consider image export options for Tracegraph, Timegraph, or both.
+   - Image export scope is implemented for Timeline graph, Trace table, and Both.
    - Ensure visible-time exports work from session logs and live buffers.
 
 3. Strengthen analysis logic.

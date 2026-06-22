@@ -15,7 +15,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QDateTime, Qt, QTime
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -114,6 +114,9 @@ ALERT_EMAIL_SECURITY_MODES = {
     ALERT_EMAIL_SECURITY_STARTTLS,
     ALERT_EMAIL_SECURITY_SSL,
 }
+GRAPH_PNG_SCOPE_TIMELINE = "timeline"
+GRAPH_PNG_SCOPE_TRACE = "trace"
+GRAPH_PNG_SCOPE_BOTH = "both"
 
 
 @dataclass(frozen=True)
@@ -651,8 +654,15 @@ class MainWindow(QMainWindow):
         export_title.setObjectName("panelTitle")
         export_row = QHBoxLayout()
         export_row.setSpacing(8)
-        for button in (self.csv_button, self.xlsx_button, self.report_button, self.graph_png_button):
+        for button in (self.csv_button, self.xlsx_button, self.report_button):
             export_row.addWidget(button)
+        self.graph_png_scope_combo = QComboBox()
+        self.graph_png_scope_combo.addItem("Timeline graph", GRAPH_PNG_SCOPE_TIMELINE)
+        self.graph_png_scope_combo.addItem("Trace table", GRAPH_PNG_SCOPE_TRACE)
+        self.graph_png_scope_combo.addItem("Both", GRAPH_PNG_SCOPE_BOTH)
+        export_row.addWidget(QLabel("PNG scope"))
+        export_row.addWidget(self.graph_png_scope_combo)
+        export_row.addWidget(self.graph_png_button)
         export_row.addStretch(1)
 
         self.statistics_group_combo = QComboBox()
@@ -2575,24 +2585,36 @@ class MainWindow(QMainWindow):
         path = self._select_save_path("png", "PNG Files (*.png)")
         if not path:
             return
+        scope = (
+            self.graph_png_scope_combo.currentData()
+            if hasattr(self, "graph_png_scope_combo")
+            else GRAPH_PNG_SCOPE_TIMELINE
+        )
         try:
-            saved_path = self._save_graph_png(path)
+            saved_path = self._save_graph_png(path, scope=scope)
         except RuntimeError as exc:
             QMessageBox.warning(self, "Export error", str(exc))
             self.status_label.setText(str(exc))
             return
         self.status_label.setText(f"PNG saved: {saved_path}")
 
-    def _save_graph_png(self, path: Path) -> Path:
+    def _save_graph_png(self, path: Path, *, scope: str = GRAPH_PNG_SCOPE_TIMELINE) -> Path:
         if path.suffix.lower() != ".png":
             path = path.with_suffix(".png")
         path.parent.mkdir(parents=True, exist_ok=True)
-        pixmap = self.graph.grab()
+        pixmap = self._graph_png_pixmap(scope)
         if pixmap.isNull():
             raise RuntimeError(f"PNG capture failed: {path}")
         if not pixmap.save(str(path), "PNG"):
             raise RuntimeError(f"PNG save failed: {path}")
         return path
+
+    def _graph_png_pixmap(self, scope: str) -> QPixmap:
+        if scope == GRAPH_PNG_SCOPE_TRACE:
+            return self.table.grab()
+        if scope == GRAPH_PNG_SCOPE_BOTH:
+            return _combine_pixmaps([self.table.grab(), self.graph.grab()])
+        return self.graph.grab()
 
     def save_target_summary_csv(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
@@ -2883,6 +2905,8 @@ class MainWindow(QMainWindow):
         self.xlsx_button.setEnabled(enabled)
         self.report_button.setEnabled(enabled)
         self.graph_png_button.setEnabled(enabled)
+        if hasattr(self, "graph_png_scope_combo"):
+            self.graph_png_scope_combo.setEnabled(enabled)
         self.stats_csv_button.setEnabled(enabled)
         self.stats_xlsx_button.setEnabled(enabled)
         if hasattr(self, "export_target_summary_button"):
@@ -2893,6 +2917,8 @@ class MainWindow(QMainWindow):
         self.xlsx_button.setEnabled(not exporting and self._has_export_data())
         self.report_button.setEnabled(not exporting and self._has_export_data())
         self.graph_png_button.setEnabled(not exporting and self._has_export_data())
+        if hasattr(self, "graph_png_scope_combo"):
+            self.graph_png_scope_combo.setEnabled(not exporting and self._has_export_data())
         self.stats_csv_button.setEnabled(not exporting and self._has_export_data())
         self.stats_xlsx_button.setEnabled(not exporting and self._has_export_data())
         if hasattr(self, "export_target_summary_button"):
@@ -3182,6 +3208,25 @@ def _set_combo_current_data(combo: QComboBox, value: object) -> None:
     index = combo.findData(value)
     if index >= 0:
         combo.setCurrentIndex(index)
+
+
+def _combine_pixmaps(pixmaps: list[QPixmap]) -> QPixmap:
+    valid = [pixmap for pixmap in pixmaps if not pixmap.isNull()]
+    if not valid:
+        return QPixmap()
+    width = max(pixmap.width() for pixmap in valid)
+    height = sum(pixmap.height() for pixmap in valid)
+    combined = QPixmap(width, height)
+    combined.fill(Qt.GlobalColor.white)
+    painter = QPainter(combined)
+    try:
+        y = 0
+        for pixmap in valid:
+            painter.drawPixmap(0, y, pixmap)
+            y += pixmap.height()
+    finally:
+        painter.end()
+    return combined
 
 
 def _set_interval_combo_value(combo: QComboBox, value: object) -> None:

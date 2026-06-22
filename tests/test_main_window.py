@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -28,6 +28,9 @@ from app.ui import main_window as main_window_module
 from app.ui.graph_detail_window import VIEW_SELECTED_HOP, VIEW_VISIBLE_HOPS
 from app.ui.main_window import (
     ALERT_HEADERS,
+    GRAPH_PNG_SCOPE_BOTH,
+    GRAPH_PNG_SCOPE_TIMELINE,
+    GRAPH_PNG_SCOPE_TRACE,
     MainWindow,
     SESSION_HEADERS,
     SESSION_ID_ROLE,
@@ -69,6 +72,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.stats_csv_button.isEnabled() is False
         assert window.stats_xlsx_button.isEnabled() is False
         assert window.export_target_summary_button.isEnabled() is False
+        assert window.graph_png_scope_combo.currentData() == GRAPH_PNG_SCOPE_TIMELINE
+        assert window.graph_png_scope_combo.isEnabled() is False
         assert window.loss_alert_check.isChecked() is True
         assert window.latency_alert_check.isChecked() is True
         assert window.jitter_alert_check.isChecked() is True
@@ -1652,13 +1657,13 @@ def test_main_window_statistics_custom_scope_uses_explicit_range(qt_app, tmp_pat
 
 def test_main_window_saves_graph_png_from_export_panel(qt_app, tmp_path, monkeypatch) -> None:
     export_path = tmp_path / "timeline"
-    saved_paths: list[Path] = []
+    saved_paths: list[tuple[Path, str]] = []
 
     def fake_get_save_file_name(*_args, **_kwargs):
         return str(export_path), "PNG Files (*.png)"
 
-    def fake_save_graph_png(path: Path) -> Path:
-        saved_paths.append(path)
+    def fake_save_graph_png(path: Path, *, scope: str = GRAPH_PNG_SCOPE_TIMELINE) -> Path:
+        saved_paths.append((path, scope))
         return path.with_suffix(".png")
 
     monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
@@ -1676,13 +1681,13 @@ def test_main_window_saves_graph_png_from_export_panel(qt_app, tmp_path, monkeyp
 
         window.save_graph_png()
 
-        assert saved_paths == [export_path]
+        assert saved_paths == [(export_path, GRAPH_PNG_SCOPE_TIMELINE)]
         assert window.status_label.text() == f"PNG saved: {export_path.with_suffix('.png')}"
     finally:
         window.close()
 
 
-def test_main_window_graph_png_helper_adds_suffix_and_saves(qt_app, tmp_path, monkeypatch) -> None:
+def test_main_window_graph_png_helper_adds_suffix_and_saves_timeline_scope(qt_app, tmp_path, monkeypatch) -> None:
     class FakePixmap:
         def __init__(self) -> None:
             self.saved: list[tuple[str, str]] = []
@@ -1705,6 +1710,52 @@ def test_main_window_graph_png_helper_adds_suffix_and_saves(qt_app, tmp_path, mo
         assert saved == tmp_path / "timeline.png"
         assert pixmap.saved == [(str(saved), "PNG")]
         assert saved.read_bytes() == b"png"
+    finally:
+        window.close()
+
+
+def test_main_window_graph_png_helper_saves_trace_scope(qt_app, tmp_path, monkeypatch) -> None:
+    class FakePixmap:
+        def __init__(self) -> None:
+            self.saved: list[tuple[str, str]] = []
+
+        def isNull(self) -> bool:
+            return False
+
+        def save(self, path: str, fmt: str) -> bool:
+            self.saved.append((path, fmt))
+            Path(path).write_bytes(b"trace")
+            return True
+
+    pixmap = FakePixmap()
+    window = MainWindow()
+    monkeypatch.setattr(window.table, "grab", lambda: pixmap)
+
+    try:
+        saved = window._save_graph_png(tmp_path / "trace", scope=GRAPH_PNG_SCOPE_TRACE)
+
+        assert saved == tmp_path / "trace.png"
+        assert pixmap.saved == [(str(saved), "PNG")]
+        assert saved.read_bytes() == b"trace"
+    finally:
+        window.close()
+
+
+def test_main_window_graph_png_helper_combines_trace_and_timeline_scopes(qt_app, tmp_path, monkeypatch) -> None:
+    window = MainWindow()
+
+    try:
+        trace = main_window_module.QPixmap(120, 40)
+        trace.fill(Qt.GlobalColor.white)
+        timeline = main_window_module.QPixmap(80, 30)
+        timeline.fill(Qt.GlobalColor.white)
+        monkeypatch.setattr(window.table, "grab", lambda: trace)
+        monkeypatch.setattr(window.graph, "grab", lambda: timeline)
+
+        pixmap = window._graph_png_pixmap(GRAPH_PNG_SCOPE_BOTH)
+
+        assert pixmap.width() == 120
+        assert pixmap.height() == 70
     finally:
         window.close()
 
