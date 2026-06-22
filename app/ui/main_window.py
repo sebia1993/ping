@@ -508,6 +508,12 @@ class MainWindow(QMainWindow):
         self.timer_window_spin.setRange(1, 240)
         self.timer_window_spin.setValue(5)
         self.timer_window_spin.setSuffix("m")
+        self.alert_start_action_check = QCheckBox("Start")
+        self.alert_start_action_check.setChecked(True)
+        self.alert_start_action_check.setToolTip("Run selected actions when a new alert starts")
+        self.alert_end_action_check = QCheckBox("End")
+        self.alert_end_action_check.setChecked(True)
+        self.alert_end_action_check.setToolTip("Run selected actions when an active alert recovers")
         self.alert_timeline_action_check = QCheckBox("Timeline")
         self.alert_timeline_action_check.setChecked(True)
         self.alert_comment_action_check = QCheckBox("Comment")
@@ -565,6 +571,8 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.route_ip_alert_check)
         alert_rule_row.addWidget(self.route_ip_alert_edit)
         alert_rule_row.addWidget(QLabel("Actions"))
+        alert_rule_row.addWidget(self.alert_start_action_check)
+        alert_rule_row.addWidget(self.alert_end_action_check)
         alert_rule_row.addWidget(self.alert_timeline_action_check)
         alert_rule_row.addWidget(self.alert_comment_action_check)
         alert_rule_row.addWidget(self.alert_log_action_check)
@@ -1636,6 +1644,8 @@ class MainWindow(QMainWindow):
                 "route_ip": self.route_ip_alert_edit.text().strip(),
             },
             "actions": {
+                "start": self.alert_start_action_check.isChecked(),
+                "end": self.alert_end_action_check.isChecked(),
                 "timeline": self.alert_timeline_action_check.isChecked(),
                 "comment": self.alert_comment_action_check.isChecked(),
                 "log": self.alert_log_action_check.isChecked(),
@@ -1678,6 +1688,8 @@ class MainWindow(QMainWindow):
         _set_check_value(self.route_ip_alert_check, rules.get("route_ip_enabled"))
         if "route_ip" in rules:
             self.route_ip_alert_edit.setText(str(rules.get("route_ip") or ""))
+        _set_check_value(self.alert_start_action_check, actions.get("start"))
+        _set_check_value(self.alert_end_action_check, actions.get("end"))
         _set_check_value(self.alert_timeline_action_check, actions.get("timeline"))
         _set_check_value(self.alert_comment_action_check, actions.get("comment"))
         _set_check_value(self.alert_log_action_check, actions.get("log"))
@@ -1723,7 +1735,7 @@ class MainWindow(QMainWindow):
         self._sync_alerts_box()
 
     def _record_alert_actions(self, event: AlertEvent) -> list[str]:
-        actions = self._selected_alert_actions()
+        actions = self._selected_alert_actions(event)
         if "beep" in actions:
             QApplication.beep()
         if "image" in actions:
@@ -1743,9 +1755,11 @@ class MainWindow(QMainWindow):
         )
         return actions
 
-    def _selected_alert_actions(self) -> list[str]:
+    def _selected_alert_actions(self, event: AlertEvent | None = None) -> list[str]:
         if not hasattr(self, "alert_timeline_action_check"):
             return ["timeline_annotation", "comment"]
+        if event is not None and not self._alert_action_phase_enabled(event):
+            return []
         actions: list[str] = []
         if self.alert_timeline_action_check.isChecked():
             actions.append("timeline_annotation")
@@ -1776,6 +1790,17 @@ class MainWindow(QMainWindow):
         ):
             actions.append("executable")
         return actions
+
+    def _alert_action_phase_enabled(self, event: AlertEvent) -> bool:
+        if not hasattr(self, "alert_start_action_check") or not hasattr(self, "alert_end_action_check"):
+            return True
+        if self._is_alert_end_event(event):
+            return self.alert_end_action_check.isChecked()
+        return self.alert_start_action_check.isChecked()
+
+    @staticmethod
+    def _is_alert_end_event(event: AlertEvent) -> bool:
+        return event.title == "Alert ended" or ":ended:" in event.key
 
     def _alert_email_config(self) -> AlertEmailConfig | None:
         if not hasattr(self, "alert_email_server_edit"):

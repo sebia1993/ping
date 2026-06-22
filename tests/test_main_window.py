@@ -79,6 +79,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.jitter_alert_check.isChecked() is True
         assert window.sample_alert_check.isChecked() is True
         assert window.timer_alert_check.isChecked() is True
+        assert window.alert_start_action_check.isChecked() is True
+        assert window.alert_end_action_check.isChecked() is True
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_log_action_check.isChecked() is False
@@ -2328,6 +2330,8 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.mos_window_spin.setValue(4)
         window.route_ip_alert_check.setChecked(True)
         window.route_ip_alert_edit.setText("203.0.113.50")
+        window.alert_start_action_check.setChecked(True)
+        window.alert_end_action_check.setChecked(False)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(True)
         window.alert_log_action_check.setChecked(True)
@@ -2358,6 +2362,8 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert data["rules"]["sample_enabled"] is True
         assert data["rules"]["timer_enabled"] is False
         assert data["rules"]["route_ip"] == "203.0.113.50"
+        assert data["actions"]["start"] is True
+        assert data["actions"]["end"] is False
         assert data["actions"]["timeline"] is False
         assert data["actions"]["log"] is True
         assert data["actions"]["email"] is True
@@ -2386,6 +2392,8 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.mos_window_spin.setValue(1)
         window.route_ip_alert_check.setChecked(False)
         window.route_ip_alert_edit.clear()
+        window.alert_start_action_check.setChecked(False)
+        window.alert_end_action_check.setChecked(True)
         window.alert_timeline_action_check.setChecked(True)
         window.alert_comment_action_check.setChecked(False)
         window.alert_log_action_check.setChecked(False)
@@ -2424,6 +2432,8 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.mos_window_spin.value() == 4
         assert window.route_ip_alert_check.isChecked() is True
         assert window.route_ip_alert_edit.text() == "203.0.113.50"
+        assert window.alert_start_action_check.isChecked() is True
+        assert window.alert_end_action_check.isChecked() is False
         assert window.alert_timeline_action_check.isChecked() is False
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_log_action_check.isChecked() is True
@@ -2765,6 +2775,44 @@ def test_main_window_records_sample_count_alert_and_recovery(qt_app, tmp_path) -
         } == {"CRITICAL", "INFO"}
         assert [row["title"] for row in rows] == ["Sample count alert", "Alert ended"]
         assert rows[1]["message"] == "Sample count alert recovered"
+    finally:
+        window.close()
+
+
+def test_main_window_can_disable_recovery_alert_actions(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    bad_history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+    ]
+    good_history = [
+        HopObservation(now + timedelta(seconds=3), 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=4), 0, "198.51.100.10", "Target", True, 11.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=5), 0, "198.51.100.10", "Target", True, 12.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=12.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.loss_window_spin.setValue(1)
+        window.latency_threshold_spin.setValue(1000)
+        window.sample_window_spin.setValue(3)
+        window.sample_bad_spin.setValue(2)
+        window.alert_end_action_check.setChecked(False)
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], bad_history, bad_history)
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], good_history, good_history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert [event.title for event in window.alert_events] == ["Sample count alert", "Alert ended"]
+        assert [row["title"] for row in rows] == ["Sample count alert"]
+        assert window.alert_event_actions[window.alert_events[0].key] == ["timeline_annotation", "comment"]
+        assert window.alert_event_actions[window.alert_events[1].key] == []
+        assert [annotation.label for annotation in window.graph._annotations] == ["Sample count alert"]
     finally:
         window.close()
 

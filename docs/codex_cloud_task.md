@@ -8,7 +8,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Multi-target measurement is implemented.
 - Session logs, session index, open/export/delete, and segmented CSV storage are implemented.
 - All Targets Summary has problem-first sorting and double-click target switching.
-- Alert UI supports loss, latency, sample-count alert, route-change annotation, and alert-ended events.
+- Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
 - Statistics export supports grouping, timezone, and scope selection: All time, Visible timeline, Focus period.
 - PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
@@ -80,9 +80,9 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
      - https://www.pingplotter.com/manual/flex-storage/
 
 3. Expand the alert system.
-   - The current project is still close to fixed loss, latency, and route-change alerts.
-   - PingPlotter supports conditions based on time, sample count, MOS, route change, specific route/IP appearance, and timers.
-   - PingPlotter can also run actions when alerts start/end, including sound, email, logging, REST calls, executable launch, image save, comment insertion, and route adjustment.
+   - The current project supports configurable loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, and alert-ended events.
+   - It can run selected actions on alert start and/or recovery: timeline annotation, comment, log, beep, image save, email, REST call, and executable launch.
+   - Remaining parity work includes richer action templates, route-adjustment workflow, and stronger operator guidance around alert presets.
    - References:
      - https://www.pingplotter.com/manual/alert-conditions/
      - https://www.pingplotter.com/manual/help_alerts/
