@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,8 @@ SESSION_STATE_ACTIVE = "Active"
 SESSION_STATE_PAUSED = "Pause"
 SESSION_STATE_ARCHIVED = "Archived"
 SESSION_STATE_WILL_DELETE = "Will Delete"
+SESSION_INDEX_IO_RETRY_ATTEMPTS = 5
+SESSION_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -157,7 +160,7 @@ class SessionIndexStore:
         if not self.path.exists():
             return []
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(_read_text_with_retries(self.path))
         except (OSError, json.JSONDecodeError):
             return []
         rows = data.get("sessions", []) if isinstance(data, dict) else []
@@ -184,11 +187,46 @@ class SessionIndexStore:
         ) as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             temp_path = Path(handle.name)
-        temp_path.replace(self.path)
+        try:
+            _replace_with_retries(temp_path, self.path)
+        except OSError:
+            temp_path.unlink(missing_ok=True)
+            raise
 
 
 def _session_id(sample_path: Path) -> str:
     return sample_path.stem
+
+
+def _read_text_with_retries(path: Path) -> str:
+    return _run_io_with_retries(lambda: _read_text_path(path))
+
+
+def _read_text_path(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _replace_with_retries(source: Path, target: Path) -> None:
+    _run_io_with_retries(lambda: _replace_path(source, target))
+
+
+def _replace_path(source: Path, target: Path) -> Path:
+    return source.replace(target)
+
+
+def _run_io_with_retries(operation):
+    last_error: OSError | None = None
+    for attempt in range(SESSION_INDEX_IO_RETRY_ATTEMPTS):
+        try:
+            return operation()
+        except PermissionError as exc:
+            last_error = exc
+            if attempt == SESSION_INDEX_IO_RETRY_ATTEMPTS - 1:
+                break
+            time.sleep(SESSION_INDEX_IO_RETRY_DELAY_SECONDS)
+    if last_error is not None:
+        raise last_error
+    return operation()
 
 
 def session_index_root_for_sample_path(sample_path: Path) -> Path:

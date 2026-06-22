@@ -9,6 +9,7 @@ from app.storage.csv_exporter import export_csv
 from app.storage.excel_exporter import export_xlsx
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.report_writer import write_text_report
+from app.storage import session_index as session_index_module
 from app.storage.session_index import SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
 from app.storage.session_log import (
     SessionLogWriter,
@@ -353,6 +354,97 @@ def test_session_index_registers_updates_and_filters_sessions(tmp_path) -> None:
     assert sessions[0].route_path == route_path
     assert sessions[0].target_count == 3
     assert active_sessions == []
+
+
+def test_session_index_retries_transient_replace_permission_error(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    attempts = 0
+    original_replace = session_index_module._replace_path
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("temporarily locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(session_index_module, "SESSION_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_index_module, "_replace_path", flaky_replace)
+
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    assert attempts == 3
+    assert store.find_session(record.session_id) is not None
+
+
+def test_session_index_retries_transient_read_permission_error(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    attempts = 0
+    original_read = session_index_module._read_text_path
+
+    def flaky_read(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("temporarily locked")
+        return original_read(path)
+
+    monkeypatch.setattr(session_index_module, "SESSION_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_index_module, "_read_text_path", flaky_read)
+
+    assert store.find_session(record.session_id) is not None
+    assert attempts == 3
+
+
+def test_session_index_cleans_temp_file_after_persistent_replace_error(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+
+    def locked_replace(source, target):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(session_index_module, "SESSION_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_index_module, "_replace_path", locked_replace)
+
+    try:
+        store.register_session(
+            target="198.51.100.10",
+            sample_path=sample_path,
+            route_path=sample_path.with_name("session.routes.csv"),
+            started_at=now,
+            interval_seconds=1,
+            measurement_mode="full_route",
+            target_count=1,
+        )
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("expected PermissionError")
+
+    temp_files = [path for path in tmp_path.iterdir() if path.name.startswith("tmp")]
+    assert temp_files == []
 
 
 def test_session_index_delete_removes_record_and_managed_files(tmp_path) -> None:
