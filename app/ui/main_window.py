@@ -291,6 +291,7 @@ class MainWindow(QMainWindow):
         graph_hint = QLabel("최종 대상 응답 기준 - timeout은 붉은 막대로 표시")
         graph_hint.setObjectName("muted")
         self.focus_label = _chip("Live", "neutral")
+        self.timeline_label = _chip("Timeline: Live", "neutral")
         self.clear_focus_button = QPushButton("Clear focus")
         self.clear_focus_button.setEnabled(False)
         self.clear_focus_button.clicked.connect(self.clear_focus_range)
@@ -300,6 +301,7 @@ class MainWindow(QMainWindow):
         graph_header.addStretch(1)
         graph_header.addWidget(graph_hint)
         graph_header.addWidget(self.focus_label)
+        graph_header.addWidget(self.timeline_label)
         graph_header.addWidget(self.clear_focus_button)
         graph_header.addWidget(self.graph_detail_button)
         self.graph = LatencyGraphWidget()
@@ -1303,6 +1305,7 @@ class MainWindow(QMainWindow):
         self.alert_action_log_path = alert_action_log_path_for_session(self.session_log_path)
         self.session_index_store = SessionIndexStore.create(session_index_root_for_sample_path(self.session_log_path))
         self.timeline_status = "Timeline source: session log ready"
+        self._sync_timeline_controls()
         self._update_graph_detail()
         self._sync_sessions_box()
         self._set_export_enabled(self._has_export_data())
@@ -1364,6 +1367,7 @@ class MainWindow(QMainWindow):
         end = self._timeline_end_time()
         if end is None:
             self.timeline_status = "Timeline source: no samples yet"
+            self._sync_timeline_controls()
             self._update_graph_detail()
             self.status_label.setText("No timeline samples are available yet")
             return
@@ -1381,6 +1385,7 @@ class MainWindow(QMainWindow):
             f"Timeline: last {_format_duration(seconds)} from {source}, "
             f"{len(observations)} samples"
         )
+        self._sync_timeline_controls()
         self._update_graph_detail()
         self.status_label.setText(self.timeline_status)
 
@@ -1467,6 +1472,7 @@ class MainWindow(QMainWindow):
         self.timeline_snapshots = []
         self.timeline_target_snapshot = None
         self.timeline_status = "Timeline source: live buffer"
+        self._sync_timeline_controls()
 
     def _timeline_annotations(self) -> list[TimelineAnnotation]:
         return [*self._route_timeline_annotations(), *self._alert_timeline_annotations()]
@@ -2394,6 +2400,7 @@ class MainWindow(QMainWindow):
         self.route_log_path = None
         self.alert_action_log_path = None
         self.timeline_status = "Timeline source: live buffer"
+        self._sync_timeline_controls()
 
     def _open_session_record(self, record: TraceSessionRecord) -> None:
         if not record.sample_path.exists():
@@ -2428,6 +2435,7 @@ class MainWindow(QMainWindow):
             self._load_route_changes_for_range(*bounds)
         self._load_saved_alert_actions()
         self.timeline_status = f"Timeline source: opened session, {len(observations)} samples"
+        self._sync_timeline_controls()
         self._sync_alerts_box()
         self._sync_route_changes_box()
         self._sync_focus_controls()
@@ -2552,11 +2560,27 @@ class MainWindow(QMainWindow):
         self.focus_label.style().polish(self.focus_label)
         self.clear_focus_button.setEnabled(focused)
 
+    def _sync_timeline_controls(self) -> None:
+        if not hasattr(self, "timeline_label"):
+            return
+        visible = self.timeline_range is not None
+        self.timeline_label.setText(self._timeline_period_line() if visible else "Timeline: Live")
+        self.timeline_label.setToolTip(self.timeline_status)
+        self.timeline_label.setProperty("tone", "active" if visible else "neutral")
+        self.timeline_label.style().unpolish(self.timeline_label)
+        self.timeline_label.style().polish(self.timeline_label)
+
     def _focus_period_line(self) -> str:
         if self.focus_range is None:
             return "Live"
         start, end = self.focus_range
         return f"Focus period: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
+
+    def _timeline_period_line(self) -> str:
+        if self.timeline_range is None:
+            return "Timeline: Live"
+        start, end = self.timeline_range
+        return f"Timeline: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
 
     def open_graph_detail(self) -> None:
         if self.graph_detail_window is None:

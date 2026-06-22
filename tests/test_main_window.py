@@ -60,6 +60,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.session_table.columnCount() == len(SESSION_HEADERS)
         assert window.alert_table.columnCount() == len(ALERT_HEADERS)
         assert window.alert_table.rowCount() == 0
+        assert window.timeline_label.text() == "Timeline: Live"
         assert window.target_summary_status_label.text() == "Targets: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
@@ -2027,8 +2028,12 @@ def test_main_window_loads_graph_timeline_from_session_log_and_focuses_it(qt_app
         assert window.timeline_range is not None
         assert len(window.timeline_observations) == 4
         assert len(window.graph_detail_window.graph._series[0].points) == 2
+        assert window.timeline_label.text().startswith("Timeline: ")
+        assert window.timeline_label.text() != "Timeline: Live"
+        assert "10m" in window.timeline_label.toolTip()
         assert "10m" in window.graph_detail_window.timeline_status_label.text()
         window.load_timeline_range(172800)
+        assert "48h" in window.timeline_label.toolTip()
         assert "48h" in window.graph_detail_window.timeline_status_label.text()
 
         window.apply_focus_range((now, now + timedelta(seconds=3)))
@@ -2036,6 +2041,8 @@ def test_main_window_loads_graph_timeline_from_session_log_and_focuses_it(qt_app
         assert window.table.item(0, 8).text() == "50.0"
         assert window.target_table.item(0, 6).text() == "50.0"
         assert window.analysis_for_export()[0].startswith("Focus period:")
+        window.clear_timeline_range()
+        assert window.timeline_label.text() == "Timeline: Live"
     finally:
         window.close()
 
