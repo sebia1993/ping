@@ -620,6 +620,11 @@ class MainWindow(QMainWindow):
         if not self.worker or not hasattr(self.worker, "set_interval_seconds"):
             return
         interval = int(self.interval_combo.currentText())
+        targets = self._selected_target_addresses()
+        if targets and hasattr(self.worker, "set_target_interval_seconds"):
+            self.worker.set_target_interval_seconds(targets, interval)
+            self.status_label.setText(f"Runtime interval applied to {len(targets)} target(s): {interval}s")
+            return
         self.worker.set_interval_seconds(interval)
         self.status_label.setText(f"Runtime interval applied: {interval}s")
 
@@ -636,7 +641,14 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Resumed {len(targets)} target(s)")
 
     def _selected_target_addresses(self) -> list[str]:
-        selected_rows = sorted({item.row() for item in self.target_table.selectedItems()})
+        selection_model = self.target_table.selectionModel()
+        selected_rows = (
+            {index.row() for index in selection_model.selectedRows()}
+            if selection_model is not None
+            else set()
+        )
+        selected_rows.update(item.row() for item in self.target_table.selectedItems())
+        selected_rows = sorted(selected_rows)
         addresses: list[str] = []
         for row in selected_rows:
             item = self.target_table.item(row, 0)

@@ -252,6 +252,7 @@ class MeasurementWorker(QThread):
         self._stop_event = threading.Event()
         self._control_lock = threading.Lock()
         self._paused_targets: set[str] = set()
+        self._target_interval_overrides: dict[str, int] = {}
         self._ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._route_history = RouteHistory()
         self._tracert_status = "대기"
@@ -269,7 +270,20 @@ class MeasurementWorker(QThread):
                 self._paused_targets.discard(target)
 
     def set_interval_seconds(self, interval_seconds: int) -> None:
-        self.interval_seconds = max(int(interval_seconds), 0)
+        with self._control_lock:
+            self.interval_seconds = max(int(interval_seconds), 0)
+            self._target_interval_overrides.clear()
+
+    def set_target_interval_seconds(self, targets: list[str], interval_seconds: int) -> None:
+        interval = max(int(interval_seconds), 0)
+        with self._control_lock:
+            for target in targets:
+                if target in self.targets:
+                    self._target_interval_overrides[target] = interval
+
+    def target_interval_overrides(self) -> dict[str, int]:
+        with self._control_lock:
+            return dict(self._target_interval_overrides)
 
     def paused_targets(self) -> set[str]:
         with self._control_lock:
@@ -540,7 +554,8 @@ class MeasurementWorker(QThread):
             state = target_states[target]
             if target in active_targets:
                 continue
-            if self.interval_seconds > 0 and now < state.next_due:
+            interval_seconds = self._target_base_interval_seconds(target)
+            if interval_seconds > 0 and now < state.next_due:
                 continue
             state.last_started_at = now
             future = executor.submit(self._ping_target, target)
@@ -616,7 +631,11 @@ class MeasurementWorker(QThread):
                 target = target_futures.pop(future)
                 active_target_pings.discard(target)
                 result = self._future_result(future, target)
-                target_states[target].record_result(result, max(self.interval_seconds, 0), time.monotonic())
+                target_states[target].record_result(
+                    result,
+                    self._target_base_interval_seconds(target),
+                    time.monotonic(),
+                )
                 observations = self._record_target_ping_result(result, metrics, hops, target_trackers)
                 self._store_observations(session_log, recent_observations, observations)
             elif future in hop_futures:
@@ -764,11 +783,11 @@ class MeasurementWorker(QThread):
         loop_delays: deque[float],
     ) -> None:
         timeout_target_count = sum(1 for state in target_states.values() if state.last_status == STATUS_TIMEOUT)
-        base_interval = max(self.interval_seconds, 0)
         backoff_target_count = sum(
             1
-            for state in target_states.values()
-            if base_interval > 0 and state.current_interval_seconds > base_interval
+            for target, state in target_states.items()
+            if self._target_base_interval_seconds(target) > 0
+            and state.current_interval_seconds > self._target_base_interval_seconds(target)
         )
         pending_ping_count = len(target_futures) + len(hop_futures)
         average_loop_delay_ms = (sum(loop_delays) / len(loop_delays) * 1000) if loop_delays else 0.0
@@ -874,6 +893,10 @@ class MeasurementWorker(QThread):
             return 0
         ping_timeout_seconds = max(self.timeout_ms / 1000, WORKER_POLL_SECONDS)
         return min(float(self.interval_seconds), ping_timeout_seconds)
+
+    def _target_base_interval_seconds(self, target: str) -> int:
+        with self._control_lock:
+            return max(int(self._target_interval_overrides.get(target, self.interval_seconds)), 0)
 
     def _target_round_ready(
         self,

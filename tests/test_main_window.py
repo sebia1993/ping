@@ -605,10 +605,14 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         window.resume_all_targets()
         window.interval_combo.setCurrentText("5")
         window.apply_runtime_interval()
+        window.target_table.clearSelection()
+        window.interval_combo.setCurrentText("2")
+        window.apply_runtime_interval()
 
         assert worker.paused_calls == [["203.0.113.10"], ["198.51.100.10", "203.0.113.10"]]
         assert worker.resumed_calls == [["203.0.113.10"], ["198.51.100.10", "203.0.113.10"]]
-        assert worker.interval_updates == [5]
+        assert worker.target_interval_updates == [(["203.0.113.10"], 5)]
+        assert worker.interval_updates == [2]
         assert window.apply_interval_button.isEnabled() is True
     finally:
         window.close()
@@ -1864,6 +1868,7 @@ class _FakeWorker(QObject):
         self.paused_calls: list[list[str]] = []
         self.resumed_calls: list[list[str]] = []
         self.interval_updates: list[int] = []
+        self.target_interval_updates: list[tuple[list[str], int]] = []
 
     def start(self) -> None:
         self.started = True
@@ -1880,6 +1885,9 @@ class _FakeWorker(QObject):
     def set_interval_seconds(self, interval_seconds: int) -> None:
         self.interval_updates.append(interval_seconds)
         self.interval_seconds = interval_seconds
+
+    def set_target_interval_seconds(self, targets: list[str], interval_seconds: int) -> None:
+        self.target_interval_updates.append((list(targets), interval_seconds))
 
     def isRunning(self) -> bool:
         return self.started and not self.stopped

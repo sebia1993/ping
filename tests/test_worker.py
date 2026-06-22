@@ -251,6 +251,32 @@ def test_worker_pause_targets_skips_scheduling_and_marks_snapshot() -> None:
     assert getattr(diagnostics[-1], "paused_target_count") == 1
 
 
+def test_worker_applies_target_specific_interval_override() -> None:
+    _app()
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=1,
+        max_cycles=1,
+        targets=["198.51.100.10", "203.0.113.10"],
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+    )
+
+    worker.set_target_interval_seconds(["203.0.113.10"], 5)
+    state = TargetProbeState("203.0.113.10", last_started_at=100.0)
+    result = PingResult("203.0.113.10", True, 12.0, STATUS_OK, datetime.now())
+    state.record_result(result, worker._target_base_interval_seconds("203.0.113.10"), now=101.0)
+
+    assert worker.target_interval_overrides() == {"203.0.113.10": 5}
+    assert worker._target_base_interval_seconds("198.51.100.10") == 1
+    assert state.current_interval_seconds == 5
+    assert state.next_due == 105.0
+
+    worker.set_interval_seconds(2)
+
+    assert worker.target_interval_overrides() == {}
+    assert worker._target_base_interval_seconds("203.0.113.10") == 2
+
+
 def test_worker_auto_promotes_final_hop_only_to_full_route_on_latency_alert() -> None:
     _app()
     traceroute_probe = _FakeTracerouteProbe(
