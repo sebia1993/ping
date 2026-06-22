@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self.timeline_status = "Timeline source: live buffer"
         self.route_changes: list[RouteChange] = []
         self.alert_events: list[AlertEvent] = []
+        self.alert_event_actions: dict[str, list[str]] = {}
         self.active_alert_keys: set[str] = set()
         self.metric_value_labels: dict[str, QLabel] = {}
 
@@ -341,6 +342,11 @@ class MainWindow(QMainWindow):
         self.sample_bad_spin.setRange(1, 100)
         self.sample_bad_spin.setValue(10)
         self.sample_bad_spin.setSuffix(" bad")
+        self.alert_timeline_action_check = QCheckBox("Timeline")
+        self.alert_timeline_action_check.setChecked(True)
+        self.alert_comment_action_check = QCheckBox("Comment")
+        self.alert_comment_action_check.setChecked(True)
+        self.alert_beep_action_check = QCheckBox("Beep")
         for label, spin in [
             ("Loss", self.loss_threshold_spin),
             ("Window", self.loss_window_spin),
@@ -350,6 +356,10 @@ class MainWindow(QMainWindow):
         ]:
             alert_rule_row.addWidget(QLabel(label))
             alert_rule_row.addWidget(spin)
+        alert_rule_row.addWidget(QLabel("Actions"))
+        alert_rule_row.addWidget(self.alert_timeline_action_check)
+        alert_rule_row.addWidget(self.alert_comment_action_check)
+        alert_rule_row.addWidget(self.alert_beep_action_check)
         alert_rule_row.addStretch(1)
         self.alerts_box = QTextEdit()
         self.alerts_box.setReadOnly(True)
@@ -501,6 +511,7 @@ class MainWindow(QMainWindow):
         self.analysis = []
         self.route_changes = []
         self.alert_events = []
+        self.alert_event_actions = {}
         self.active_alert_keys = set()
         self._clear_focus_state()
         self._clear_timeline_state()
@@ -960,6 +971,7 @@ class MainWindow(QMainWindow):
             )
             for event in self.alert_events
             if not event.key.startswith("route_changed:")
+            and self._alert_event_has_action(event, "timeline_annotation")
         ]
 
     def _record_metric_alerts(self) -> None:
@@ -998,15 +1010,39 @@ class MainWindow(QMainWindow):
             return
         self.alert_events.append(event)
         self.alert_events = self.alert_events[-100:]
-        self._record_alert_actions(event)
+        self.alert_event_actions[event.key] = self._record_alert_actions(event)
         self._sync_alerts_box()
 
-    def _record_alert_actions(self, event: AlertEvent) -> None:
+    def _record_alert_actions(self, event: AlertEvent) -> list[str]:
+        actions = self._selected_alert_actions()
+        if "beep" in actions:
+            QApplication.beep()
+        if not actions:
+            return []
         append_alert_action(
             self.alert_action_log_path,
             event,
-            actions=["timeline_annotation", "comment"],
+            actions=actions,
         )
+        return actions
+
+    def _selected_alert_actions(self) -> list[str]:
+        if not hasattr(self, "alert_timeline_action_check"):
+            return ["timeline_annotation", "comment"]
+        actions: list[str] = []
+        if self.alert_timeline_action_check.isChecked():
+            actions.append("timeline_annotation")
+        if self.alert_comment_action_check.isChecked():
+            actions.append("comment")
+        if self.alert_beep_action_check.isChecked():
+            actions.append("beep")
+        return actions
+
+    def _alert_event_has_action(self, event: AlertEvent, action: str) -> bool:
+        actions = self.alert_event_actions.get(event.key)
+        if actions is None:
+            return True
+        return action in actions
 
     def _sync_alerts_box(self) -> None:
         if not hasattr(self, "alerts_box"):
@@ -1210,6 +1246,7 @@ class MainWindow(QMainWindow):
         self.analysis = analyze_path(self.snapshots, self.target_snapshot)
         self.route_changes = []
         self.alert_events = []
+        self.alert_event_actions = {}
         self.active_alert_keys = set()
         self._clear_focus_state()
         self._clear_timeline_state()
@@ -1490,6 +1527,8 @@ class MainWindow(QMainWindow):
     def annotations_for_export(self) -> list[ExportAnnotation]:
         annotations: list[ExportAnnotation] = []
         for event in self.alert_events:
+            if not self._alert_event_should_export(event):
+                continue
             source = "route" if event.key.startswith("route_changed:") else "alert"
             annotations.append(
                 ExportAnnotation(
@@ -1514,6 +1553,12 @@ class MainWindow(QMainWindow):
                     )
                 )
         return annotations_in_range(annotations, self.focus_range)
+
+    def _alert_event_should_export(self, event: AlertEvent) -> bool:
+        actions = self.alert_event_actions.get(event.key)
+        if actions is None:
+            return True
+        return bool({"timeline_annotation", "comment"}.intersection(actions))
 
     def _select_save_path(self, extension: str, file_filter: str, *, target: str | None = None) -> Path | None:
         default = default_export_path(target or self.current_target or "target", extension, Path.cwd() / "exports")

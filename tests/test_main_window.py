@@ -40,6 +40,9 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.report_button.isEnabled() is False
         assert window.stats_csv_button.isEnabled() is False
         assert window.stats_xlsx_button.isEnabled() is False
+        assert window.alert_timeline_action_check.isChecked() is True
+        assert window.alert_comment_action_check.isChecked() is True
+        assert window.alert_beep_action_check.isChecked() is False
         assert window.export_session_button.isEnabled() == (window.session_combo.count() > 0)
         assert window.graph_detail_button.text() == "그래프 확대"
         assert window.sessions_box.toPlainText()
@@ -1189,6 +1192,38 @@ def test_main_window_custom_alert_rules_write_action_log(qt_app, tmp_path) -> No
         assert "Latency alert" in text
         assert [row["title"] for row in rows] == ["Loss alert", "Latency alert"]
         assert all(row["actions"] == "timeline_annotation;comment" for row in rows)
+    finally:
+        window.close()
+
+
+def test_main_window_alert_action_selection_controls_log_beep_and_timeline(qt_app, tmp_path, monkeypatch) -> None:
+    beep_calls: list[bool] = []
+    monkeypatch.setattr(main_window_module.QApplication, "beep", lambda: beep_calls.append(True))
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 90.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=90.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(80)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_beep_action_check.setChecked(True)
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert beep_calls == [True]
+        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["actions"] == "beep"
+        assert "Latency alert" in window.alerts_box.toPlainText()
+        assert window.graph._annotations == []
+        assert window.annotations_for_export() == []
     finally:
         window.close()
 
