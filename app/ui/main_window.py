@@ -52,7 +52,7 @@ from app.ui.worker import (
     PROBE_ENGINE_TCP_CONNECT,
     MeasurementWorker,
 )
-from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session
+from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.route_log import route_changes_in_range, route_log_path_for_session
 from app.storage.session_index import SessionIndexStore, TraceSessionRecord, session_index_root_for_sample_path
@@ -957,11 +957,11 @@ class MainWindow(QMainWindow):
             self.route_log_path = route_log_path_for_session(self.session_log_path)
         loaded = route_changes_in_range(self.route_log_path, start, end)
         if loaded:
-            self._merge_route_changes(loaded)
+            self._merge_route_changes(loaded, record_alert_actions=False)
             self._sync_route_changes_box()
             self.graph.set_annotations(self._timeline_annotations())
 
-    def _merge_route_changes(self, changes: list[RouteChange]) -> None:
+    def _merge_route_changes(self, changes: list[RouteChange], *, record_alert_actions: bool = True) -> None:
         if not changes:
             return
         existing_keys = {
@@ -974,7 +974,7 @@ class MainWindow(QMainWindow):
                 continue
             self.route_changes.append(change)
             existing_keys.add(key)
-            self._append_alert_event(route_change_alert(change.timestamp, change.summary))
+            self._append_alert_event(route_change_alert(change.timestamp, change.summary), record_actions=record_alert_actions)
         self.route_changes = sorted(self.route_changes, key=lambda item: item.timestamp)[-100:]
 
     def _alert_timeline_annotations(self) -> list[TimelineAnnotation]:
@@ -1021,12 +1021,23 @@ class MainWindow(QMainWindow):
             sample_failure_count=int(sample_bad),
         )
 
-    def _append_alert_event(self, event: AlertEvent) -> None:
+    def _append_alert_event(
+        self,
+        event: AlertEvent,
+        *,
+        record_actions: bool = True,
+        actions: list[str] | None = None,
+    ) -> None:
         if any(existing.key == event.key for existing in self.alert_events):
+            if actions is not None:
+                self.alert_event_actions[event.key] = actions
             return
         self.alert_events.append(event)
         self.alert_events = self.alert_events[-100:]
-        self.alert_event_actions[event.key] = self._record_alert_actions(event)
+        if actions is not None:
+            self.alert_event_actions[event.key] = actions
+        elif record_actions:
+            self.alert_event_actions[event.key] = self._record_alert_actions(event)
         self._sync_alerts_box()
 
     def _record_alert_actions(self, event: AlertEvent) -> list[str]:
@@ -1269,6 +1280,7 @@ class MainWindow(QMainWindow):
         bounds = session_log_bounds(self.session_log_path)
         if bounds is not None:
             self._load_route_changes_for_range(*bounds)
+        self._load_saved_alert_actions()
         self.timeline_status = f"Timeline source: opened session, {len(observations)} samples"
         self._sync_alerts_box()
         self._sync_route_changes_box()
@@ -1337,6 +1349,14 @@ class MainWindow(QMainWindow):
         if tcp_port is not None:
             self.tcp_port_spin.setValue(tcp_port)
         self._on_probe_engine_changed()
+
+    def _load_saved_alert_actions(self) -> None:
+        for index, row in enumerate(read_alert_actions(self.alert_action_log_path)):
+            event = _alert_event_from_action_row(row, index)
+            if event is None:
+                continue
+            actions = [action for action in row.get("actions", "").split(";") if action]
+            self._append_alert_event(event, record_actions=False, actions=actions)
 
     def _route_change_impact_line(self, change: RouteChange) -> str:
         points = self._target_points_for_route_impact()
@@ -1847,6 +1867,52 @@ def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
             except ValueError:
                 tcp_port = None
     return mode, probe_engine, tcp_port
+
+
+def _alert_event_from_action_row(row: dict[str, str], index: int) -> AlertEvent | None:
+    timestamp = _parse_iso_datetime(row.get("timestamp", ""))
+    if timestamp is None:
+        timestamp = _parse_iso_datetime(row.get("end", "")) or _parse_iso_datetime(row.get("start", ""))
+    if timestamp is None:
+        return None
+    start = _parse_iso_datetime(row.get("start", "")) or timestamp
+    end = _parse_iso_datetime(row.get("end", "")) or timestamp
+    source = row.get("source", "") or "alert"
+    title = row.get("title", "") or ("Route changed" if source == "route" else "Alert")
+    message = row.get("message", "")
+    severity = row.get("severity", "") or ("warning" if source == "route" else "info")
+    key = _alert_event_key_from_action_row(source, timestamp, title, message, index)
+    return AlertEvent(
+        key=key,
+        timestamp=timestamp,
+        start=start,
+        end=end,
+        severity=severity,
+        title=title,
+        message=message,
+        series_key=None if source == "route" else "target",
+    )
+
+
+def _alert_event_key_from_action_row(
+    source: str,
+    timestamp: datetime,
+    title: str,
+    message: str,
+    index: int,
+) -> str:
+    if source == "route":
+        return f"route_changed:{timestamp.isoformat(timespec='seconds')}"
+    return f"saved_alert:{timestamp.isoformat(timespec='seconds')}:{index}:{title}:{message}"
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _qdatetime_from_datetime(value: datetime) -> QDateTime:

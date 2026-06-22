@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from app.core.alerts import AlertEvent
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopInfo, HopObservation, MetricSnapshot
 from app.core.route_history import RouteHistory
-from app.storage.alert_action_log import alert_action_log_path_for_session, read_alert_actions
+from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.route_log import RouteLogWriter, route_log_path_for_session
 from app.storage.session_index import SESSION_STATE_ARCHIVED, SessionIndexStore
 from app.storage.session_log import SessionLogWriter
@@ -134,6 +134,59 @@ def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) 
         assert window.graph._points == window.target_history
         assert window.csv_button.isEnabled() is True
         assert "Loaded session" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_restores_saved_alert_actions_when_opening_session(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        ])
+    alert_event = AlertEvent(
+        key="target_latency_100ms",
+        timestamp=now,
+        start=now,
+        end=now,
+        severity="warning",
+        title="Latency alert",
+        message="Target latency 120.0 ms >= 100 ms",
+    )
+    append_alert_action(
+        alert_action_log_path_for_session(sample_path),
+        alert_event,
+        actions=["timeline_annotation", "comment"],
+    )
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    store.add_samples(record.session_id, 1, now, segments=[sample_path])
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+
+        window.open_selected_session()
+
+        assert [event.title for event in window.alert_events] == ["Latency alert"]
+        assert "Latency alert" in window.alerts_box.toPlainText()
+        assert list(window.alert_event_actions.values()) == [["timeline_annotation", "comment"]]
+        annotations = window.annotations_for_export()
+        assert len(annotations) == 1
+        assert annotations[0].source == "alert"
+        assert annotations[0].title == "Latency alert"
     finally:
         window.close()
 
@@ -1244,6 +1297,79 @@ def test_main_window_loads_persisted_route_changes_with_timeline_range(qt_app, t
             "Route changed"
         ]
         assert window.annotations_for_export()[0].source == "route"
+    finally:
+        window.close()
+
+
+def test_main_window_open_session_does_not_replay_route_alert_actions(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+            HopObservation(now + timedelta(seconds=60), 0, "198.51.100.10", "Target", True, 12.0, STATUS_OK, True),
+        ])
+    history = RouteHistory()
+    history.record(
+        [
+            HopInfo(index=1, address="192.0.2.1", hostname="gateway"),
+            HopInfo(index=2, address="198.51.100.10", hostname="target", is_target=True),
+        ],
+        now,
+    )
+    change = history.record(
+        [
+            HopInfo(index=1, address="192.0.2.254", hostname="backup"),
+            HopInfo(index=2, address="198.51.100.10", hostname="target", is_target=True),
+        ],
+        now + timedelta(seconds=60),
+    )
+    assert change is not None
+    route_path = route_log_path_for_session(sample_path)
+    with RouteLogWriter(route_path) as route_writer:
+        route_writer.write_snapshot(history.snapshots[0])
+        route_writer.write_snapshot(history.snapshots[1], change)
+    append_alert_action(
+        alert_action_log_path_for_session(sample_path),
+        AlertEvent(
+            key=f"route_changed:{change.timestamp.isoformat(timespec='seconds')}",
+            timestamp=change.timestamp,
+            start=change.timestamp,
+            end=change.timestamp,
+            severity="warning",
+            title="Route changed",
+            message=change.summary,
+            series_key=None,
+        ),
+        actions=["comment"],
+        source="route",
+    )
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=route_path,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(record.session_id, 2, now + timedelta(seconds=60), segments=[sample_path])
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=60))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+
+        window.open_selected_session()
+
+        rows = read_alert_actions(alert_action_log_path_for_session(sample_path))
+        assert len(rows) == 1
+        assert rows[0]["actions"] == "comment"
+        assert [event.title for event in window.alert_events] == ["Route changed"]
+        assert list(window.alert_event_actions.values()) == [["comment"]]
     finally:
         window.close()
 
