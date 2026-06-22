@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from app.core.alerts import (
     AlertRuleConfig,
+    JITTER_ALERT_KEY,
     LATENCY_ALERT_KEY,
     LOSS_ALERT_KEY,
     SAMPLE_ALERT_KEY,
@@ -89,6 +90,33 @@ def test_evaluate_target_alerts_detects_sample_count_condition() -> None:
     assert SAMPLE_ALERT_KEY in active_keys
     assert events[-1].title == "Sample count alert"
     assert events[-1].message == "3 of last 4 samples failed or exceeded 100 ms"
+
+
+def test_evaluate_target_alerts_detects_jitter_condition() -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    observations = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", True, 60.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", True, 11.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=3), 0, "198.51.100.10", "Target", True, 61.0, STATUS_OK, True),
+    ]
+
+    active_keys, events = evaluate_target_alerts(
+        observations,
+        current_target="198.51.100.10",
+        config=AlertRuleConfig(
+            loss_threshold_percent=100.0,
+            loss_window_seconds=60,
+            latency_threshold_ms=1000.0,
+            jitter_threshold_ms=20.0,
+            sample_window_count=4,
+            sample_failure_count=4,
+        ),
+    )
+
+    assert active_keys == {JITTER_ALERT_KEY}
+    assert events[0].title == "Jitter alert"
+    assert events[0].message == "Target jitter 28.9 ms >= 20 ms over last 4 samples"
 
 
 def test_alert_recovery_event_records_ended_state() -> None:

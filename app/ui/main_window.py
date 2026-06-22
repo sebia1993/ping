@@ -344,6 +344,10 @@ class MainWindow(QMainWindow):
         self.latency_threshold_spin.setRange(1, 5000)
         self.latency_threshold_spin.setValue(100)
         self.latency_threshold_spin.setSuffix("ms")
+        self.jitter_threshold_spin = QSpinBox()
+        self.jitter_threshold_spin.setRange(1, 1000)
+        self.jitter_threshold_spin.setValue(30)
+        self.jitter_threshold_spin.setSuffix("ms")
         self.sample_window_spin = QSpinBox()
         self.sample_window_spin.setRange(1, 100)
         self.sample_window_spin.setValue(10)
@@ -361,6 +365,7 @@ class MainWindow(QMainWindow):
             ("Loss", self.loss_threshold_spin),
             ("Window", self.loss_window_spin),
             ("Latency", self.latency_threshold_spin),
+            ("Jitter", self.jitter_threshold_spin),
             ("Samples", self.sample_window_spin),
             ("Bad", self.sample_bad_spin),
         ]:
@@ -1019,12 +1024,14 @@ class MainWindow(QMainWindow):
         loss_threshold = float(self.loss_threshold_spin.value()) if hasattr(self, "loss_threshold_spin") else 20.0
         loss_window_minutes = self.loss_window_spin.value() if hasattr(self, "loss_window_spin") else 3
         latency_threshold = float(self.latency_threshold_spin.value()) if hasattr(self, "latency_threshold_spin") else 100.0
+        jitter_threshold = float(self.jitter_threshold_spin.value()) if hasattr(self, "jitter_threshold_spin") else 30.0
         sample_window = self.sample_window_spin.value() if hasattr(self, "sample_window_spin") else 10
         sample_bad = self.sample_bad_spin.value() if hasattr(self, "sample_bad_spin") else 10
         return AlertRuleConfig(
             loss_threshold_percent=loss_threshold,
             loss_window_seconds=int(loss_window_minutes) * 60,
             latency_threshold_ms=latency_threshold,
+            jitter_threshold_ms=jitter_threshold,
             sample_window_count=int(sample_window),
             sample_failure_count=int(sample_bad),
         )

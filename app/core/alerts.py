@@ -8,6 +8,7 @@ from app.core.models import HopObservation
 
 LOSS_ALERT_KEY = "target_loss_20pct_3m"
 LATENCY_ALERT_KEY = "target_latency_100ms"
+JITTER_ALERT_KEY = "target_jitter_30ms"
 SAMPLE_ALERT_KEY = "target_sample_condition"
 
 
@@ -16,6 +17,7 @@ class AlertRuleConfig:
     loss_threshold_percent: float = 20.0
     loss_window_seconds: int = 180
     latency_threshold_ms: float = 100.0
+    jitter_threshold_ms: float = 30.0
     sample_window_count: int = 10
     sample_failure_count: int = 10
 
@@ -45,6 +47,9 @@ def evaluate_target_alerts(
         loss_threshold_percent = config.loss_threshold_percent
         loss_window_seconds = config.loss_window_seconds
         latency_threshold_ms = config.latency_threshold_ms
+        jitter_threshold_ms = config.jitter_threshold_ms
+    else:
+        jitter_threshold_ms = 30.0
     points = _target_points(observations, current_target)
     if not points:
         return set(), []
@@ -59,6 +64,14 @@ def evaluate_target_alerts(
     if latency_event is not None:
         active_keys.add(latency_event.key)
         events.append(latency_event)
+    jitter_event = _jitter_alert(
+        points,
+        jitter_threshold_ms,
+        config.sample_window_count if config else 10,
+    )
+    if jitter_event is not None:
+        active_keys.add(jitter_event.key)
+        events.append(jitter_event)
     sample_event = _sample_count_alert(
         points,
         latency_threshold_ms,
@@ -151,6 +164,32 @@ def _latency_alert(points: list[HopObservation], threshold_ms: float) -> AlertEv
     )
 
 
+def _jitter_alert(
+    points: list[HopObservation],
+    threshold_ms: float,
+    window_count: int,
+) -> AlertEvent | None:
+    window_count = max(int(window_count), 2)
+    if len(points) < window_count:
+        return None
+    window = points[-window_count:]
+    latencies = [point.latency_ms for point in window if point.success and point.latency_ms is not None]
+    if len(latencies) < 2:
+        return None
+    jitter_ms = _sample_stdev(latencies)
+    if jitter_ms < threshold_ms:
+        return None
+    return AlertEvent(
+        key=JITTER_ALERT_KEY,
+        timestamp=window[-1].timestamp,
+        start=window[0].timestamp,
+        end=window[-1].timestamp,
+        severity="warning",
+        title="Jitter alert",
+        message=f"Target jitter {jitter_ms:.1f} ms >= {threshold_ms:.0f} ms over last {window_count} samples",
+    )
+
+
 def _sample_count_alert(
     points: list[HopObservation],
     latency_threshold_ms: float,
@@ -183,11 +222,21 @@ def _sample_count_alert(
     )
 
 
+def _sample_stdev(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return variance**0.5
+
+
 def _alert_title_for_key(alert_key: str) -> str:
     if alert_key == LOSS_ALERT_KEY:
         return "Loss alert"
     if alert_key == LATENCY_ALERT_KEY:
         return "Latency alert"
+    if alert_key == JITTER_ALERT_KEY:
+        return "Jitter alert"
     if alert_key == SAMPLE_ALERT_KEY:
         return "Sample count alert"
     if alert_key.startswith("route_changed:"):

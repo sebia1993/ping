@@ -54,6 +54,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_beep_action_check.isChecked() is False
+        assert window.jitter_threshold_spin.value() == 30
         assert window.statistics_start_edit.isEnabled() is False
         assert window.statistics_end_edit.isEnabled() is False
         assert window.export_session_button.isEnabled() == (window.session_combo.count() > 0)
@@ -1619,6 +1620,37 @@ def test_main_window_records_sample_count_alert_and_recovery(qt_app, tmp_path) -
         assert "Alert ended" in window.alerts_box.toPlainText()
         assert [row["title"] for row in rows] == ["Sample count alert", "Alert ended"]
         assert rows[1]["message"] == "Sample count alert recovered"
+    finally:
+        window.close()
+
+
+def test_main_window_records_jitter_alert_action(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", True, 60.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", True, 11.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=3), 0, "198.51.100.10", "Target", True, 61.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=61.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(1000)
+        window.jitter_threshold_spin.setValue(20)
+        window.sample_window_spin.setValue(4)
+        window.sample_bad_spin.setValue(4)
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert "Jitter alert" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["Jitter alert"]
+        assert rows[0]["message"] == "Target jitter 28.9 ms >= 20 ms over last 4 samples"
+        assert window.graph._annotations[0].label == "Jitter alert"
     finally:
         window.close()
 
