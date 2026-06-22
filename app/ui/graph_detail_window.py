@@ -240,6 +240,7 @@ class GraphDetailWindow(QMainWindow):
             ("1h", 3600),
             ("6h", 21600),
             ("24h", 86400),
+            ("48h", 172800),
         ]:
             button = QPushButton(label)
             button.clicked.connect(lambda _checked=False, seconds=seconds: self.timeline_range_requested.emit(seconds))

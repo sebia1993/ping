@@ -1954,7 +1954,7 @@ def _format_duration(seconds: int) -> str:
         return f"{seconds}s"
     if seconds < 3600:
         return f"{seconds // 60}m"
-    if seconds < 86400:
+    if seconds <= 172800:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
 

@@ -1363,6 +1363,8 @@ def test_main_window_loads_graph_timeline_from_session_log_and_focuses_it(qt_app
         assert len(window.timeline_observations) == 4
         assert len(window.graph_detail_window.graph._series[0].points) == 2
         assert "10m" in window.graph_detail_window.timeline_status_label.text()
+        window.load_timeline_range(172800)
+        assert "48h" in window.graph_detail_window.timeline_status_label.text()
 
         window.apply_focus_range((now, now + timedelta(seconds=3)))
 

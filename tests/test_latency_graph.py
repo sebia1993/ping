@@ -287,8 +287,9 @@ def test_graph_detail_time_scale_buttons_emit_seconds(qt_app) -> None:
         buttons = {button.text(): button for button in detail.findChildren(QPushButton)}
         buttons["10m"].click()
         buttons["24h"].click()
+        buttons["48h"].click()
 
-        assert requested == [600, 86400]
+        assert requested == [600, 86400, 172800]
     finally:
         detail.close()
 
