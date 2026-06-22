@@ -111,6 +111,17 @@ if ($LASTEXITCODE -ne 0 -or -not $Head) {
     throw "Could not determine current commit."
 }
 
+$PreviousTag = (& git describe --tags --abbrev=0 2>$null).Trim()
+if ($LASTEXITCODE -ne 0) {
+    $PreviousTag = ""
+}
+$ChangeRange = if ($PreviousTag) { "$PreviousTag..HEAD" } else { "HEAD" }
+$ChangeLines = @(& git log --pretty=format:"- %s (%h)" --no-merges $ChangeRange)
+if ($LASTEXITCODE -ne 0 -or -not $ChangeLines) {
+    $ChangeLines = @("- 변경 커밋을 자동으로 찾지 못했습니다. GitHub의 커밋 목록을 확인하세요.")
+}
+$ChangeSummaryText = ($ChangeLines -join [Environment]::NewLine)
+
 if (-not $SkipUpload) {
     $AuthOutput = (& $GhCommand auth status 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -171,13 +182,20 @@ Invoke-Checked "git" @("push", "origin", $Tag)
 
 $NotesPath = Join-Path $env:TEMP "${Name}_${SafeTag}_release_notes.md"
 @"
-Automated local release package.
+## 변경사항
 
-- Commit: $Head
-- Branch: $Branch
-- EXE: $($ExeItem.Name) ($($ExeItem.Length) bytes)
-- ZIP: $($ZipItem.Name) ($($ZipItem.Length) bytes)
-- Verification: scripts\verify_release.py --exe
+$ChangeSummaryText
+
+## 실행 파일
+
+- 실행 파일: $($ExeItem.Name) ($($ExeItem.Length) bytes)
+- 압축 파일: $($ZipItem.Name) ($($ZipItem.Length) bytes)
+
+## 검증
+
+- 검증 명령: scripts\verify_release.py --exe
+- 기준 커밋: $Head
+- 브랜치: $Branch
 "@ | Set-Content -LiteralPath $NotesPath -Encoding UTF8
 
 $ReleaseArgs = @(
