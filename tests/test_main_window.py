@@ -17,7 +17,14 @@ from app.storage.session_log import SessionLogWriter
 from app.storage.statistics_exporter import TIMEZONE_UTC
 from app.ui import main_window as main_window_module
 from app.ui.graph_detail_window import VIEW_SELECTED_HOP, VIEW_VISIBLE_HOPS
-from app.ui.main_window import MainWindow, STATISTICS_SCOPE_FOCUS, STATISTICS_SCOPE_VISIBLE, TABLE_HEADERS, TARGET_HEADERS
+from app.ui.main_window import (
+    MainWindow,
+    STATISTICS_SCOPE_CUSTOM,
+    STATISTICS_SCOPE_FOCUS,
+    STATISTICS_SCOPE_VISIBLE,
+    TABLE_HEADERS,
+    TARGET_HEADERS,
+)
 from app.ui.worker import (
     MEASUREMENT_MODE_FINAL_HOP_ONLY,
     MEASUREMENT_MODE_FULL_ROUTE,
@@ -43,6 +50,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_beep_action_check.isChecked() is False
+        assert window.statistics_start_edit.isEnabled() is False
+        assert window.statistics_end_edit.isEnabled() is False
         assert window.export_session_button.isEnabled() == (window.session_combo.count() > 0)
         assert window.graph_detail_button.text() == "그래프 확대"
         assert window.sessions_box.toPlainText()
@@ -761,6 +770,49 @@ def test_main_window_statistics_focus_scope_uses_live_buffer_override(qt_app, tm
         worker = created_workers[0]
         assert worker.kwargs["focus_range"] == window.focus_range
         assert [point.latency_ms for point in worker.kwargs["observations_override"]] == [1.0, 2.0]
+    finally:
+        window.close()
+
+
+def test_main_window_statistics_custom_scope_uses_explicit_range(qt_app, tmp_path, monkeypatch) -> None:
+    created_workers: list[_FakeExportWorker] = []
+    export_path = tmp_path / "statistics.csv"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "CSV Files (*.csv)"
+
+    def fake_export_worker(**kwargs):
+        worker = _FakeExportWorker(**kwargs)
+        created_workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module, "ExportWorker", fake_export_worker)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    start = now + timedelta(seconds=5)
+    end = now + timedelta(seconds=65)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.observations = [
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 1.0, STATUS_OK, True),
+            HopObservation(now + timedelta(seconds=30), 0, "198.51.100.10", "Target", True, 2.0, STATUS_OK, True),
+            HopObservation(now + timedelta(seconds=90), 0, "198.51.100.10", "Target", True, 3.0, STATUS_OK, True),
+        ]
+        scope_index = window.statistics_scope_combo.findData(STATISTICS_SCOPE_CUSTOM)
+        assert scope_index >= 0
+        window.statistics_scope_combo.setCurrentIndex(scope_index)
+        window._set_statistics_custom_range(start, end)
+
+        window.save_statistics_csv()
+
+        assert len(created_workers) == 1
+        worker = created_workers[0]
+        assert worker.kwargs["focus_range"] == (start, end)
+        assert [point.latency_ms for point in worker.kwargs["observations_override"]] == [2.0]
+        assert window.statistics_start_edit.isEnabled() is False
+        assert window.statistics_end_edit.isEnabled() is False
     finally:
         window.close()
 

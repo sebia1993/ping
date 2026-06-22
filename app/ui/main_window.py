@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, QDateTime, Qt, QTime
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDateTimeEdit,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -63,6 +64,7 @@ from app.utils.validators import IPV4_ONLY_MESSAGE, parse_ipv4_targets, validate
 STATISTICS_SCOPE_ALL = "all"
 STATISTICS_SCOPE_VISIBLE = "visible"
 STATISTICS_SCOPE_FOCUS = "focus"
+STATISTICS_SCOPE_CUSTOM = "custom"
 
 class MainWindow(QMainWindow):
     def __init__(self, worker_factory=None) -> None:
@@ -424,10 +426,23 @@ class MainWindow(QMainWindow):
         self.statistics_scope_combo.addItem("All time", STATISTICS_SCOPE_ALL)
         self.statistics_scope_combo.addItem("Visible timeline", STATISTICS_SCOPE_VISIBLE)
         self.statistics_scope_combo.addItem("Focus period", STATISTICS_SCOPE_FOCUS)
+        self.statistics_scope_combo.addItem("Custom range", STATISTICS_SCOPE_CUSTOM)
+        self.statistics_scope_combo.currentIndexChanged.connect(self._sync_statistics_range_controls)
+        self.statistics_start_edit = QDateTimeEdit()
+        self.statistics_start_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.statistics_start_edit.setCalendarPopup(True)
+        self.statistics_end_edit = QDateTimeEdit()
+        self.statistics_end_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.statistics_end_edit.setCalendarPopup(True)
+        self._set_statistics_custom_range(datetime.now() - timedelta(hours=1), datetime.now())
         statistics_export_row = QHBoxLayout()
         statistics_export_row.setSpacing(8)
         statistics_export_row.addWidget(QLabel("Stats scope"))
         statistics_export_row.addWidget(self.statistics_scope_combo)
+        statistics_export_row.addWidget(QLabel("Start"))
+        statistics_export_row.addWidget(self.statistics_start_edit)
+        statistics_export_row.addWidget(QLabel("End"))
+        statistics_export_row.addWidget(self.statistics_end_edit)
         statistics_export_row.addWidget(QLabel("Stats group"))
         statistics_export_row.addWidget(self.statistics_group_combo)
         statistics_export_row.addWidget(QLabel("Timezone"))
@@ -435,6 +450,7 @@ class MainWindow(QMainWindow):
         statistics_export_row.addWidget(self.stats_csv_button)
         statistics_export_row.addWidget(self.stats_xlsx_button)
         statistics_export_row.addStretch(1)
+        self._sync_statistics_range_controls()
 
         export_note = QLabel(
             "파일명은 network_trace_target_YYYYMMDD_HHMMSS 형식을 사용합니다. "
@@ -1451,7 +1467,28 @@ class MainWindow(QMainWindow):
             return self.timeline_range
         if scope == STATISTICS_SCOPE_FOCUS:
             return self.focus_range
+        if scope == STATISTICS_SCOPE_CUSTOM:
+            return self._statistics_custom_range()
         return None
+
+    def _statistics_custom_range(self) -> tuple[datetime, datetime]:
+        start = _datetime_from_qdatetime(self.statistics_start_edit.dateTime())
+        end = _datetime_from_qdatetime(self.statistics_end_edit.dateTime())
+        if end < start:
+            start, end = end, start
+        return start, end
+
+    def _set_statistics_custom_range(self, start: datetime, end: datetime) -> None:
+        self.statistics_start_edit.setDateTime(_qdatetime_from_datetime(start))
+        self.statistics_end_edit.setDateTime(_qdatetime_from_datetime(end))
+
+    def _sync_statistics_range_controls(self, *_args, exporting: bool | None = None) -> None:
+        if not hasattr(self, "statistics_scope_combo"):
+            return
+        custom = self.statistics_scope_combo.currentData() == STATISTICS_SCOPE_CUSTOM
+        is_exporting = bool(self.export_worker and self.export_worker.isRunning()) if exporting is None else exporting
+        self.statistics_start_edit.setEnabled(custom and not is_exporting)
+        self.statistics_end_edit.setEnabled(custom and not is_exporting)
 
     def _start_export(
         self,
@@ -1636,6 +1673,7 @@ class MainWindow(QMainWindow):
         self.statistics_scope_combo.setEnabled(not exporting)
         self.statistics_group_combo.setEnabled(not exporting)
         self.statistics_timezone_combo.setEnabled(not exporting)
+        self._sync_statistics_range_controls(exporting=exporting)
         if hasattr(self, "export_session_button"):
             self.export_session_button.setEnabled(not exporting and self.session_combo.count() > 0)
         if hasattr(self, "resume_session_button"):
@@ -1781,6 +1819,26 @@ def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
             except ValueError:
                 tcp_port = None
     return mode, probe_engine, tcp_port
+
+
+def _qdatetime_from_datetime(value: datetime) -> QDateTime:
+    return QDateTime(
+        QDate(value.year, value.month, value.day),
+        QTime(value.hour, value.minute, value.second),
+    )
+
+
+def _datetime_from_qdatetime(value: QDateTime) -> datetime:
+    date = value.date()
+    time_value = value.time()
+    return datetime(
+        date.year(),
+        date.month(),
+        date.day(),
+        time_value.hour(),
+        time_value.minute(),
+        time_value.second(),
+    )
 
 
 APP_STYLE = """
