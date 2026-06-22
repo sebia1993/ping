@@ -667,6 +667,64 @@ def test_worker_uses_tcp_connect_probe_engine(monkeypatch) -> None:
     assert getattr(diagnostics[-1], "tcp_port") == 8443
 
 
+def test_worker_uses_icmp_for_full_route_hops_with_tcp_target_engine(monkeypatch) -> None:
+    _app()
+    calls: list[tuple[object, ...]] = []
+
+    class RecordingTcpConnectRunner:
+        def __init__(self, timeout_ms: int, port: int) -> None:
+            calls.append(("tcp_init", timeout_ms, port))
+
+        def ping(self, target: str) -> PingResult:
+            calls.append(("tcp_ping", target))
+            return PingResult(target, True, 14.0, STATUS_OK, datetime.now())
+
+        def close(self) -> None:
+            calls.append(("tcp_close",))
+
+    class RecordingCommandPingRunner:
+        def __init__(self, timeout_ms: int) -> None:
+            calls.append(("icmp_init", timeout_ms))
+
+        def ping(self, target: str) -> PingResult:
+            calls.append(("icmp_ping", target))
+            return PingResult(target, True, 2.0, STATUS_OK, datetime.now())
+
+        def close(self) -> None:
+            calls.append(("icmp_close",))
+
+    monkeypatch.setattr(worker_module, "TcpConnectRunner", RecordingTcpConnectRunner)
+    monkeypatch.setattr(worker_module, "CommandPingRunner", RecordingCommandPingRunner)
+    traceroute_probe = _FakeTracerouteProbe(
+        [
+            HopInfo(index=1, address="192.0.2.1", hostname="gateway"),
+            HopInfo(index=2, address="198.51.100.10", hostname="target.example"),
+        ]
+    )
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=1,
+        timeout_ms=650,
+        traceroute_probe=traceroute_probe,
+        measurement_mode=MEASUREMENT_MODE_FULL_ROUTE,
+        probe_engine=PROBE_ENGINE_TCP_CONNECT,
+        tcp_port=8443,
+    )
+    diagnostics: list[object] = []
+    worker.diagnostics_updated.connect(diagnostics.append)
+
+    worker.run()
+
+    assert ("tcp_ping", "198.51.100.10") in calls
+    assert ("icmp_ping", "192.0.2.1") in calls
+    assert ("tcp_ping", "192.0.2.1") not in calls
+    assert ("icmp_ping", "198.51.100.10") not in calls
+    assert diagnostics
+    assert getattr(diagnostics[-1], "target_probe_engine") == "TCP Connect:8443"
+    assert getattr(diagnostics[-1], "route_probe_engine") == "tracert/ICMP"
+
+
 class _FakePingRunner:
     def __init__(self, timeout_ms: int) -> None:
         self.timeout_ms = timeout_ms

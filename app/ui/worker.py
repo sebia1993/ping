@@ -273,6 +273,7 @@ class MeasurementWorker(QThread):
         self._paused_targets: set[str] = set()
         self._target_interval_overrides: dict[str, int] = {}
         self._ping_probe_pool: _ThreadLocalPingProbePool | None = None
+        self._hop_ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._route_history = RouteHistory()
         self._tracert_status = "대기"
 
@@ -369,6 +370,7 @@ class MeasurementWorker(QThread):
             # 세션 CSV와 세션 인덱스는 측정 시작 직후 만들어 둡니다.
             # 프로그램이 중간에 꺼져도 Session Manager가 남은 CSV를 찾아 복구할 수 있습니다.
             self._ping_probe_pool = _ThreadLocalPingProbePool(self._new_ping_probe)
+            self._hop_ping_probe_pool = _ThreadLocalPingProbePool(self._new_hop_ping_probe)
             session_writer = SessionLogWriter.create(self.target)
             route_log = RouteLogWriter.create_for_session(session_writer.path)
             session_index = SessionIndexStore.create(session_index_root_for_sample_path(session_writer.path))
@@ -561,6 +563,9 @@ class MeasurementWorker(QThread):
             if self._ping_probe_pool is not None:
                 self._ping_probe_pool.close()
                 self._ping_probe_pool = None
+            if self._hop_ping_probe_pool is not None:
+                self._hop_ping_probe_pool.close()
+                self._hop_ping_probe_pool = None
             target_executor.shutdown(wait=True, cancel_futures=True)
             hop_executor.shutdown(wait=True, cancel_futures=True)
             trace_executor.shutdown(wait=True, cancel_futures=True)
@@ -623,7 +628,7 @@ class MeasurementWorker(QThread):
                 or ping_target in scheduled_hops
             ):
                 continue
-            future = executor.submit(self._ping_target, ping_target)
+            future = executor.submit(self._ping_hop, ping_target)
             futures[future] = ping_target
             active_hops.add(ping_target)
             scheduled_hops.add(ping_target)
@@ -973,6 +978,11 @@ class MeasurementWorker(QThread):
             return self._ping_probe_pool.ping(target)
         return self._new_ping_probe().ping(target)
 
+    def _ping_hop(self, target: str) -> PingResult:
+        if self._hop_ping_probe_pool is not None:
+            return self._hop_ping_probe_pool.ping(target)
+        return self._new_hop_ping_probe().ping(target)
+
     def _start_trace_refresh(self, executor: ThreadPoolExecutor) -> Future[list[HopInfo]]:
         """tracert는 느릴 수 있으므로 별도 Future로 시작하고 ping 루프는 계속 돌립니다."""
 
@@ -1034,15 +1044,19 @@ class MeasurementWorker(QThread):
         hops: list[HopInfo],
         on_result: Callable[[PingResult, int, int, int], None] | None = None,
     ) -> dict[str, PingResult]:
+        registered_targets = set(self.targets or [self.target])
         targets = {hop.ping_target for hop in hops if hop.ping_target}
-        targets.update(self.targets or [self.target])
+        targets.update(registered_targets)
         clean_targets = sorted(target for target in targets if target)
 
         results: dict[str, PingResult] = {}
         max_workers = min(max(len(clean_targets), 1), 16)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
-                executor.submit(self._new_ping_probe().ping, target): target
+                executor.submit(
+                    (self._new_ping_probe() if target in registered_targets else self._new_hop_ping_probe()).ping,
+                    target,
+                ): target
                 for target in clean_targets
             }
             for future in as_completed(future_map):
@@ -1064,6 +1078,11 @@ class MeasurementWorker(QThread):
             return self.ping_probe_factory(self.timeout_ms)
         if self.probe_engine == PROBE_ENGINE_TCP_CONNECT:
             return TcpConnectRunner(timeout_ms=self.timeout_ms, port=self.tcp_port)
+        return CommandPingRunner(timeout_ms=self.timeout_ms)
+
+    def _new_hop_ping_probe(self):
+        if self.ping_probe_factory:
+            return self.ping_probe_factory(self.timeout_ms)
         return CommandPingRunner(timeout_ms=self.timeout_ms)
 
     def _session_measurement_mode(self) -> str:
