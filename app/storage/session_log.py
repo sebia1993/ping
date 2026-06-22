@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +21,7 @@ OBSERVATION_HEADERS = [
     "latency_ms",
     "status",
 ]
+SEGMENT_INDEX_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class SessionLogWriter:
         self.max_rows_per_file = max_rows_per_file
         self._segment_index = 0
         self._segment_count = 0
+        self._segment_metadata: list[SessionLogSegment] = []
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.count = 0
         self._open_segment(self.path)
@@ -59,12 +62,15 @@ class SessionLogWriter:
             self._writer.writerow(observation_to_row(observation))
             self.count += 1
             self._segment_count += 1
+            self._record_segment_observation(observation)
             wrote = True
         if wrote:
             self._handle.flush()
+            self._write_segment_index()
 
     def close(self) -> None:
         self._handle.close()
+        self._write_segment_index()
 
     def __enter__(self) -> "SessionLogWriter":
         return self
@@ -77,6 +83,7 @@ class SessionLogWriter:
         self._writer = csv.writer(self._handle)
         self._writer.writerow(OBSERVATION_HEADERS)
         self._segment_count = 0
+        self._segment_metadata.append(SessionLogSegment(path=path, start=None, end=None, rows=0))
 
     def _rotate_if_needed(self) -> None:
         if self.max_rows_per_file is None or self._segment_count < self.max_rows_per_file:
@@ -86,6 +93,36 @@ class SessionLogWriter:
         rotated_path = self.path.with_name(f"{self.path.stem}.part{self._segment_index:03d}{self.path.suffix}")
         self.paths.append(rotated_path)
         self._open_segment(rotated_path)
+
+    def _record_segment_observation(self, observation: HopObservation) -> None:
+        current = self._segment_metadata[-1]
+        start = observation.timestamp if current.start is None else min(current.start, observation.timestamp)
+        end = observation.timestamp if current.end is None else max(current.end, observation.timestamp)
+        self._segment_metadata[-1] = SessionLogSegment(
+            path=current.path,
+            start=start,
+            end=end,
+            rows=current.rows + 1,
+        )
+
+    def _write_segment_index(self) -> None:
+        payload = {
+            "version": SEGMENT_INDEX_VERSION,
+            "base": self.path.name,
+            "segments": [
+                {
+                    "path": segment.path.name,
+                    "start": segment.start.isoformat(timespec="seconds") if segment.start else "",
+                    "end": segment.end.isoformat(timespec="seconds") if segment.end else "",
+                    "rows": segment.rows,
+                }
+                for segment in self._segment_metadata
+            ],
+        }
+        session_log_segment_index_path(self.path).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
 
 def observation_to_row(observation: HopObservation) -> list[object]:
@@ -151,6 +188,9 @@ def iter_observations_in_range(
 def session_log_segment_index(path: Path | None) -> list[SessionLogSegment]:
     if path is None:
         return []
+    indexed = _read_segment_index_file(path)
+    if indexed is not None:
+        return indexed
     return [_index_segment(segment_path) for segment_path in session_log_segments(path)]
 
 
@@ -190,6 +230,47 @@ def session_log_segments(path: Path) -> list[Path]:
     segments = [path]
     segments.extend(sorted(path.parent.glob(f"{path.stem}.part*{path.suffix}")))
     return segments
+
+
+def session_log_segment_index_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.segments.json")
+
+
+def _read_segment_index_file(path: Path) -> list[SessionLogSegment] | None:
+    index_path = session_log_segment_index_path(path)
+    if not index_path.exists():
+        return None
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != SEGMENT_INDEX_VERSION:
+        return None
+    rows = payload.get("segments")
+    if not isinstance(rows, list):
+        return None
+    try:
+        indexed = [_segment_from_index_row(path.parent, row) for row in rows]
+    except (KeyError, TypeError, ValueError):
+        return None
+    current_paths = session_log_segments(path)
+    if [segment.path for segment in indexed] != current_paths:
+        return None
+    return indexed
+
+
+def _segment_from_index_row(root: Path, row: object) -> SessionLogSegment:
+    if not isinstance(row, dict):
+        raise TypeError("segment row must be a dict")
+    segment_path = root / str(row["path"])
+    start_value = str(row.get("start") or "")
+    end_value = str(row.get("end") or "")
+    return SessionLogSegment(
+        path=segment_path,
+        start=datetime.fromisoformat(start_value) if start_value else None,
+        end=datetime.fromisoformat(end_value) if end_value else None,
+        rows=int(row.get("rows") or 0),
+    )
 
 
 def row_to_observation(row: dict[str, str]) -> HopObservation:

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.storage.alert_action_log import alert_action_log_path_for_session
 from app.storage.route_log import route_log_path_for_session
-from app.storage.session_log import iter_observations, session_log_segment_index
+from app.storage.session_log import iter_observations, session_log_segment_index, session_log_segment_index_path
 
 
 # Session Manager 화면은 원본 CSV를 매번 전부 읽지 않고 이 작은 JSON 인덱스를 먼저 봅니다.
@@ -519,6 +519,7 @@ def session_data_paths(record: TraceSessionRecord) -> tuple[Path, ...]:
         record.route_path,
         route_log_path_for_session(record.sample_path),
         alert_action_log_path_for_session(record.sample_path),
+        session_log_segment_index_path(record.sample_path),
     ]
     if record.sample_path.parent.exists():
         paths.extend(sorted(record.sample_path.parent.glob(f"{record.sample_path.stem}.part*{record.sample_path.suffix}")))

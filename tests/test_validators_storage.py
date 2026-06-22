@@ -10,6 +10,7 @@ from app.storage.excel_exporter import export_xlsx
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.report_writer import write_text_report
 from app.storage import session_index as session_index_module
+from app.storage import session_log as session_log_module
 from app.storage.session_index import (
     SESSION_STATE_ACTIVE,
     SESSION_STATE_ARCHIVED,
@@ -24,6 +25,7 @@ from app.storage.session_log import (
     session_log_directory,
     session_log_bounds,
     session_log_segment_index,
+    session_log_segment_index_path,
 )
 from app.storage.statistics_exporter import (
     TIMEZONE_UTC,
@@ -319,6 +321,55 @@ def test_session_log_segment_index_reports_bounds_and_skips_ranges(tmp_path) -> 
     assert [segment.rows for segment in segments] == [2, 1]
     assert bounds == (now, now + timedelta(hours=1))
     assert [observation.address for observation in observations] == ["192.168.0.3"]
+
+
+def test_session_log_segment_index_uses_persisted_metadata(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path, max_rows_per_file=2)
+    writer.write_many([
+        _sample_observation(timestamp=now, address="192.168.0.1"),
+        _sample_observation(timestamp=now + timedelta(seconds=1), address="192.168.0.2"),
+        _sample_observation(timestamp=now + timedelta(hours=1), address="192.168.0.3"),
+    ])
+    writer.close()
+
+    index_path = session_log_segment_index_path(path)
+    assert index_path.exists()
+
+    def fail_scan(_path):
+        raise AssertionError("CSV segment scan should not run when metadata is current")
+
+    monkeypatch.setattr(session_log_module, "_index_segment", fail_scan)
+
+    segments = session_log_segment_index(path)
+
+    assert [segment.rows for segment in segments] == [2, 1]
+    assert [(segment.start, segment.end) for segment in segments] == [
+        (now, now + timedelta(seconds=1)),
+        (now + timedelta(hours=1), now + timedelta(hours=1)),
+    ]
+
+
+def test_session_log_segment_index_falls_back_when_metadata_is_stale(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path, max_rows_per_file=2)
+    writer.write_many([
+        _sample_observation(timestamp=now, address="192.168.0.1"),
+        _sample_observation(timestamp=now + timedelta(seconds=1), address="192.168.0.2"),
+        _sample_observation(timestamp=now + timedelta(hours=1), address="192.168.0.3"),
+    ])
+    writer.close()
+    session_log_segment_index_path(path).write_text(
+        '{"version": 1, "base": "session.csv", "segments": []}',
+        encoding="utf-8",
+    )
+
+    segments = session_log_segment_index(path)
+
+    assert [segment.rows for segment in segments] == [2, 1]
+    assert segments[-1].end == now + timedelta(hours=1)
 
 
 def test_session_log_create_uses_target_month_flex_directory(tmp_path) -> None:
@@ -632,8 +683,9 @@ def test_session_index_delete_removes_record_and_managed_files(tmp_path) -> None
     part_path = sample_path.with_name("session.samples.part001.csv")
     route_path = sample_path.with_name("session.routes.csv")
     alert_path = alert_action_log_path_for_session(sample_path)
+    segment_index_path = session_log_segment_index_path(sample_path)
     sample_path.parent.mkdir(parents=True)
-    for path in (sample_path, part_path, route_path, alert_path):
+    for path in (sample_path, part_path, route_path, alert_path, segment_index_path):
         assert path is not None
         path.write_text("managed\n", encoding="utf-8")
 
@@ -657,6 +709,7 @@ def test_session_index_delete_removes_record_and_managed_files(tmp_path) -> None
     assert not part_path.exists()
     assert not route_path.exists()
     assert alert_path is not None and not alert_path.exists()
+    assert not segment_index_path.exists()
 
 
 def test_session_index_prunes_old_inactive_sessions_and_keeps_active(tmp_path) -> None:
