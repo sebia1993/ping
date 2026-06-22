@@ -27,6 +27,7 @@ from app.storage.statistics_exporter import TIMEZONE_UTC
 from app.ui import main_window as main_window_module
 from app.ui.graph_detail_window import VIEW_SELECTED_HOP, VIEW_VISIBLE_HOPS
 from app.ui.main_window import (
+    ALERT_RULE_PRESET_VERSION,
     ALERT_HEADERS,
     GRAPH_PNG_SCOPE_BOTH,
     GRAPH_PNG_SCOPE_TIMELINE,
@@ -2891,7 +2892,16 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.save_alert_rule_preset()
 
         data = json.loads(preset_path.read_text(encoding="utf-8"))
-        assert data["version"] == 1
+        assert data["version"] == ALERT_RULE_PRESET_VERSION
+        assert data["name"] == "voice_alerts"
+        assert datetime.fromisoformat(data["created_at"])
+        assert data["summary"] == {
+            "active_rule_count": 4,
+            "active_action_count": 7,
+            "action_phase_count": 1,
+            "external_action_count": 3,
+            "route_adjustment_enabled": False,
+        }
         assert data["rules"]["loss_enabled"] is False
         assert data["rules"]["loss_threshold_percent"] == 35
         assert data["rules"]["latency_enabled"] is True
@@ -2990,7 +3000,98 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.alert_rest_url_edit.text() == "https://collector.example/alerts"
         assert window.alert_executable_action_check.isChecked() is True
         assert window.alert_executable_path_edit.text() == r"C:\Tools\alert.exe"
-        assert "Alert preset loaded" in window.status_label.text()
+        assert window.status_label.text() == f"Alert preset loaded: {preset_path} | voice_alerts | rules 4 | actions 7"
+    finally:
+        window.close()
+
+
+def test_main_window_loads_legacy_alert_rule_preset(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "legacy_alerts.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "rules": {
+                    "latency_enabled": True,
+                    "latency_threshold_ms": 250,
+                    "loss_enabled": False,
+                },
+                "actions": {
+                    "start": True,
+                    "end": False,
+                    "log": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow()
+
+    try:
+        window.latency_alert_check.setChecked(False)
+        window.latency_threshold_spin.setValue(1)
+        window.alert_log_action_check.setChecked(False)
+
+        window.load_alert_rule_preset()
+
+        assert window.latency_alert_check.isChecked() is True
+        assert window.latency_threshold_spin.value() == 250
+        assert window.loss_alert_check.isChecked() is False
+        assert window.alert_log_action_check.isChecked() is True
+        assert window.status_label.text() == f"Alert preset loaded: {preset_path} | rules 1 | actions 1"
+    finally:
+        window.close()
+
+
+def test_main_window_rejects_alert_preset_summary_count_mismatch(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "bad_alerts.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": ALERT_RULE_PRESET_VERSION,
+                "name": "bad_alerts",
+                "summary": {
+                    "active_rule_count": 2,
+                    "active_action_count": 1,
+                    "action_phase_count": 1,
+                    "external_action_count": 0,
+                    "route_adjustment_enabled": False,
+                },
+                "rules": {
+                    "latency_enabled": True,
+                    "loss_enabled": False,
+                },
+                "actions": {
+                    "start": True,
+                    "end": False,
+                    "log": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow()
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+
+    try:
+        window.latency_alert_check.setChecked(False)
+
+        window.load_alert_rule_preset()
+
+        assert "active_rule_count does not match" in warnings[-1]
+        assert "active_rule_count does not match" in window.status_label.text()
+        assert window.latency_alert_check.isChecked() is False
     finally:
         window.close()
 

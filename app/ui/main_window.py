@@ -119,6 +119,7 @@ GRAPH_PNG_SCOPE_TIMELINE = "timeline"
 GRAPH_PNG_SCOPE_TRACE = "trace"
 GRAPH_PNG_SCOPE_BOTH = "both"
 TARGET_GROUP_PRESET_VERSION = 2
+ALERT_RULE_PRESET_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -1740,7 +1741,8 @@ class MainWindow(QMainWindow):
             path = path.with_suffix(".json")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(self._alert_rule_preset(), indent=2), encoding="utf-8")
+            preset = self._alert_rule_preset(name=path.stem)
+            path.write_text(json.dumps(preset, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
             QMessageBox.warning(self, "Alert preset", str(exc))
             self.status_label.setText(str(exc))
@@ -1761,63 +1763,74 @@ class MainWindow(QMainWindow):
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Alert preset JSON must contain an object.")
+            _validate_alert_rule_preset(data)
             self._apply_alert_rule_preset(data)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "Alert preset", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"Alert preset loaded: {path}")
+        preset_name = _alert_preset_display_name(data)
+        label = f" | {preset_name}" if preset_name else ""
+        summary = _alert_preset_summary(data.get("rules", {}), data.get("actions", {}))
+        self.status_label.setText(
+            f"Alert preset loaded: {path}{label} | rules {summary['active_rule_count']} | "
+            f"actions {summary['active_action_count']}"
+        )
 
-    def _alert_rule_preset(self) -> dict[str, object]:
+    def _alert_rule_preset(self, *, name: str) -> dict[str, object]:
+        rules = {
+            "loss_enabled": self.loss_alert_check.isChecked(),
+            "loss_threshold_percent": self.loss_threshold_spin.value(),
+            "loss_window_minutes": self.loss_window_spin.value(),
+            "latency_enabled": self.latency_alert_check.isChecked(),
+            "latency_threshold_ms": self.latency_threshold_spin.value(),
+            "jitter_enabled": self.jitter_alert_check.isChecked(),
+            "jitter_threshold_ms": self.jitter_threshold_spin.value(),
+            "sample_enabled": self.sample_alert_check.isChecked(),
+            "sample_window_count": self.sample_window_spin.value(),
+            "sample_failure_count": self.sample_bad_spin.value(),
+            "timer_enabled": self.timer_alert_check.isChecked(),
+            "timer_window_minutes": self.timer_window_spin.value(),
+            "mos_enabled": self.mos_alert_check.isChecked(),
+            "mos_threshold": float(self.mos_threshold_spin.value()),
+            "mos_window_minutes": self.mos_window_spin.value(),
+            "route_ip_enabled": self.route_ip_alert_check.isChecked(),
+            "route_ip": self.route_ip_alert_edit.text().strip(),
+        }
+        actions = {
+            "start": self.alert_start_action_check.isChecked(),
+            "end": self.alert_end_action_check.isChecked(),
+            "route_adjustment": self.alert_route_adjust_action_check.isChecked(),
+            "timeline": self.alert_timeline_action_check.isChecked(),
+            "comment": self.alert_comment_action_check.isChecked(),
+            "log": self.alert_log_action_check.isChecked(),
+            "beep": self.alert_beep_action_check.isChecked(),
+            "image": self.alert_image_action_check.isChecked(),
+            "email": self.alert_email_action_check.isChecked(),
+            "email_server": self.alert_email_server_edit.text().strip(),
+            "email_to": self.alert_email_to_edit.text().strip(),
+            "email_from": self.alert_email_from_edit.text().strip(),
+            "email_security": self.alert_email_security_combo.currentData() or ALERT_EMAIL_SECURITY_PLAIN,
+            "email_username": self.alert_email_user_edit.text().strip(),
+            "email_password_env": self.alert_email_password_env_edit.text().strip(),
+            "rest": self.alert_rest_action_check.isChecked(),
+            "rest_url": self.alert_rest_url_edit.text().strip(),
+            "executable": self.alert_executable_action_check.isChecked(),
+            "executable_path": self.alert_executable_path_edit.text().strip(),
+        }
         return {
-            "version": 1,
-            "rules": {
-                "loss_enabled": self.loss_alert_check.isChecked(),
-                "loss_threshold_percent": self.loss_threshold_spin.value(),
-                "loss_window_minutes": self.loss_window_spin.value(),
-                "latency_enabled": self.latency_alert_check.isChecked(),
-                "latency_threshold_ms": self.latency_threshold_spin.value(),
-                "jitter_enabled": self.jitter_alert_check.isChecked(),
-                "jitter_threshold_ms": self.jitter_threshold_spin.value(),
-                "sample_enabled": self.sample_alert_check.isChecked(),
-                "sample_window_count": self.sample_window_spin.value(),
-                "sample_failure_count": self.sample_bad_spin.value(),
-                "timer_enabled": self.timer_alert_check.isChecked(),
-                "timer_window_minutes": self.timer_window_spin.value(),
-                "mos_enabled": self.mos_alert_check.isChecked(),
-                "mos_threshold": float(self.mos_threshold_spin.value()),
-                "mos_window_minutes": self.mos_window_spin.value(),
-                "route_ip_enabled": self.route_ip_alert_check.isChecked(),
-                "route_ip": self.route_ip_alert_edit.text().strip(),
-            },
-            "actions": {
-                "start": self.alert_start_action_check.isChecked(),
-                "end": self.alert_end_action_check.isChecked(),
-                "route_adjustment": self.alert_route_adjust_action_check.isChecked(),
-                "timeline": self.alert_timeline_action_check.isChecked(),
-                "comment": self.alert_comment_action_check.isChecked(),
-                "log": self.alert_log_action_check.isChecked(),
-                "beep": self.alert_beep_action_check.isChecked(),
-                "image": self.alert_image_action_check.isChecked(),
-                "email": self.alert_email_action_check.isChecked(),
-                "email_server": self.alert_email_server_edit.text().strip(),
-                "email_to": self.alert_email_to_edit.text().strip(),
-                "email_from": self.alert_email_from_edit.text().strip(),
-                "email_security": self.alert_email_security_combo.currentData() or ALERT_EMAIL_SECURITY_PLAIN,
-                "email_username": self.alert_email_user_edit.text().strip(),
-                "email_password_env": self.alert_email_password_env_edit.text().strip(),
-                "rest": self.alert_rest_action_check.isChecked(),
-                "rest_url": self.alert_rest_url_edit.text().strip(),
-                "executable": self.alert_executable_action_check.isChecked(),
-                "executable_path": self.alert_executable_path_edit.text().strip(),
-            },
+            "version": ALERT_RULE_PRESET_VERSION,
+            "name": name,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "summary": _alert_preset_summary(rules, actions),
+            "rules": rules,
+            "actions": actions,
         }
 
     def _apply_alert_rule_preset(self, data: dict[str, object]) -> None:
+        _validate_alert_rule_preset(data)
         rules = data.get("rules", {})
         actions = data.get("actions", {})
-        if not isinstance(rules, dict) or not isinstance(actions, dict):
-            raise ValueError("Alert preset JSON has invalid rules/actions.")
         _set_check_value(self.loss_alert_check, rules.get("loss_enabled"))
         _set_spin_value(self.loss_threshold_spin, rules.get("loss_threshold_percent"))
         _set_spin_value(self.loss_window_spin, rules.get("loss_window_minutes"))
@@ -3426,6 +3439,89 @@ def _session_storage_segment_paths(session: TraceSessionRecord) -> tuple[Path, .
         seen.add(key)
         paths.append(path)
     return tuple(paths)
+
+
+ALERT_RULE_ENABLED_KEYS = (
+    "loss_enabled",
+    "latency_enabled",
+    "jitter_enabled",
+    "sample_enabled",
+    "timer_enabled",
+    "mos_enabled",
+    "route_ip_enabled",
+)
+ALERT_ACTION_ENABLED_KEYS = (
+    "route_adjustment",
+    "timeline",
+    "comment",
+    "log",
+    "beep",
+    "image",
+    "email",
+    "rest",
+    "executable",
+)
+ALERT_ACTION_PHASE_KEYS = ("start", "end")
+ALERT_EXTERNAL_ACTION_KEYS = ("email", "rest", "executable")
+
+
+def _alert_preset_summary(rules: object, actions: object) -> dict[str, object]:
+    rule_map = rules if isinstance(rules, dict) else {}
+    action_map = actions if isinstance(actions, dict) else {}
+    return {
+        "active_rule_count": _count_truthy_keys(rule_map, ALERT_RULE_ENABLED_KEYS),
+        "active_action_count": _count_truthy_keys(action_map, ALERT_ACTION_ENABLED_KEYS),
+        "action_phase_count": _count_truthy_keys(action_map, ALERT_ACTION_PHASE_KEYS),
+        "external_action_count": _count_truthy_keys(action_map, ALERT_EXTERNAL_ACTION_KEYS),
+        "route_adjustment_enabled": bool(action_map.get("route_adjustment")),
+    }
+
+
+def _validate_alert_rule_preset(data: dict[str, object]) -> None:
+    version = _alert_rule_preset_version(data.get("version"))
+    rules = data.get("rules", {})
+    actions = data.get("actions", {})
+    if not isinstance(rules, dict) or not isinstance(actions, dict):
+        raise ValueError("Alert preset JSON has invalid rules/actions.")
+    if version >= ALERT_RULE_PRESET_VERSION:
+        _validate_alert_preset_summary(data.get("summary"), rules=rules, actions=actions)
+
+
+def _alert_rule_preset_version(value: object) -> int:
+    if value in (None, ""):
+        return 1
+    try:
+        version = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Alert preset JSON has an invalid version.") from exc
+    if version < 1 or version > ALERT_RULE_PRESET_VERSION:
+        raise ValueError(f"Alert preset JSON version is not supported: {version}")
+    return version
+
+
+def _validate_alert_preset_summary(summary: object, *, rules: dict[str, object], actions: dict[str, object]) -> None:
+    if not isinstance(summary, dict):
+        raise ValueError("Alert preset JSON has invalid summary metadata.")
+    actual = _alert_preset_summary(rules, actions)
+    for key in ("active_rule_count", "active_action_count", "action_phase_count", "external_action_count"):
+        if key not in summary:
+            raise ValueError(f"Alert preset JSON summary is missing {key}.")
+        try:
+            expected = int(summary[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Alert preset JSON summary has invalid {key}.") from exc
+        if expected != actual[key]:
+            raise ValueError(f"Alert preset JSON {key} does not match rules/actions.")
+    if "route_adjustment_enabled" in summary and bool(summary["route_adjustment_enabled"]) != actual["route_adjustment_enabled"]:
+        raise ValueError("Alert preset JSON route_adjustment_enabled does not match actions.")
+
+
+def _alert_preset_display_name(data: dict[str, object]) -> str:
+    return str(data.get("name") or "").strip()
+
+
+def _count_truthy_keys(data: dict[str, object], keys: tuple[str, ...]) -> int:
+    return sum(1 for key in keys if bool(data.get(key)))
 
 
 def _validate_target_group_preset_version(value: object) -> None:
