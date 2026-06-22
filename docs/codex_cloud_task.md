@@ -18,6 +18,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Main-screen timeline controls can apply 60s/10m/1h/6h/24h/48h visible ranges and reset focus/timeline back to current samples.
 - Statistics export supports grouping, timezone, empty-range protection, and scope selection: All time, Visible timeline, Focus period, Custom range.
 - Report export supports TXT and printable HTML templates with target, range, analysis, evidence annotations, and hop metrics.
+- Text report export now removes the old corrupted duplicate target label so generated reports show clean English/Korean target metadata.
 - PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.

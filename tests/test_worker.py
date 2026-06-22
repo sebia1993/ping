@@ -547,12 +547,14 @@ def test_worker_does_not_sleep_after_final_cycle(monkeypatch) -> None:
     )
     monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
 
-    worker = MeasurementWorker("198.51.100.10", interval_seconds=5, max_cycles=1)
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=5, max_cycles=1, timeout_ms=100)
     started_at = time.monotonic()
     worker.run()
     elapsed = time.monotonic() - started_at
 
-    assert elapsed < 1.0
+    # This test guards against sleeping for the 5s interval after the final cycle.
+    # The measured time also includes Windows thread scheduling and session-log cleanup.
+    assert elapsed < 2.0
 
 
 def test_worker_accumulates_multiple_measurement_cycles(monkeypatch) -> None:

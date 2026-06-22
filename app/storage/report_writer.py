@@ -21,7 +21,6 @@ def write_text_report(
         "Network Path Diagnostics Report",
         f"Target: {target}",
         f"대상IP: {target}",
-        f"??갏P: {target}",
     ]
     if focus_range is not None:
         lines.append(f"Range: {_format_range(focus_range)}")
