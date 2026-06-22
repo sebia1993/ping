@@ -46,6 +46,22 @@ class TraceSessionRecord:
     last_error: str = ""
 
 
+@dataclass(frozen=True)
+class SessionStorageSummary:
+    target_count: int
+    bucket_count: int
+    segment_count: int
+
+
+@dataclass(frozen=True)
+class SessionStorageBucket:
+    target: str
+    month: str
+    session_count: int
+    segment_count: int
+    latest_seen: datetime
+
+
 class SessionIndexStore:
     """CSV 세션 파일 옆에 `session_index.json`을 두고 빠르게 목록/복구/삭제를 처리합니다.
 
@@ -259,6 +275,9 @@ class SessionIndexStore:
 
     def find_session(self, session_id: str) -> TraceSessionRecord | None:
         return next((record for record in self._read_records() if record.session_id == session_id), None)
+
+    def storage_buckets(self) -> list[SessionStorageBucket]:
+        return session_storage_buckets(self.list_sessions())
 
     def delete_session(self, session_id: str, *, delete_files: bool = True) -> TraceSessionRecord | None:
         """세션 인덱스에서 항목을 제거하고 필요하면 관련 CSV/알림 파일도 삭제합니다."""
@@ -599,6 +618,62 @@ def _max_datetime(current: datetime | None, candidate: datetime) -> datetime:
 
 def _session_last_seen(record: TraceSessionRecord) -> datetime:
     return record.end or record.start
+
+
+def session_storage_summary(sessions: list[TraceSessionRecord]) -> SessionStorageSummary:
+    targets = {session.target for session in sessions if session.target}
+    return SessionStorageSummary(
+        target_count=len(targets),
+        bucket_count=len(session_storage_buckets(sessions)),
+        segment_count=sum(len(_session_storage_segment_paths(session)) for session in sessions),
+    )
+
+
+def session_storage_buckets(sessions: list[TraceSessionRecord]) -> list[SessionStorageBucket]:
+    bucket_sessions: dict[tuple[str, str], dict[str, TraceSessionRecord]] = {}
+    bucket_segments: dict[tuple[str, str], set[str]] = {}
+    for session in sessions:
+        target = session.target or "target"
+        segments = _session_storage_segment_paths(session)
+        months = _session_storage_months(session, segments)
+        for month in months:
+            key = (target, month)
+            bucket_sessions.setdefault(key, {})[session.session_id] = session
+            bucket_segments.setdefault(key, set())
+        for path in segments:
+            month = path.parent.name if _is_year_month_folder(path.parent.name) else session.start.strftime("%Y-%m")
+            key = (target, month)
+            bucket_sessions.setdefault(key, {})[session.session_id] = session
+            bucket_segments.setdefault(key, set()).add(str(path))
+
+    buckets: list[SessionStorageBucket] = []
+    for (target, month), session_map in bucket_sessions.items():
+        latest_seen = max(_session_last_seen(session) for session in session_map.values())
+        buckets.append(
+            SessionStorageBucket(
+                target=target,
+                month=month,
+                session_count=len(session_map),
+                segment_count=len(bucket_segments.get((target, month), set())),
+                latest_seen=latest_seen,
+            )
+        )
+    return sorted(buckets, key=lambda bucket: (bucket.latest_seen, bucket.target, bucket.month), reverse=True)
+
+
+def _session_storage_months(session: TraceSessionRecord, segments: tuple[Path, ...]) -> set[str]:
+    months: set[str] = {
+        path.parent.name
+        for path in segments
+        if _is_year_month_folder(path.parent.name)
+    }
+    if not months:
+        months.add(session.start.strftime("%Y-%m"))
+    return months
+
+
+def _session_storage_segment_paths(session: TraceSessionRecord) -> tuple[Path, ...]:
+    return _dedupe_paths((session.sample_path, *session.segments))
 
 
 def _merge_segments(

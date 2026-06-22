@@ -91,6 +91,8 @@ from app.storage.session_index import (
     TraceSessionRecord,
     session_data_paths,
     session_index_root_for_sample_path,
+    session_storage_buckets,
+    session_storage_summary,
 )
 from app.storage.session_log import iter_observations, iter_observations_in_range, session_log_bounds
 from app.storage.statistics_exporter import TIMEZONE_LOCAL, TIMEZONE_UTC, StatisticsExportOptions
@@ -3405,40 +3407,21 @@ def _session_export_folder(record: TraceSessionRecord, index: int) -> str:
 
 
 def _session_storage_summary(sessions: list[TraceSessionRecord]) -> str:
-    targets = {session.target for session in sessions if session.target}
-    buckets: set[tuple[str, str]] = set()
-    segment_count = 0
-    for session in sessions:
-        for month in _session_storage_months(session):
-            buckets.add((session.target, month))
-        segment_count += len(_session_storage_segment_paths(session))
-    return (
-        f"Storage: targets {len(targets)} | "
-        f"target-month buckets {len(buckets)} | segments {segment_count}"
+    summary = session_storage_summary(sessions)
+    line = (
+        f"Storage: targets {summary.target_count} | "
+        f"target-month buckets {summary.bucket_count} | segments {summary.segment_count}"
     )
-
-
-def _session_storage_months(session: TraceSessionRecord) -> set[str]:
-    months: set[str] = set()
-    for path in _session_storage_segment_paths(session):
-        parent = path.parent.name
-        if _is_year_month_text(parent):
-            months.add(parent)
-    if not months:
-        months.add(session.start.strftime("%Y-%m"))
-    return months
-
-
-def _session_storage_segment_paths(session: TraceSessionRecord) -> tuple[Path, ...]:
-    seen: set[str] = set()
-    paths: list[Path] = []
-    for path in (session.sample_path, *session.segments):
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        paths.append(path)
-    return tuple(paths)
+    buckets = session_storage_buckets(sessions)
+    if not buckets:
+        return line
+    bucket_parts = [
+        f"{bucket.target}/{bucket.month} sessions {bucket.session_count} segments {bucket.segment_count}"
+        for bucket in buckets[:3]
+    ]
+    if len(buckets) > 3:
+        bucket_parts.append(f"+{len(buckets) - 3} more")
+    return f"{line}\nRecent buckets: {', '.join(bucket_parts)}"
 
 
 ALERT_RULE_ENABLED_KEYS = (
@@ -3745,13 +3728,6 @@ def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
             except ValueError:
                 tcp_port = None
     return mode, probe_engine, tcp_port
-
-
-def _is_year_month_text(value: str) -> bool:
-    if len(value) != 7 or value[4] != "-":
-        return False
-    year, month = value.split("-", 1)
-    return year.isdigit() and month.isdigit() and 1 <= int(month) <= 12
 
 
 def _alert_event_from_action_row(row: dict[str, str], index: int) -> AlertEvent | None:

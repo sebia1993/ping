@@ -18,6 +18,8 @@ from app.storage.session_index import (
     SESSION_STATE_PAUSED,
     SESSION_STATE_WILL_DELETE,
     SessionIndexStore,
+    session_storage_buckets,
+    session_storage_summary,
 )
 from app.storage.session_log import (
     SessionLogWriter,
@@ -607,6 +609,55 @@ def test_session_index_reads_legacy_measurement_mode_probe_fields(tmp_path) -> N
     assert record.tcp_port == 443
     assert record.route_probe_engine == "disabled"
     assert record.resumed_from_session_id == ""
+
+
+def test_session_index_summarizes_target_month_storage_buckets(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    first_path = tmp_path / "198.51.100.10" / "2026-01" / "multi.samples.csv"
+    first_segment = tmp_path / "198.51.100.10" / "2026-02" / "multi.part001.samples.csv"
+    second_path = tmp_path / "203.0.113.20" / "2026-02" / "session.samples.csv"
+
+    first = store.register_session(
+        target="198.51.100.10",
+        sample_path=first_path,
+        route_path=first_path.with_name("multi.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(first.session_id, 10, now + timedelta(days=32), segments=[first_path, first_segment])
+    store.finish_session(first.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(days=32))
+    second = store.register_session(
+        target="203.0.113.20",
+        sample_path=second_path,
+        route_path=second_path.with_name("session.routes.csv"),
+        started_at=now + timedelta(days=33),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.add_samples(second.session_id, 3, now + timedelta(days=33, seconds=1), segments=[second_path])
+    store.finish_session(second.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(days=33, seconds=1))
+
+    sessions = store.list_sessions()
+    summary = session_storage_summary(sessions)
+    buckets = session_storage_buckets(sessions)
+
+    assert summary.target_count == 2
+    assert summary.bucket_count == 3
+    assert summary.segment_count == 3
+    assert [(bucket.target, bucket.month, bucket.session_count, bucket.segment_count) for bucket in buckets] == [
+        ("203.0.113.20", "2026-02", 1, 1),
+        ("198.51.100.10", "2026-02", 1, 1),
+        ("198.51.100.10", "2026-01", 1, 1),
+    ]
+    assert [(bucket.target, bucket.month) for bucket in store.storage_buckets()] == [
+        ("203.0.113.20", "2026-02"),
+        ("198.51.100.10", "2026-02"),
+        ("198.51.100.10", "2026-01"),
+    ]
 
 
 def test_session_index_recovers_stale_active_sessions_as_paused(tmp_path) -> None:

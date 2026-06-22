@@ -10,6 +10,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Session segment metadata is written through atomic temp-file replace with transient PermissionError retries, matching the session index hardening style.
 - Session log writer failures are preserved as paused sessions with stable `SESSION_LOG_WRITE_FAILED` style last-error codes instead of leaving the stop reason blank.
 - Session Manager refresh reconciles existing indexed sessions against saved CSV segments, correcting sample counts, last timestamps, target counts, and segment lists after crashes or transient index-write failures.
+- Session Manager storage summaries now expose target-month bucket details from the session index, helping operators browse long Flex Storage-style history without reopening CSV logs.
 - All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, selected-target group saving, metadata-rich v2 target group presets with v1 compatibility, saved per-target interval overrides, and live selected-target count in the summary line.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, start/end action trigger controls, and metadata-rich v2 alert presets with v1 compatibility.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics and session metadata that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
@@ -88,7 +89,7 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 2. Improve long-term storage and session recovery.
    - PingPlotter keeps saving sessions and allows operators to reopen, export, and manage them later through Session Manager.
    - PingPlotter Flex Storage separates storage by target and time range so many targets and long history can still load efficiently.
-   - The current project has segmented CSV storage, session index recovery, stale active-session recovery, retention/delete controls, resume preparation with source-session lineage metadata, atomic segment-index replacement, and saved-log metadata reconciliation on Session Manager refresh.
+   - The current project has segmented CSV storage, session index recovery, stale active-session recovery, retention/delete controls, resume preparation with source-session lineage metadata, atomic segment-index replacement, saved-log metadata reconciliation on Session Manager refresh, and target-month bucket summaries for faster history browsing.
    - Remaining parity work is a richer session database, stronger resume semantics, retention policy presets, and faster history browsing across many target-month buckets.
    - References:
      - https://www.pingplotter.com/manual/auto-saving-data/
