@@ -410,7 +410,7 @@ class MainWindow(QMainWindow):
         export_title.setObjectName("panelTitle")
         export_row = QHBoxLayout()
         export_row.setSpacing(8)
-        for button in (self.csv_button, self.xlsx_button, self.report_button):
+        for button in (self.csv_button, self.xlsx_button, self.report_button, self.graph_png_button):
             export_row.addWidget(button)
         export_row.addStretch(1)
 
@@ -1437,6 +1437,32 @@ class MainWindow(QMainWindow):
     def save_report(self) -> None:
         self._start_export("txt", "txt", "Text Files (*.txt)")
 
+    def save_graph_png(self) -> None:
+        if self.export_worker and self.export_worker.isRunning():
+            QMessageBox.information(self, "Export", "An export is already running.")
+            return
+        path = self._select_save_path("png", "PNG Files (*.png)")
+        if not path:
+            return
+        try:
+            saved_path = self._save_graph_png(path)
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Export error", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"PNG saved: {saved_path}")
+
+    def _save_graph_png(self, path: Path) -> Path:
+        if path.suffix.lower() != ".png":
+            path = path.with_suffix(".png")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pixmap = self.graph.grab()
+        if pixmap.isNull():
+            raise RuntimeError(f"PNG capture failed: {path}")
+        if not pixmap.save(str(path), "PNG"):
+            raise RuntimeError(f"PNG save failed: {path}")
+        return path
+
     def save_statistics_csv(self) -> None:
         self._start_export(
             "stats_csv",
@@ -1661,6 +1687,7 @@ class MainWindow(QMainWindow):
         self.csv_button.setEnabled(enabled)
         self.xlsx_button.setEnabled(enabled)
         self.report_button.setEnabled(enabled)
+        self.graph_png_button.setEnabled(enabled)
         self.stats_csv_button.setEnabled(enabled)
         self.stats_xlsx_button.setEnabled(enabled)
 
@@ -1668,6 +1695,7 @@ class MainWindow(QMainWindow):
         self.csv_button.setEnabled(not exporting and self._has_export_data())
         self.xlsx_button.setEnabled(not exporting and self._has_export_data())
         self.report_button.setEnabled(not exporting and self._has_export_data())
+        self.graph_png_button.setEnabled(not exporting and self._has_export_data())
         self.stats_csv_button.setEnabled(not exporting and self._has_export_data())
         self.stats_xlsx_button.setEnabled(not exporting and self._has_export_data())
         self.statistics_scope_combo.setEnabled(not exporting)

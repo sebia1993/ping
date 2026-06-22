@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, Signal
@@ -45,6 +46,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.csv_button.isEnabled() is False
         assert window.xlsx_button.isEnabled() is False
         assert window.report_button.isEnabled() is False
+        assert window.graph_png_button.isEnabled() is False
         assert window.stats_csv_button.isEnabled() is False
         assert window.stats_xlsx_button.isEnabled() is False
         assert window.alert_timeline_action_check.isChecked() is True
@@ -602,6 +604,7 @@ def test_main_window_renders_trace_metrics_and_exports(qt_app) -> None:
         assert window.csv_button.isEnabled() is True
         assert window.xlsx_button.isEnabled() is True
         assert window.report_button.isEnabled() is True
+        assert window.graph_png_button.isEnabled() is True
         assert window.stats_csv_button.isEnabled() is True
         assert window.stats_xlsx_button.isEnabled() is True
     finally:
@@ -813,6 +816,65 @@ def test_main_window_statistics_custom_scope_uses_explicit_range(qt_app, tmp_pat
         assert [point.latency_ms for point in worker.kwargs["observations_override"]] == [2.0]
         assert window.statistics_start_edit.isEnabled() is False
         assert window.statistics_end_edit.isEnabled() is False
+    finally:
+        window.close()
+
+
+def test_main_window_saves_graph_png_from_export_panel(qt_app, tmp_path, monkeypatch) -> None:
+    export_path = tmp_path / "timeline"
+    saved_paths: list[Path] = []
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "PNG Files (*.png)"
+
+    def fake_save_graph_png(path: Path) -> Path:
+        saved_paths.append(path)
+        return path.with_suffix(".png")
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    window = MainWindow()
+    now = datetime.now()
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=12.0, is_target=True)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 12.0, STATUS_OK, True),
+    ]
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["OK"], history, history)
+        monkeypatch.setattr(window, "_save_graph_png", fake_save_graph_png)
+
+        window.save_graph_png()
+
+        assert saved_paths == [export_path]
+        assert window.status_label.text() == f"PNG saved: {export_path.with_suffix('.png')}"
+    finally:
+        window.close()
+
+
+def test_main_window_graph_png_helper_adds_suffix_and_saves(qt_app, tmp_path, monkeypatch) -> None:
+    class FakePixmap:
+        def __init__(self) -> None:
+            self.saved: list[tuple[str, str]] = []
+
+        def isNull(self) -> bool:
+            return False
+
+        def save(self, path: str, fmt: str) -> bool:
+            self.saved.append((path, fmt))
+            Path(path).write_bytes(b"png")
+            return True
+
+    pixmap = FakePixmap()
+    monkeypatch.setattr(main_window_module.LatencyGraphWidget, "grab", lambda _widget: pixmap)
+    window = MainWindow()
+
+    try:
+        saved = window._save_graph_png(tmp_path / "timeline")
+
+        assert saved == tmp_path / "timeline.png"
+        assert pixmap.saved == [(str(saved), "PNG")]
+        assert saved.read_bytes() == b"png"
     finally:
         window.close()
 

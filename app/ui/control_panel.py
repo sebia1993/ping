@@ -60,6 +60,7 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.csv_button = QPushButton("CSV")
     owner.xlsx_button = QPushButton("XLSX")
     owner.report_button = QPushButton("Report")
+    owner.graph_png_button = QPushButton("Graph PNG")
     owner.stats_csv_button = QPushButton("Stats CSV")
     owner.stats_xlsx_button = QPushButton("Stats XLSX")
 
@@ -69,6 +70,7 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.csv_button.clicked.connect(owner.save_csv)
     owner.xlsx_button.clicked.connect(owner.save_xlsx)
     owner.report_button.clicked.connect(owner.save_report)
+    owner.graph_png_button.clicked.connect(owner.save_graph_png)
     owner.stats_csv_button.clicked.connect(owner.save_statistics_csv)
     owner.stats_xlsx_button.clicked.connect(owner.save_statistics_xlsx)
 
