@@ -1145,6 +1145,82 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         window.close()
 
 
+def test_main_window_problem_target_batch_controls(qt_app) -> None:
+    created_workers: list[_FakeWorker] = []
+
+    def worker_factory(
+        target: str,
+        interval_seconds: int,
+        max_cycles: int | None,
+        targets: list[str],
+        measurement_mode: str,
+        probe_engine: str = "icmp",
+        tcp_port: int = 443,
+    ) -> "_FakeWorker":
+        worker = _FakeWorker(
+            target=target,
+            interval_seconds=interval_seconds,
+            max_cycles=max_cycles,
+            targets=targets,
+            measurement_mode=measurement_mode,
+            probe_engine=probe_engine,
+            tcp_port=tcp_port,
+        )
+        created_workers.append(worker)
+        return worker
+
+    window = MainWindow(worker_factory=worker_factory)
+    now = datetime.now()
+    healthy = _snapshot(0, "198.51.100.10", None, latency=10.0, is_target=True)
+    warning = _snapshot(0, "203.0.113.10", None, loss=8.0, latency=18.0, is_target=True)
+    critical = _snapshot(
+        0,
+        "203.0.113.20",
+        None,
+        loss=35.0,
+        latency=None,
+        received=0,
+        timeout_count=1,
+        status=STATUS_TIMEOUT,
+        is_target=True,
+    )
+
+    try:
+        window.target_input.setText("198.51.100.10\n203.0.113.10\n203.0.113.20")
+        window.refresh_trace_targets()
+        window.start_measurement()
+        worker = created_workers[0]
+        window.on_measurement_updated(
+            [],
+            healthy,
+            [healthy, warning, critical],
+            ["live"],
+            [
+                HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+                HopObservation(now, 0, "203.0.113.10", "Target", True, 18.0, STATUS_OK, True),
+                HopObservation(now, 0, "203.0.113.20", "Target", False, None, STATUS_TIMEOUT, True),
+            ],
+            [],
+        )
+
+        window.pause_problem_targets()
+        window.resume_problem_targets()
+        window.interval_combo.setCurrentText("5")
+        window.apply_problem_interval()
+
+        assert worker.paused_calls == [["203.0.113.10", "203.0.113.20"]]
+        assert worker.resumed_calls == [["203.0.113.10", "203.0.113.20"]]
+        assert worker.target_interval_updates == [(["203.0.113.10", "203.0.113.20"], 5)]
+        assert window.target_interval_overrides == {
+            "203.0.113.10": 5,
+            "203.0.113.20": 5,
+        }
+        assert "Runtime interval applied to problem 2 target(s): 5s" in window.status_label.text()
+        assert "Interval overrides 2" in window.target_summary_status_label.text()
+    finally:
+        window.close()
+
+
 def test_main_window_passes_final_hop_only_mode(qt_app) -> None:
     created_workers: list[_FakeWorker] = []
 

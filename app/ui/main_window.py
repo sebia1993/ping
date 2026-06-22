@@ -342,6 +342,10 @@ class MainWindow(QMainWindow):
         self.pause_visible_targets_button.clicked.connect(self.pause_visible_targets)
         self.resume_visible_targets_button = QPushButton("Resume visible")
         self.resume_visible_targets_button.clicked.connect(self.resume_visible_targets)
+        self.pause_problem_targets_button = QPushButton("Pause problems")
+        self.pause_problem_targets_button.clicked.connect(self.pause_problem_targets)
+        self.resume_problem_targets_button = QPushButton("Resume problems")
+        self.resume_problem_targets_button.clicked.connect(self.resume_problem_targets)
         self.pause_all_targets_button = QPushButton("Pause all")
         self.pause_all_targets_button.clicked.connect(self.pause_all_targets)
         self.resume_all_targets_button = QPushButton("Resume all")
@@ -350,6 +354,8 @@ class MainWindow(QMainWindow):
         self.apply_interval_button.clicked.connect(self.apply_runtime_interval)
         self.apply_visible_interval_button = QPushButton("Apply visible")
         self.apply_visible_interval_button.clicked.connect(self.apply_visible_interval)
+        self.apply_problem_interval_button = QPushButton("Apply problems")
+        self.apply_problem_interval_button.clicked.connect(self.apply_problem_interval)
         self.export_target_summary_button = QPushButton("Export summary")
         self.export_target_summary_button.clicked.connect(self.save_target_summary_csv)
         self.problem_sort_check = QCheckBox("Problem first")
@@ -368,10 +374,13 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.resume_selected_targets_button)
         controls.addWidget(self.pause_visible_targets_button)
         controls.addWidget(self.resume_visible_targets_button)
+        controls.addWidget(self.pause_problem_targets_button)
+        controls.addWidget(self.resume_problem_targets_button)
         controls.addWidget(self.pause_all_targets_button)
         controls.addWidget(self.resume_all_targets_button)
         controls.addWidget(self.apply_interval_button)
         controls.addWidget(self.apply_visible_interval_button)
+        controls.addWidget(self.apply_problem_interval_button)
         layout.addLayout(header)
         layout.addLayout(controls)
         layout.addWidget(self.target_table)
@@ -942,6 +951,20 @@ class MainWindow(QMainWindow):
             return
         self._resume_targets(targets)
 
+    def pause_problem_targets(self) -> None:
+        targets = self._problem_target_addresses()
+        if not targets:
+            self.status_label.setText("No problem targets to pause")
+            return
+        self._pause_targets(targets)
+
+    def resume_problem_targets(self) -> None:
+        targets = self._problem_target_addresses()
+        if not targets:
+            self.status_label.setText("No problem targets to resume")
+            return
+        self._resume_targets(targets)
+
     def apply_runtime_interval(self) -> None:
         if not self.worker or not hasattr(self.worker, "set_interval_seconds"):
             return
@@ -968,6 +991,18 @@ class MainWindow(QMainWindow):
         self.worker.set_target_interval_seconds(targets, interval)
         self._record_target_interval_overrides(targets, interval)
         self.status_label.setText(f"Runtime interval applied to visible {len(targets)} target(s): {interval}s")
+
+    def apply_problem_interval(self) -> None:
+        if not self.worker or not hasattr(self.worker, "set_target_interval_seconds"):
+            return
+        targets = self._problem_target_addresses()
+        if not targets:
+            self.status_label.setText("No problem targets for interval update")
+            return
+        interval = int(self.interval_combo.currentText())
+        self.worker.set_target_interval_seconds(targets, interval)
+        self._record_target_interval_overrides(targets, interval)
+        self.status_label.setText(f"Runtime interval applied to problem {len(targets)} target(s): {interval}s")
 
     def _record_target_interval_overrides(self, targets: list[str], interval_seconds: int) -> None:
         for target in targets:
@@ -1009,6 +1044,13 @@ class MainWindow(QMainWindow):
 
     def _visible_target_addresses(self) -> list[str]:
         return [snapshot.address for snapshot in self._visible_target_snapshots() if snapshot.address]
+
+    def _problem_target_addresses(self) -> list[str]:
+        return [
+            snapshot.address
+            for snapshot in self._display_target_snapshots()
+            if snapshot.address and display_status(snapshot) in {"WARNING", "CRITICAL"}
+        ]
 
     def on_target_double_clicked(self, row: int, _column: int) -> None:
         item = self.target_table.item(row, 0)
@@ -2821,10 +2863,13 @@ class MainWindow(QMainWindow):
             "resume_selected_targets_button",
             "pause_visible_targets_button",
             "resume_visible_targets_button",
+            "pause_problem_targets_button",
+            "resume_problem_targets_button",
             "pause_all_targets_button",
             "resume_all_targets_button",
             "apply_interval_button",
             "apply_visible_interval_button",
+            "apply_problem_interval_button",
         ):
             button = getattr(self, button_name, None)
             if button is not None:
