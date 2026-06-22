@@ -23,6 +23,70 @@ from app.storage.session_log import iter_observations, session_log_segment_index
 from app.ui.worker import TRACE_REFRESH_SECONDS, MeasurementWorker
 
 
+SOAK_PROFILES: dict[str, dict[str, object]] = {
+    "default": {
+        "duration_seconds": 1800.0,
+        "targets": 20,
+        "timeout_ratio": 0.75,
+        "interval_seconds": 1,
+        "timeout_delay_seconds": 1.5,
+        "with_ui": False,
+        "event_poll_seconds": 0.05,
+        "sample_seconds": 1.0,
+        "progress_seconds": 60.0,
+        "max_ui_event_gap_seconds": 2.0,
+        "max_active_threads": 40,
+        "max_memory_growth_mb": 96.0,
+        "max_cpu_percent": 80.0,
+    },
+    "release": {
+        "duration_seconds": 5.0,
+        "targets": 50,
+        "timeout_ratio": 0.8,
+        "interval_seconds": 1,
+        "timeout_delay_seconds": 0.05,
+        "with_ui": False,
+        "event_poll_seconds": 0.02,
+        "sample_seconds": 0.5,
+        "progress_seconds": 0.0,
+        "max_ui_event_gap_seconds": 2.0,
+        "max_active_threads": 40,
+        "max_memory_growth_mb": 96.0,
+        "max_cpu_percent": 250.0,
+    },
+    "long": {
+        "duration_seconds": 1800.0,
+        "targets": 50,
+        "timeout_ratio": 0.8,
+        "interval_seconds": 1,
+        "timeout_delay_seconds": 1.5,
+        "with_ui": False,
+        "event_poll_seconds": 0.05,
+        "sample_seconds": 1.0,
+        "progress_seconds": 60.0,
+        "max_ui_event_gap_seconds": 2.0,
+        "max_active_threads": 40,
+        "max_memory_growth_mb": 96.0,
+        "max_cpu_percent": 80.0,
+    },
+    "ui": {
+        "duration_seconds": 60.0,
+        "targets": 50,
+        "timeout_ratio": 0.8,
+        "interval_seconds": 1,
+        "timeout_delay_seconds": 0.05,
+        "with_ui": True,
+        "event_poll_seconds": 0.02,
+        "sample_seconds": 0.5,
+        "progress_seconds": 10.0,
+        "max_ui_event_gap_seconds": 2.0,
+        "max_active_threads": 40,
+        "max_memory_growth_mb": 96.0,
+        "max_cpu_percent": 250.0,
+    },
+}
+
+
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +107,7 @@ def main() -> int:
     errors: list[str] = []
     session_log_paths: list[str] = []
     ping_calls: dict[str, int] = {}
+    ping_results: dict[str, int] = {}
     timeout_start_index = max(1, int(args.targets * (1 - args.timeout_ratio)) + 1)
     traceroute_probe = StableTracerouteProbe()
 
@@ -52,6 +117,7 @@ def main() -> int:
             timeout_start_index=timeout_start_index,
             timeout_delay_seconds=args.timeout_delay_seconds,
             calls=ping_calls,
+            results=ping_results,
         )
 
     worker = MeasurementWorker(
@@ -132,6 +198,7 @@ def main() -> int:
         errors=errors,
         session_log_paths=session_log_paths,
         ping_calls=ping_calls,
+        ping_results=ping_results,
         traceroute_calls=traceroute_probe.calls,
         cpu_seconds=time.process_time() - process_started_at,
         current_memory_bytes=current_memory,
@@ -151,29 +218,49 @@ def main() -> int:
     return 1 if failures else 0
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    profile_parser = argparse.ArgumentParser(add_help=False)
+    profile_parser.add_argument("--profile", choices=sorted(SOAK_PROFILES), default="default")
+    profile_args, _unused = profile_parser.parse_known_args(argv)
+    profile_defaults = SOAK_PROFILES[profile_args.profile]
+
     parser = argparse.ArgumentParser(description="Run a long-duration stability check.")
-    parser.add_argument("--duration-seconds", type=float, default=1800.0)
-    parser.add_argument("--targets", type=int, default=20)
-    parser.add_argument("--timeout-ratio", type=float, default=0.75)
-    parser.add_argument("--interval-seconds", type=int, default=1)
-    parser.add_argument("--timeout-delay-seconds", type=float, default=1.5)
+    parser.add_argument(
+        "--profile",
+        choices=sorted(SOAK_PROFILES),
+        default=profile_args.profile,
+        help="Preset thresholds for default, release smoke, long stability, or offscreen UI soak.",
+    )
+    parser.add_argument("--duration-seconds", type=float, default=profile_defaults["duration_seconds"])
+    parser.add_argument("--targets", type=int, default=profile_defaults["targets"])
+    parser.add_argument("--timeout-ratio", type=float, default=profile_defaults["timeout_ratio"])
+    parser.add_argument("--interval-seconds", type=int, default=profile_defaults["interval_seconds"])
+    parser.add_argument("--timeout-delay-seconds", type=float, default=profile_defaults["timeout_delay_seconds"])
     parser.add_argument("--output-dir", type=Path, default=ROOT / "artifacts" / "soak")
     parser.add_argument("--session-log-root", type=Path)
-    parser.add_argument("--with-ui", action="store_true", help="Drive the real MainWindow slots offscreen.")
-    parser.add_argument("--event-poll-seconds", type=float, default=0.05)
-    parser.add_argument("--sample-seconds", type=float, default=1.0)
-    parser.add_argument("--progress-seconds", type=float, default=60.0)
+    ui_group = parser.add_mutually_exclusive_group()
+    ui_group.add_argument(
+        "--with-ui",
+        dest="with_ui",
+        action="store_true",
+        default=bool(profile_defaults["with_ui"]),
+        help="Drive the real MainWindow slots offscreen.",
+    )
+    ui_group.add_argument("--no-ui", dest="with_ui", action="store_false")
+    parser.add_argument("--event-poll-seconds", type=float, default=profile_defaults["event_poll_seconds"])
+    parser.add_argument("--sample-seconds", type=float, default=profile_defaults["sample_seconds"])
+    parser.add_argument("--progress-seconds", type=float, default=profile_defaults["progress_seconds"])
     parser.add_argument("--max-update-gap-seconds", type=float)
     parser.add_argument("--max-average-update-gap-seconds", type=float)
-    parser.add_argument("--max-ui-event-gap-seconds", type=float, default=2.0)
+    parser.add_argument("--max-ui-event-gap-seconds", type=float, default=profile_defaults["max_ui_event_gap_seconds"])
     parser.add_argument("--max-log-queue-depth", type=int)
     parser.add_argument("--max-pending-pings", type=int)
-    parser.add_argument("--max-active-threads", type=int, default=40)
-    parser.add_argument("--max-memory-growth-mb", type=float, default=96.0)
-    parser.add_argument("--max-cpu-percent", type=float, default=80.0)
+    parser.add_argument("--max-active-threads", type=int, default=profile_defaults["max_active_threads"])
+    parser.add_argument("--max-memory-growth-mb", type=float, default=profile_defaults["max_memory_growth_mb"])
+    parser.add_argument("--max-cpu-percent", type=float, default=profile_defaults["max_cpu_percent"])
     parser.add_argument("--no-require-backoff", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.targets < 1:
         parser.error("--targets must be at least 1")
     if not 0 <= args.timeout_ratio <= 1:
@@ -229,19 +316,23 @@ class SimulatedPingRunner:
         timeout_start_index: int,
         timeout_delay_seconds: float,
         calls: dict[str, int],
+        results: dict[str, int],
     ) -> None:
         self.timeout_ms = timeout_ms
         self.timeout_start_index = timeout_start_index
         self.timeout_delay_seconds = timeout_delay_seconds
         self.calls = calls
+        self.results = results
 
     def ping(self, target: str) -> PingResult:
         self.calls[target] = self.calls.get(target, 0) + 1
         target_index = int(target.rsplit(".", 1)[1])
         if target_index >= self.timeout_start_index:
             time.sleep(self.timeout_delay_seconds)
+            self.results[target] = self.results.get(target, 0) + 1
             return PingResult(target, False, None, STATUS_TIMEOUT, datetime.now())
         time.sleep(0.01)
+        self.results[target] = self.results.get(target, 0) + 1
         return PingResult(target, True, 10.0, STATUS_OK, datetime.now())
 
 
@@ -270,6 +361,7 @@ def build_summary(
     errors: list[str],
     session_log_paths: list[str],
     ping_calls: dict[str, int],
+    ping_results: dict[str, int],
     traceroute_calls: int,
     cpu_seconds: float,
     current_memory_bytes: int,
@@ -296,6 +388,7 @@ def build_summary(
     max_threads = max_int(health_rows, "active_threads")
     cpu_percent = (cpu_seconds / elapsed * 100.0) if elapsed > 0 else 0.0
     return {
+        "profile": args.profile,
         "targets": args.targets,
         "timeout_ratio": args.timeout_ratio,
         "duration_seconds": elapsed,
@@ -307,6 +400,7 @@ def build_summary(
         "session_log_rows": session_stats["rows"],
         "session_log_segments": session_stats["segments"],
         "ping_calls": sum(ping_calls.values()),
+        "ping_results": sum(ping_results.values()),
         "traceroute_calls": traceroute_calls,
         "active_threads_final": threading.active_count(),
         "max_active_threads": max_threads,
@@ -393,9 +487,10 @@ def evaluate_summary(summary: dict[str, Any], args: argparse.Namespace) -> list[
         failures.append(f"CPU usage too high: {summary['cpu_percent']:.1f}% > {args.max_cpu_percent:.1f}%")
     if int(summary.get("session_log_segments", 0) or 0) < 1:
         failures.append("session log was not created")
-    if int(summary.get("session_log_rows", 0) or 0) < int(summary.get("ping_calls", 0) or 0):
+    completed_pings = int(summary.get("ping_results", summary.get("ping_calls", 0)) or 0)
+    if int(summary.get("session_log_rows", 0) or 0) < completed_pings:
         failures.append(
-            f"session log rows too low: {summary.get('session_log_rows', 0)} < ping calls {summary.get('ping_calls', 0)}"
+            f"session log rows too low: {summary.get('session_log_rows', 0)} < completed ping results {completed_pings}"
         )
     if require_backoff and summary["max_backoff_target_count"] < 1:
         failures.append("timeout backoff was not observed")

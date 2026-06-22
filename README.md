@@ -80,6 +80,22 @@ Packaging-only check without upload:
 .\scripts\publish_release.ps1 -SkipUpload -SkipBuild -SkipVerify -AllowDirty
 ```
 
+## Stability soak profiles
+
+These checks use simulated probes, so they do not require access to a real
+company network.
+
+```powershell
+# Fast 50-target release smoke used by scripts\verify_release.py
+python scripts\soak_test.py --profile release
+
+# 30-minute 50-target stability check for longer local validation
+python scripts\soak_test.py --profile long
+
+# Offscreen MainWindow wiring check
+python scripts\soak_test.py --profile ui
+```
+
 ## 운영 개선 사항
 
 - 장시간 측정 중 화면 그래프와 최근 관측치는 제한된 버퍼만 유지합니다.

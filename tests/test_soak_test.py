@@ -2,7 +2,63 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from scripts.soak_test import evaluate_summary
+from scripts.soak_test import evaluate_summary, parse_args
+
+
+def test_soak_release_profile_sets_fast_fifty_target_defaults() -> None:
+    args = parse_args(["--profile", "release"])
+
+    assert args.profile == "release"
+    assert args.duration_seconds == 5.0
+    assert args.targets == 50
+    assert args.timeout_ratio == 0.8
+    assert args.timeout_delay_seconds == 0.05
+    assert args.event_poll_seconds == 0.02
+    assert args.sample_seconds == 0.5
+    assert args.progress_seconds == 0.0
+    assert args.max_cpu_percent == 250.0
+    assert args.with_ui is False
+
+
+def test_soak_long_profile_sets_thirty_minute_fifty_target_defaults() -> None:
+    args = parse_args(["--profile", "long"])
+
+    assert args.profile == "long"
+    assert args.duration_seconds == 1800.0
+    assert args.targets == 50
+    assert args.timeout_ratio == 0.8
+    assert args.timeout_delay_seconds == 1.5
+    assert args.max_cpu_percent == 80.0
+    assert args.with_ui is False
+
+
+def test_soak_ui_profile_drives_offscreen_window_by_default() -> None:
+    args = parse_args(["--profile", "ui"])
+
+    assert args.profile == "ui"
+    assert args.duration_seconds == 60.0
+    assert args.targets == 50
+    assert args.with_ui is True
+
+
+def test_soak_profile_allows_explicit_cli_overrides() -> None:
+    args = parse_args([
+        "--profile",
+        "release",
+        "--duration-seconds",
+        "12",
+        "--targets",
+        "7",
+        "--no-ui",
+        "--max-cpu-percent",
+        "90",
+    ])
+
+    assert args.profile == "release"
+    assert args.duration_seconds == 12.0
+    assert args.targets == 7
+    assert args.with_ui is False
+    assert args.max_cpu_percent == 90.0
 
 
 def test_soak_evaluation_accepts_stable_thirty_minute_run() -> None:
@@ -39,6 +95,7 @@ def test_soak_evaluation_rejects_missing_session_persistence() -> None:
         max_update_gap_seconds=2.031,
         avg_update_gap_seconds=1.013,
         ping_calls=89_000,
+        ping_results=89_000,
         session_log_rows=0,
         session_log_segments=0,
     )
@@ -47,6 +104,22 @@ def test_soak_evaluation_rejects_missing_session_persistence() -> None:
 
     assert "session log was not created" in failures
     assert any("session log rows too low" in failure for failure in failures)
+
+
+def test_soak_evaluation_allows_in_flight_pings_at_shutdown() -> None:
+    args = _args()
+    summary = _summary(
+        updates=1778,
+        diagnostic_samples=1778,
+        max_update_gap_seconds=2.031,
+        avg_update_gap_seconds=1.013,
+        ping_calls=89_010,
+        ping_results=89_000,
+        session_log_rows=89_000,
+        session_log_segments=1,
+    )
+
+    assert evaluate_summary(summary, args) == []
 
 
 def _args() -> Namespace:
@@ -76,9 +149,11 @@ def _summary(
     max_update_gap_seconds: float,
     avg_update_gap_seconds: float,
     ping_calls: int = 89_000,
+    ping_results: int | None = None,
     session_log_rows: int = 89_000,
     session_log_segments: int = 1,
 ) -> dict[str, object]:
+    completed = ping_calls if ping_results is None else ping_results
     return {
         "errors": [],
         "stopped_cleanly": True,
@@ -95,6 +170,7 @@ def _summary(
         "max_backoff_target_count": 41,
         "traceroute_calls": 30,
         "ping_calls": ping_calls,
+        "ping_results": completed,
         "session_log_rows": session_log_rows,
         "session_log_segments": session_log_segments,
     }
