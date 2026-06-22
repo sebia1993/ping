@@ -54,6 +54,17 @@ SESSION_HEADERS = [
     "Segments",
 ]
 
+ALERT_HEADERS = [
+    "Time",
+    "Severity",
+    "Title",
+    "Start",
+    "End",
+    "Series",
+    "Actions",
+    "Message",
+]
+
 
 def create_hop_table() -> QTableWidget:
     table = QTableWidget(0, len(TABLE_HEADERS))
@@ -79,6 +90,20 @@ def create_target_table() -> QTableWidget:
     table.setMinimumHeight(120)
     table.setSortingEnabled(False)
     table.hideColumn(TARGET_SCORE_COLUMN)
+    return table
+
+
+def create_alert_table() -> QTableWidget:
+    table = QTableWidget(0, len(ALERT_HEADERS))
+    table.setHorizontalHeaderLabels(ALERT_HEADERS)
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.setSelectionMode(QAbstractItemView.SingleSelection)
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.verticalHeader().setVisible(False)
+    table.setAlternatingRowColors(True)
+    table.setMaximumHeight(150)
+    table.setSortingEnabled(True)
+    table.sortItems(0, Qt.DescendingOrder)
     return table
 
 
@@ -226,6 +251,46 @@ def update_session_table(table: QTableWidget, sessions: object) -> None:
     table.setSortingEnabled(sorting_enabled)
 
 
+def update_alert_table(
+    table: QTableWidget,
+    events: object,
+    actions_by_key: dict[str, list[str]] | None = None,
+) -> None:
+    event_list = list(events)
+    actions_by_key = actions_by_key or {}
+    sorting_enabled = table.isSortingEnabled()
+    table.setSortingEnabled(False)
+    rows_changed = table.rowCount() != len(event_list)
+    table.setRowCount(len(event_list))
+    for row, event in enumerate(event_list):
+        actions = actions_by_key.get(event.key, [])
+        actions_text = ", ".join(actions) if actions else "-"
+        values = [
+            (event.timestamp.strftime("%Y-%m-%d %H:%M:%S"), event.timestamp.timestamp()),
+            (event.severity.upper(), _alert_severity_sort_key(event.severity)),
+            (event.title, event.title),
+            (event.start.strftime("%Y-%m-%d %H:%M:%S"), event.start.timestamp()),
+            (event.end.strftime("%Y-%m-%d %H:%M:%S"), event.end.timestamp()),
+            (event.series_key or "route", event.series_key or ""),
+            (actions_text, actions_text),
+            (event.message, event.message),
+        ]
+        color = alert_row_color(event.severity)
+        tooltip = f"{event.title}: {event.message}"
+        for column, (value, sort_value) in enumerate(values):
+            item = table.item(row, column)
+            if item is None:
+                item = SortableTableWidgetItem()
+                table.setItem(row, column, item)
+            item.setText(str(value))
+            item.setData(Qt.UserRole, sort_value)
+            item.setBackground(color)
+            item.setToolTip(tooltip)
+    if rows_changed:
+        table.resizeColumnsToContents()
+    table.setSortingEnabled(sorting_enabled)
+
+
 def _session_state_sort_key(state: str) -> int:
     return {
         "Active": 0,
@@ -233,6 +298,14 @@ def _session_state_sort_key(state: str) -> int:
         "Pause": 2,
         "Will Delete": 3,
     }.get(state, 99)
+
+
+def _alert_severity_sort_key(severity: str) -> int:
+    return {
+        "critical": 0,
+        "warning": 1,
+        "info": 2,
+    }.get(severity.casefold(), 99)
 
 
 def fmt_ms(value: float | None) -> str:
@@ -270,6 +343,17 @@ def row_color(snapshot: MetricSnapshot) -> QColor:
         return QColor("#fee2e2")
     if snapshot.loss_percent >= 5 or (snapshot.jitter_ms is not None and snapshot.jitter_ms >= 30):
         return QColor("#fef3c7")
+    return QColor("#ffffff")
+
+
+def alert_row_color(severity: str) -> QColor:
+    normalized = severity.casefold()
+    if normalized == "critical":
+        return QColor("#fee2e2")
+    if normalized == "warning":
+        return QColor("#fef3c7")
+    if normalized == "info":
+        return QColor("#e0f2fe")
     return QColor("#ffffff")
 
 

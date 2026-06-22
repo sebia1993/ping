@@ -27,6 +27,7 @@ from app.storage.statistics_exporter import TIMEZONE_UTC
 from app.ui import main_window as main_window_module
 from app.ui.graph_detail_window import VIEW_SELECTED_HOP, VIEW_VISIBLE_HOPS
 from app.ui.main_window import (
+    ALERT_HEADERS,
     MainWindow,
     SESSION_HEADERS,
     SESSION_ID_ROLE,
@@ -54,6 +55,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.table.columnCount() == len(TABLE_HEADERS)
         assert window.target_table.columnCount() == len(TARGET_HEADERS)
         assert window.session_table.columnCount() == len(SESSION_HEADERS)
+        assert window.alert_table.columnCount() == len(ALERT_HEADERS)
+        assert window.alert_table.rowCount() == 0
         assert window.target_summary_status_label.text() == "Targets: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
@@ -2066,6 +2069,15 @@ def test_main_window_records_metric_alerts_and_graph_annotations(qt_app) -> None
         text = window.alerts_box.toPlainText()
         assert "Loss alert" in text
         assert "Latency alert" in text
+        assert window.alert_table.rowCount() == 2
+        alert_titles = {
+            window.alert_table.item(row, 2).text()
+            for row in range(window.alert_table.rowCount())
+        }
+        assert alert_titles == {"Loss alert", "Latency alert"}
+        first_row_actions = window.alert_table.item(0, 6).text()
+        second_row_actions = window.alert_table.item(1, 6).text()
+        assert {first_row_actions, second_row_actions} == {"timeline_annotation, comment"}
         assert [annotation.label for annotation in window.graph._annotations] == ["Loss alert", "Latency alert"]
         assert [annotation.label for annotation in window.graph_detail_window.graph._annotations] == [
             "Loss alert",
@@ -2387,6 +2399,15 @@ def test_main_window_records_sample_count_alert_and_recovery(qt_app, tmp_path) -
         rows = read_alert_actions(window.alert_action_log_path)
         assert [event.title for event in window.alert_events] == ["Sample count alert", "Alert ended"]
         assert "Alert ended" in window.alerts_box.toPlainText()
+        assert window.alert_table.rowCount() == 2
+        assert {
+            window.alert_table.item(row, 2).text()
+            for row in range(window.alert_table.rowCount())
+        } == {"Sample count alert", "Alert ended"}
+        assert {
+            window.alert_table.item(row, 1).text()
+            for row in range(window.alert_table.rowCount())
+        } == {"CRITICAL", "INFO"}
         assert [row["title"] for row in rows] == ["Sample count alert", "Alert ended"]
         assert rows[1]["message"] == "Sample count alert recovered"
     finally:

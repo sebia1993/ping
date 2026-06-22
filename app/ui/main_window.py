@@ -52,11 +52,13 @@ from app.ui.export_worker import ExportWorker
 from app.ui.graph_detail_window import GraphDetailWindow
 from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation
 from app.ui.table_panels import (
+    ALERT_HEADERS,
     SESSION_HEADERS,
     SESSION_ID_ROLE,
     TABLE_HEADERS,
     TARGET_HEADERS,
     TARGET_SCORE_COLUMN,
+    create_alert_table,
     create_hop_table,
     create_session_table,
     create_target_table,
@@ -64,6 +66,7 @@ from app.ui.table_panels import (
     fmt_ms,
     populate_trace_table,
     target_problem_score,
+    update_alert_table,
     update_hop_table,
     update_session_table,
     update_target_table,
@@ -487,6 +490,7 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.save_alert_preset_button)
         alert_rule_row.addWidget(self.load_alert_preset_button)
         alert_rule_row.addStretch(1)
+        self.alert_table = create_alert_table()
         self.alerts_box = QTextEdit()
         self.alerts_box.setReadOnly(True)
         self.alerts_box.setMaximumHeight(120)
@@ -613,6 +617,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.diagnostics_box)
         layout.addWidget(alerts_title)
         layout.addLayout(alert_rule_row)
+        layout.addWidget(self.alert_table)
         layout.addWidget(self.alerts_box)
         layout.addWidget(route_title)
         layout.addWidget(self.route_changes_box)
@@ -1467,6 +1472,7 @@ class MainWindow(QMainWindow):
         if any(existing.key == event.key for existing in self.alert_events):
             if actions is not None:
                 self.alert_event_actions[event.key] = actions
+                self._sync_alerts_box()
             return
         self.alert_events.append(event)
         self.alert_events = self.alert_events[-100:]
@@ -1635,6 +1641,8 @@ class MainWindow(QMainWindow):
     def _sync_alerts_box(self) -> None:
         if not hasattr(self, "alerts_box"):
             return
+        if hasattr(self, "alert_table"):
+            update_alert_table(self.alert_table, self.alert_events, self.alert_event_actions)
         if not self.alert_events:
             self.alerts_box.setPlainText("No alert events.")
             return
