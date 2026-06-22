@@ -650,7 +650,7 @@ class MainWindow(QMainWindow):
         self.session_combo = QComboBox()
         self.session_combo.setMinimumWidth(170)
         self.session_filter_edit = QLineEdit()
-        self.session_filter_edit.setPlaceholderText("Filter sessions")
+        self.session_filter_edit.setPlaceholderText("Filter sessions, e.g. month:2026-01")
         self.session_filter_edit.setClearButtonEnabled(True)
         self.session_filter_edit.setMinimumWidth(160)
         self.session_filter_edit.textChanged.connect(lambda *_args: self._sync_sessions_box())
@@ -3377,6 +3377,41 @@ def _apply_default_font() -> None:
 
 
 def _session_matches_filter(session: TraceSessionRecord, terms: list[str]) -> bool:
+    return all(_session_matches_filter_term(session, term) for term in terms)
+
+
+def _session_matches_filter_term(session: TraceSessionRecord, term: str) -> bool:
+    if ":" in term:
+        key, value = term.split(":", 1)
+        key = key.strip().casefold()
+        value = value.strip().casefold()
+        if not value:
+            return True
+        if key in {"target", "ip"}:
+            return value in session.target.casefold()
+        if key in {"state", "status"}:
+            return value in _filter_value(session.state)
+        if key in {"month", "ym"}:
+            return any(value in bucket.month.casefold() for bucket in session_storage_buckets([session]))
+        if key == "bucket":
+            return any(
+                value in _filter_value(f"{bucket.target}/{bucket.month}")
+                for bucket in session_storage_buckets([session])
+            )
+        if key in {"engine", "probe"}:
+            return value in _filter_value(session.probe_engine) or value in _filter_value(_session_probe_summary(session))
+        if key == "mode":
+            return value in _filter_value(session.measurement_mode) or value in _filter_value(_session_probe_summary(session))
+        if key == "port":
+            return value in str(session.tcp_port or "").casefold()
+        if key == "resume":
+            return value in _filter_value(session.resumed_from_session_id)
+        if key == "error":
+            return value in _filter_value(session.last_error)
+    return term in _session_filter_haystack(session)
+
+
+def _session_filter_haystack(session: TraceSessionRecord) -> str:
     values = [
         session.session_id,
         session.target,
@@ -3394,9 +3429,13 @@ def _session_matches_filter(session: TraceSessionRecord, terms: list[str]) -> bo
         str(session.route_path or ""),
         session.last_error,
         " ".join(str(segment) for segment in session.segments),
+        " ".join(f"{bucket.target}/{bucket.month}" for bucket in session_storage_buckets([session])),
     ]
-    haystack = " ".join(value for value in values if value).casefold()
-    return all(term in haystack for term in terms)
+    return " ".join(_filter_value(value) for value in values if value)
+
+
+def _filter_value(value: object) -> str:
+    return str(value).casefold().replace(" ", "_")
 
 
 def _session_export_folder(record: TraceSessionRecord, index: int) -> str:

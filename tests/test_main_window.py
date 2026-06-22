@@ -361,6 +361,21 @@ def test_main_window_filters_saved_sessions(qt_app, tmp_path) -> None:
         assert "203.0.113.10" in window.sessions_box.toPlainText()
         assert window.session_combo.count() == 1
 
+        window.session_filter_edit.setText("target:198.51.100.10 state:archived")
+        assert "198.51.100.10" in window.sessions_box.toPlainText()
+        assert window.session_combo.count() == 1
+        assert window.session_combo.findData(archived.session_id) == 0
+
+        window.session_filter_edit.setText("bucket:203.0.113.10/2026-01 state:will_delete")
+        assert "203.0.113.10" in window.sessions_box.toPlainText()
+        assert window.session_combo.count() == 1
+        assert window.session_combo.findData(missing.session_id) == 0
+
+        window.session_filter_edit.setText("month:2026-01 engine:tcp_connect port:443")
+        assert "203.0.113.10" in window.sessions_box.toPlainText()
+        assert "198.51.100.10" not in window.sessions_box.toPlainText()
+        assert window.session_combo.count() == 1
+
         window.session_filter_edit.setText("no-match")
         text = window.sessions_box.toPlainText()
         assert text.splitlines()[0] == "Sessions: 0/2"
