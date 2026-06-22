@@ -293,6 +293,24 @@ class MainWindow(QMainWindow):
         graph_hint.setObjectName("muted")
         self.focus_label = _chip("Live", "neutral")
         self.timeline_label = _chip("Timeline: Live", "neutral")
+        self.timeline_range_combo = QComboBox()
+        self.timeline_range_combo.setToolTip("Visible timeline range")
+        for label, seconds in [
+            ("60s", 60),
+            ("10m", 600),
+            ("1h", 3600),
+            ("6h", 21600),
+            ("24h", 86400),
+            ("48h", 172800),
+        ]:
+            self.timeline_range_combo.addItem(label, seconds)
+        self.timeline_range_combo.setCurrentIndex(self.timeline_range_combo.findData(600))
+        self.load_timeline_button = QPushButton("Load range")
+        self.load_timeline_button.setToolTip("Show the selected time range on the main timeline")
+        self.load_timeline_button.clicked.connect(self.load_selected_timeline_range)
+        self.reset_current_button = QPushButton("Current")
+        self.reset_current_button.setToolTip("Reset focus and timeline to the latest samples")
+        self.reset_current_button.clicked.connect(self.reset_focus_to_current)
         self.clear_focus_button = QPushButton("Clear focus")
         self.clear_focus_button.setEnabled(False)
         self.clear_focus_button.clicked.connect(self.clear_focus_range)
@@ -303,6 +321,9 @@ class MainWindow(QMainWindow):
         graph_header.addWidget(graph_hint)
         graph_header.addWidget(self.focus_label)
         graph_header.addWidget(self.timeline_label)
+        graph_header.addWidget(self.timeline_range_combo)
+        graph_header.addWidget(self.load_timeline_button)
+        graph_header.addWidget(self.reset_current_button)
         graph_header.addWidget(self.clear_focus_button)
         graph_header.addWidget(self.graph_detail_button)
         self.graph = LatencyGraphWidget()
@@ -1241,7 +1262,7 @@ class MainWindow(QMainWindow):
             self._apply_target_problem_sort()
         self._update_all_targets_summary(target_snapshots)
         self._update_target_summary(target_snapshot)
-        self.graph.set_points(self.target_history)
+        self.graph.set_points(self._graph_target_history())
         self.graph.set_annotations(self._timeline_annotations())
         self._update_graph_detail()
         self._save_pending_alert_images()
@@ -1416,13 +1437,29 @@ class MainWindow(QMainWindow):
             f"{len(observations)} samples"
         )
         self._sync_timeline_controls()
-        self._update_graph_detail()
+        self._render_current_view()
         self.status_label.setText(self.timeline_status)
+
+    def load_selected_timeline_range(self) -> None:
+        seconds = int(self.timeline_range_combo.currentData() or 600)
+        self.load_timeline_range(seconds)
 
     def clear_timeline_range(self) -> None:
         self._clear_timeline_state()
-        self._update_graph_detail()
+        self.graph.reset_to_current()
+        self._render_current_view()
         self.status_label.setText("Timeline restored to live buffer")
+
+    def reset_focus_to_current(self) -> None:
+        self._clear_focus_state()
+        self._clear_timeline_state()
+        self.graph.reset_to_current()
+        if self.graph_detail_window is not None:
+            self.graph_detail_window.graph.reset_to_current()
+        self._sync_focus_controls()
+        self._sync_timeline_controls()
+        self._render_current_view()
+        self.status_label.setText("Focus and timeline reset to current")
 
     def _timeline_end_time(self) -> datetime | None:
         bounds = session_log_bounds(self.session_log_path)
@@ -1451,6 +1488,11 @@ class MainWindow(QMainWindow):
             for observation in observations
             if observation.is_target and (not self.current_target or observation.address == self.current_target)
         ]
+
+    def _graph_target_history(self) -> list[HopObservation]:
+        if self.timeline_range is not None:
+            return self.timeline_target_history
+        return self.target_history
 
     def apply_focus_range(self, selection: object) -> None:
         if not selection:

@@ -2123,6 +2123,69 @@ def test_main_window_loads_graph_timeline_from_session_log_and_focuses_it(qt_app
         window.close()
 
 
+def test_main_window_loads_timeline_range_from_main_controls(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    session_path = tmp_path / "session.csv"
+    writer = SessionLogWriter(session_path)
+    writer.write_many([
+        HopObservation(now - timedelta(minutes=20), 0, "198.51.100.10", "Target", True, 18.0, STATUS_OK, True),
+        HopObservation(now - timedelta(minutes=20), 1, "192.0.2.1", "gateway", True, 2.0, STATUS_OK),
+        HopObservation(now - timedelta(minutes=5), 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True),
+        HopObservation(now, 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now, 1, "192.0.2.1", "gateway", True, 3.0, STATUS_OK),
+    ])
+    writer.close()
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.session_log_path = session_path
+        window.timeline_range_combo.setCurrentIndex(window.timeline_range_combo.findData(600))
+
+        window.load_selected_timeline_range()
+
+        assert window.timeline_range == (now - timedelta(minutes=10), now)
+        assert [point.timestamp for point in window.graph._points] == [
+            now - timedelta(minutes=5),
+            now,
+        ]
+        assert window.timeline_label.text().startswith("Timeline: ")
+        assert "10m" in window.timeline_label.toolTip()
+        assert "Timeline: last 10m" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_reset_focus_to_current_clears_timeline_and_focus(qt_app) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True)
+        for index in range(120)
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=20.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+        window.load_timeline_range(60)
+        window.apply_focus_range((now + timedelta(seconds=30), now + timedelta(seconds=60)))
+        window.graph.zoom_in()
+        window.graph.pan_left()
+
+        window.reset_focus_to_current()
+
+        assert window.focus_range is None
+        assert window.timeline_range is None
+        assert window.focus_label.text() == "Live"
+        assert window.timeline_label.text() == "Timeline: Live"
+        assert window.graph.visible_datetime_range() is not None
+        assert window.graph.visible_datetime_range()[1] == history[-1].timestamp
+        assert window.status_label.text() == "Focus and timeline reset to current"
+    finally:
+        window.close()
+
+
 def test_main_window_displays_route_change_history_and_graph_marker(qt_app) -> None:
     window = MainWindow()
     history = RouteHistory()

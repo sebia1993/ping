@@ -11,6 +11,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
 - Timeline UX has a separate main-screen status chip for visible timeline range, distinct from the focus-period chip.
+- Main-screen timeline controls can apply 60s/10m/1h/6h/24h/48h visible ranges and reset focus/timeline back to current samples.
 - Statistics export supports grouping, timezone, empty-range protection, and scope selection: All time, Visible timeline, Focus period, Custom range.
 - PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
@@ -31,8 +32,9 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 
 1. Improve Timeline UX.
    - Main-screen visible range status is now shown separately from Focus period.
-   - Support reset-to-current/current-window behavior consistently.
-   - Continue refining direct visible range controls on the main graph/detail graph.
+   - Reset-to-current behavior now clears both Focus period and visible timeline range from the main screen.
+   - Main graph and detail graph both expose 60s/10m/1h/6h/24h/48h visible range controls.
+   - Continue refining keyboard shortcuts and direct drag/scale operator guidance.
 
 2. Expand Export/Report options.
    - Explicit Start/End Date export range controls are implemented for statistics exports as Custom range.
