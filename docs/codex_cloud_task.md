@@ -85,7 +85,8 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 3. Expand the alert system.
    - The current project supports configurable loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, and alert-ended events.
    - It can run selected actions on alert start and/or recovery: timeline annotation, comment, log, beep, image save, email, REST call, and executable launch.
-   - Remaining parity work includes richer action templates, route-adjustment workflow, and stronger operator guidance around alert presets.
+   - Route Adjustment is exposed as an alert action for Final Hop Only sessions: target alerts can switch to Full Route, respect the configured alert thresholds, and optionally restore Final Hop Only on recovery.
+   - Remaining parity work includes richer action templates and stronger operator guidance around alert presets.
    - References:
      - https://www.pingplotter.com/manual/alert-conditions/
      - https://www.pingplotter.com/manual/help_alerts/

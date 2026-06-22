@@ -83,6 +83,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.timer_alert_check.isChecked() is True
         assert window.alert_start_action_check.isChecked() is True
         assert window.alert_end_action_check.isChecked() is True
+        assert window.alert_route_adjust_action_check.isChecked() is True
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_log_action_check.isChecked() is False
@@ -918,6 +919,41 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert created_workers[0].stopped is True
         assert window.stop_button.isEnabled() is False
         assert window.session_state_label.text() == "중지"
+    finally:
+        window.close()
+
+
+def test_main_window_passes_route_adjustment_options_to_worker(qt_app) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    def worker_factory(**kwargs) -> "_FakeWorker":
+        captured_kwargs.update(kwargs)
+        return _FakeWorker(
+            target=str(kwargs["target"]),
+            interval_seconds=int(kwargs["interval_seconds"]),
+            max_cycles=kwargs["max_cycles"],
+            targets=list(kwargs["targets"]),
+            measurement_mode=str(kwargs["measurement_mode"]),
+            probe_engine=str(kwargs["probe_engine"]),
+            tcp_port=int(kwargs["tcp_port"]),
+        )
+
+    window = MainWindow(worker_factory=worker_factory)
+
+    try:
+        window.target_input.setText("198.51.100.10")
+        window.refresh_trace_targets()
+        window.latency_threshold_spin.setValue(250)
+        mode_index = window.measurement_mode_combo.findData(MEASUREMENT_MODE_FINAL_HOP_ONLY)
+        assert mode_index >= 0
+        window.measurement_mode_combo.setCurrentIndex(mode_index)
+
+        window.start_measurement()
+
+        alert_config = captured_kwargs["alert_rule_config"]
+        assert alert_config.latency_threshold_ms == 250
+        assert captured_kwargs["auto_full_route_on_alert"] is True
+        assert captured_kwargs["auto_restore_final_hop_on_recovery"] is True
     finally:
         window.close()
 
@@ -2324,6 +2360,34 @@ def test_main_window_custom_alert_rules_write_action_log(qt_app, tmp_path) -> No
         window.close()
 
 
+def test_main_window_records_route_adjustment_action_for_final_hop_alert(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 90.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=90.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(80)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        mode_index = window.measurement_mode_combo.findData(MEASUREMENT_MODE_FINAL_HOP_ONLY)
+        assert mode_index >= 0
+        window.measurement_mode_combo.setCurrentIndex(mode_index)
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["actions"] == "route_adjustment"
+    finally:
+        window.close()
+
+
 def test_main_window_disabled_alert_condition_does_not_fire(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -2379,6 +2443,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.route_ip_alert_edit.setText("203.0.113.50")
         window.alert_start_action_check.setChecked(True)
         window.alert_end_action_check.setChecked(False)
+        window.alert_route_adjust_action_check.setChecked(False)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(True)
         window.alert_log_action_check.setChecked(True)
@@ -2411,6 +2476,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert data["rules"]["route_ip"] == "203.0.113.50"
         assert data["actions"]["start"] is True
         assert data["actions"]["end"] is False
+        assert data["actions"]["route_adjustment"] is False
         assert data["actions"]["timeline"] is False
         assert data["actions"]["log"] is True
         assert data["actions"]["email"] is True
@@ -2441,6 +2507,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.route_ip_alert_edit.clear()
         window.alert_start_action_check.setChecked(False)
         window.alert_end_action_check.setChecked(True)
+        window.alert_route_adjust_action_check.setChecked(True)
         window.alert_timeline_action_check.setChecked(True)
         window.alert_comment_action_check.setChecked(False)
         window.alert_log_action_check.setChecked(False)
@@ -2481,6 +2548,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.route_ip_alert_edit.text() == "203.0.113.50"
         assert window.alert_start_action_check.isChecked() is True
         assert window.alert_end_action_check.isChecked() is False
+        assert window.alert_route_adjust_action_check.isChecked() is False
         assert window.alert_timeline_action_check.isChecked() is False
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_log_action_check.isChecked() is True
@@ -2517,6 +2585,7 @@ def test_main_window_alert_action_selection_controls_log_beep_and_timeline(qt_ap
         window.alert_action_log_path = tmp_path / "session.alerts.csv"
         window.loss_threshold_spin.setValue(100)
         window.latency_threshold_spin.setValue(80)
+        window.alert_route_adjust_action_check.setChecked(False)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(False)
         window.alert_beep_action_check.setChecked(True)
@@ -2547,6 +2616,7 @@ def test_main_window_alert_log_action_writes_without_annotation(qt_app, tmp_path
         window.alert_action_log_path = tmp_path / "session.alerts.csv"
         window.loss_threshold_spin.setValue(100)
         window.latency_threshold_spin.setValue(80)
+        window.alert_route_adjust_action_check.setChecked(False)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(False)
         window.alert_log_action_check.setChecked(True)
@@ -2582,6 +2652,7 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
         window.alert_action_log_path = tmp_path / "session.alerts.csv"
         window.loss_threshold_spin.setValue(100)
         window.latency_threshold_spin.setValue(80)
+        window.alert_route_adjust_action_check.setChecked(False)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(False)
         window.alert_rest_action_check.setChecked(True)
@@ -2654,6 +2725,7 @@ def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, mo
         window.alert_action_log_path = tmp_path / "session.alerts.csv"
         window.loss_threshold_spin.setValue(100)
         window.latency_threshold_spin.setValue(80)
+        window.alert_route_adjust_action_check.setChecked(False)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(False)
         window.alert_email_action_check.setChecked(True)
@@ -2759,6 +2831,7 @@ def test_main_window_alert_executable_action_launches_configured_file(qt_app, tm
         window.alert_action_log_path = tmp_path / "session.alerts.csv"
         window.loss_threshold_spin.setValue(100)
         window.latency_threshold_spin.setValue(80)
+        window.alert_route_adjust_action_check.setChecked(False)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(False)
         window.alert_executable_action_check.setChecked(True)

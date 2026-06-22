@@ -19,7 +19,16 @@ from queue import Empty, Queue
 
 from PySide6.QtCore import QThread, Signal
 
-from app.core.alerts import LATENCY_ALERT_KEY, LOSS_ALERT_KEY, TIMER_ALERT_KEY, evaluate_target_alerts
+from app.core.alerts import (
+    JITTER_ALERT_KEY,
+    LATENCY_ALERT_KEY,
+    LOSS_ALERT_KEY,
+    MOS_ALERT_KEY,
+    SAMPLE_ALERT_KEY,
+    TIMER_ALERT_KEY,
+    AlertRuleConfig,
+    evaluate_target_alerts,
+)
 from app.core.analyzer import analyze_path
 from app.core.metrics import MetricsSession, TargetMetricTracker
 from app.core.models import STATUS_ERROR, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, HopObservation, PingResult
@@ -53,7 +62,14 @@ SLOW_BACKOFF_SECONDS = 5.0
 MEASUREMENT_MODE_FULL_ROUTE = "full_route"
 MEASUREMENT_MODE_FINAL_HOP_ONLY = "final_hop_only"
 MEASUREMENT_MODES = {MEASUREMENT_MODE_FULL_ROUTE, MEASUREMENT_MODE_FINAL_HOP_ONLY}
-AUTO_FULL_ROUTE_ALERT_KEYS = {LOSS_ALERT_KEY, LATENCY_ALERT_KEY, TIMER_ALERT_KEY}
+AUTO_FULL_ROUTE_ALERT_KEYS = {
+    LOSS_ALERT_KEY,
+    LATENCY_ALERT_KEY,
+    JITTER_ALERT_KEY,
+    SAMPLE_ALERT_KEY,
+    TIMER_ALERT_KEY,
+    MOS_ALERT_KEY,
+}
 PROBE_ENGINE_ICMP = "icmp"
 PROBE_ENGINE_TCP_CONNECT = "tcp_connect"
 PROBE_ENGINES = {PROBE_ENGINE_ICMP, PROBE_ENGINE_TCP_CONNECT}
@@ -253,6 +269,9 @@ class MeasurementWorker(QThread):
         measurement_mode: str = MEASUREMENT_MODE_FULL_ROUTE,
         probe_engine: str = PROBE_ENGINE_ICMP,
         tcp_port: int = 443,
+        alert_rule_config: AlertRuleConfig | None = None,
+        auto_full_route_on_alert: bool = True,
+        auto_restore_final_hop_on_recovery: bool = False,
         parent=None,
         session_log_root: str | Path | None = None,
     ) -> None:
@@ -269,6 +288,9 @@ class MeasurementWorker(QThread):
         )
         self.probe_engine = probe_engine if probe_engine in PROBE_ENGINES else PROBE_ENGINE_ICMP
         self.tcp_port = max(min(int(tcp_port), 65535), 1)
+        self.alert_rule_config = alert_rule_config or AlertRuleConfig()
+        self.auto_full_route_on_alert = bool(auto_full_route_on_alert)
+        self.auto_restore_final_hop_on_recovery = bool(auto_restore_final_hop_on_recovery)
         self.session_log_root = Path(session_log_root) if session_log_root is not None else None
         # 아래 값들은 UI 버튼에서 들어오는 중지/일시정지/간격 변경 요청을 안전하게 반영하기 위한 상태입니다.
         self._stop_event = threading.Event()
@@ -278,6 +300,7 @@ class MeasurementWorker(QThread):
         self._ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._hop_ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._route_history = RouteHistory()
+        self._auto_full_route_active = False
         self._tracert_status = "대기"
 
     def request_stop(self) -> None:
@@ -495,7 +518,7 @@ class MeasurementWorker(QThread):
                     recent_observations,
                     timeout=0,
                 )
-                trace_future = self._maybe_start_auto_full_route(
+                trace_future = self._maybe_adjust_route_for_alerts(
                     trace_executor,
                     trace_future,
                     target_trackers,
@@ -723,13 +746,13 @@ class MeasurementWorker(QThread):
         session_log.write_many(observations)
         recent_observations.extend(observations)
 
-    def _maybe_start_auto_full_route(
+    def _maybe_adjust_route_for_alerts(
         self,
         executor: ThreadPoolExecutor,
         trace_future: Future[list[HopInfo]] | None,
         target_trackers: dict[str, TargetMetricTracker],
     ) -> Future[list[HopInfo]] | None:
-        if self.measurement_mode != MEASUREMENT_MODE_FINAL_HOP_ONLY or trace_future is not None:
+        if not self.auto_full_route_on_alert:
             return trace_future
         tracker = target_trackers.get(self.target)
         if tracker is None:
@@ -737,13 +760,32 @@ class MeasurementWorker(QThread):
         active_keys, events = evaluate_target_alerts(
             list(tracker.observations),
             current_target=self.target,
+            config=self.alert_rule_config,
         )
-        if not active_keys.intersection(AUTO_FULL_ROUTE_ALERT_KEYS):
+        route_adjustment_keys = active_keys.intersection(AUTO_FULL_ROUTE_ALERT_KEYS)
+        if (
+            self.measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
+            and trace_future is None
+            and route_adjustment_keys
+        ):
+            reason = "target alert"
+            for event in events:
+                if event.key in route_adjustment_keys:
+                    reason = event.title
+                    break
+            self.measurement_mode = MEASUREMENT_MODE_FULL_ROUTE
+            self._auto_full_route_active = True
+            self.status_message.emit(f"Auto Full Route enabled: {reason}")
+            return self._start_trace_refresh(executor)
+        if self._auto_full_route_active and not route_adjustment_keys:
+            self._auto_full_route_active = False
+            if self.auto_restore_final_hop_on_recovery:
+                self.measurement_mode = MEASUREMENT_MODE_FINAL_HOP_ONLY
+                self.status_message.emit("Auto Final Hop Only restored: alert recovered")
+            else:
+                self.status_message.emit("Auto Full Route alert recovered; Full Route remains enabled")
             return trace_future
-        reason = events[0].title if events else "target alert"
-        self.measurement_mode = MEASUREMENT_MODE_FULL_ROUTE
-        self.status_message.emit(f"Auto Full Route enabled: {reason}")
-        return self._start_trace_refresh(executor)
+        return trace_future
 
     def _emit_measurement_update(
         self,

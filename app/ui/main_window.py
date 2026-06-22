@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import inspect
 import io
 import json
 import os
@@ -516,6 +517,11 @@ class MainWindow(QMainWindow):
         self.alert_end_action_check = QCheckBox("End")
         self.alert_end_action_check.setChecked(True)
         self.alert_end_action_check.setToolTip("Run selected actions when an active alert recovers")
+        self.alert_route_adjust_action_check = QCheckBox("Route adjust")
+        self.alert_route_adjust_action_check.setChecked(True)
+        self.alert_route_adjust_action_check.setToolTip(
+            "When Final Hop Only is active, switch to Full Route on matching target alerts"
+        )
         self.alert_timeline_action_check = QCheckBox("Timeline")
         self.alert_timeline_action_check.setChecked(True)
         self.alert_comment_action_check = QCheckBox("Comment")
@@ -575,6 +581,7 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(QLabel("Actions"))
         alert_rule_row.addWidget(self.alert_start_action_check)
         alert_rule_row.addWidget(self.alert_end_action_check)
+        alert_rule_row.addWidget(self.alert_route_adjust_action_check)
         alert_rule_row.addWidget(self.alert_timeline_action_check)
         alert_rule_row.addWidget(self.alert_comment_action_check)
         alert_rule_row.addWidget(self.alert_log_action_check)
@@ -918,7 +925,7 @@ class MainWindow(QMainWindow):
 
         # 4단계: 실제 측정은 별도 QThread인 Worker에서 진행합니다.
         # 아래 connect들은 Worker 결과가 도착했을 때 어떤 화면 함수를 호출할지 연결합니다.
-        self.worker = self.worker_factory(
+        self.worker = self._create_measurement_worker(
             target=target,
             interval_seconds=int(self.interval_combo.currentText()),
             max_cycles=max_cycles,
@@ -926,6 +933,9 @@ class MainWindow(QMainWindow):
             measurement_mode=measurement_mode,
             probe_engine=probe_engine,
             tcp_port=self.tcp_port_spin.value(),
+            alert_rule_config=self._alert_rule_config(),
+            auto_full_route_on_alert=self._route_adjustment_start_enabled(),
+            auto_restore_final_hop_on_recovery=self._route_adjustment_recovery_enabled(),
         )
         self.worker.trace_completed.connect(self.on_trace_completed)
         if hasattr(self.worker, "route_changed"):
@@ -940,6 +950,16 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.on_worker_finished)
         self._set_running(True)
         self.worker.start()
+
+    def _create_measurement_worker(self, **kwargs):
+        try:
+            signature = inspect.signature(self.worker_factory)
+        except (TypeError, ValueError):
+            return self.worker_factory(**kwargs)
+        if any(parameter.kind == parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+            return self.worker_factory(**kwargs)
+        supported_kwargs = {key: value for key, value in kwargs.items() if key in signature.parameters}
+        return self.worker_factory(**supported_kwargs)
 
     def stop_measurement(self) -> None:
         if self.worker:
@@ -1601,6 +1621,20 @@ class MainWindow(QMainWindow):
             mos_window_seconds=int(mos_window_minutes) * 60,
         )
 
+    def _route_adjustment_start_enabled(self) -> bool:
+        return (
+            hasattr(self, "alert_route_adjust_action_check")
+            and self.alert_route_adjust_action_check.isChecked()
+            and self.alert_start_action_check.isChecked()
+        )
+
+    def _route_adjustment_recovery_enabled(self) -> bool:
+        return (
+            hasattr(self, "alert_route_adjust_action_check")
+            and self.alert_route_adjust_action_check.isChecked()
+            and self.alert_end_action_check.isChecked()
+        )
+
     def save_alert_rule_preset(self) -> None:
         path = self._select_save_path("alert_preset.json", "JSON Files (*.json)", target="alert_rules")
         if not path:
@@ -1662,6 +1696,7 @@ class MainWindow(QMainWindow):
             "actions": {
                 "start": self.alert_start_action_check.isChecked(),
                 "end": self.alert_end_action_check.isChecked(),
+                "route_adjustment": self.alert_route_adjust_action_check.isChecked(),
                 "timeline": self.alert_timeline_action_check.isChecked(),
                 "comment": self.alert_comment_action_check.isChecked(),
                 "log": self.alert_log_action_check.isChecked(),
@@ -1706,6 +1741,7 @@ class MainWindow(QMainWindow):
             self.route_ip_alert_edit.setText(str(rules.get("route_ip") or ""))
         _set_check_value(self.alert_start_action_check, actions.get("start"))
         _set_check_value(self.alert_end_action_check, actions.get("end"))
+        _set_check_value(self.alert_route_adjust_action_check, actions.get("route_adjustment"))
         _set_check_value(self.alert_timeline_action_check, actions.get("timeline"))
         _set_check_value(self.alert_comment_action_check, actions.get("comment"))
         _set_check_value(self.alert_log_action_check, actions.get("log"))
@@ -1777,6 +1813,14 @@ class MainWindow(QMainWindow):
         if event is not None and not self._alert_action_phase_enabled(event):
             return []
         actions: list[str] = []
+        if (
+            event is not None
+            and not self._is_alert_end_event(event)
+            and hasattr(self, "alert_route_adjust_action_check")
+            and self.alert_route_adjust_action_check.isChecked()
+            and self.measurement_mode_combo.currentData() == MEASUREMENT_MODE_FINAL_HOP_ONLY
+        ):
+            actions.append("route_adjustment")
         if self.alert_timeline_action_check.isChecked():
             actions.append("timeline_annotation")
         if self.alert_comment_action_check.isChecked():

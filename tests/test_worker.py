@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
+from app.core.alerts import AlertRuleConfig
 from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, PingResult
 from app.storage.route_log import RouteLogWriter, route_changes_in_range
 from app.storage.session_index import SESSION_STATE_ARCHIVED, SessionIndexStore
@@ -310,6 +311,91 @@ def test_worker_auto_promotes_final_hop_only_to_full_route_on_latency_alert() ->
     assert updates[-1][0]
     assert any("Auto Full Route enabled" in status for status in statuses)
     assert "192.0.2.1" in ping_calls
+
+
+def test_worker_route_adjustment_can_be_disabled() -> None:
+    _app()
+    traceroute_probe = _FakeTracerouteProbe(
+        [
+            HopInfo(index=1, address="192.0.2.1", hostname="gateway"),
+            HopInfo(index=2, address="198.51.100.10", hostname="target.example"),
+        ]
+    )
+    ping_calls: list[str] = []
+
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=2,
+        ping_probe_factory=lambda timeout_ms: _HighLatencyPingRunner(timeout_ms, ping_calls),
+        traceroute_probe=traceroute_probe,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        auto_full_route_on_alert=False,
+    )
+    statuses: list[str] = []
+    worker.status_message.connect(statuses.append)
+
+    worker.run()
+
+    assert worker.measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
+    assert traceroute_probe.calls == []
+    assert not any("Auto Full Route enabled" in status for status in statuses)
+
+
+def test_worker_route_adjustment_uses_configured_alert_threshold() -> None:
+    _app()
+    traceroute_probe = _FakeTracerouteProbe(
+        [
+            HopInfo(index=1, address="192.0.2.1", hostname="gateway"),
+            HopInfo(index=2, address="198.51.100.10", hostname="target.example"),
+        ]
+    )
+    ping_calls: list[str] = []
+
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=2,
+        ping_probe_factory=lambda timeout_ms: _HighLatencyPingRunner(timeout_ms, ping_calls),
+        traceroute_probe=traceroute_probe,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        alert_rule_config=AlertRuleConfig(latency_threshold_ms=500.0),
+    )
+
+    worker.run()
+
+    assert worker.measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
+    assert traceroute_probe.calls == []
+
+
+def test_worker_route_adjustment_can_restore_final_hop_on_recovery() -> None:
+    _app()
+    traceroute_probe = _FakeTracerouteProbe(
+        [
+            HopInfo(index=1, address="192.0.2.1", hostname="gateway"),
+            HopInfo(index=2, address="198.51.100.10", hostname="target.example"),
+        ]
+    )
+    ping_calls: dict[str, int] = {}
+
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=3,
+        ping_probe_factory=lambda timeout_ms: _RecoveringLatencyPingRunner(timeout_ms, ping_calls),
+        traceroute_probe=traceroute_probe,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        auto_restore_final_hop_on_recovery=True,
+    )
+    statuses: list[str] = []
+    worker.status_message.connect(statuses.append)
+
+    worker.run()
+
+    assert worker.measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
+    assert traceroute_probe.calls == [("198.51.100.10", 1000, False)]
+    assert any("Auto Full Route enabled" in status for status in statuses)
+    assert any("Auto Final Hop Only restored" in status for status in statuses)
 
 
 def test_worker_does_not_stack_duplicate_pings_for_slow_targets(monkeypatch) -> None:
@@ -855,6 +941,18 @@ class _HighLatencyPingRunner:
     def ping(self, target: str) -> PingResult:
         self.calls.append(target)
         latency = 125.0 if target == "198.51.100.10" else 2.0
+        return PingResult(target, True, latency, STATUS_OK, datetime.now())
+
+
+class _RecoveringLatencyPingRunner:
+    def __init__(self, timeout_ms: int, calls: dict[str, int]) -> None:
+        self.timeout_ms = timeout_ms
+        self.calls = calls
+
+    def ping(self, target: str) -> PingResult:
+        count = self.calls.get(target, 0) + 1
+        self.calls[target] = count
+        latency = 125.0 if target == "198.51.100.10" and count == 1 else 20.0
         return PingResult(target, True, latency, STATUS_OK, datetime.now())
 
 
