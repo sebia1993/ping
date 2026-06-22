@@ -69,6 +69,7 @@ STATISTICS_SCOPE_VISIBLE = "visible"
 STATISTICS_SCOPE_FOCUS = "focus"
 STATISTICS_SCOPE_CUSTOM = "custom"
 STALE_ACTIVE_SESSION_RECOVERY_SECONDS = 3600
+SESSION_MANAGER_DISPLAY_LIMIT = 100
 
 
 class MainWindow(QMainWindow):
@@ -1192,13 +1193,14 @@ class MainWindow(QMainWindow):
                 stale_after=timedelta(seconds=STALE_ACTIVE_SESSION_RECOVERY_SECONDS)
             )
             self.session_index_store.reconcile_missing_session_files()
-        sessions = self.session_index_store.list_sessions()[:6]
-        self._sync_session_combo(sessions)
+        sessions = self.session_index_store.list_sessions()
+        visible_sessions = sessions[:SESSION_MANAGER_DISPLAY_LIMIT]
+        self._sync_session_combo(visible_sessions)
         if not sessions:
             self.sessions_box.setPlainText("No saved sessions.")
             return
-        lines = []
-        for session in sessions:
+        lines = [self._session_manager_summary(sessions, visible_sessions)]
+        for session in visible_sessions:
             end = session.end.strftime("%H:%M:%S") if session.end is not None else "running"
             lines.append(
                 " | ".join(
@@ -1213,6 +1215,22 @@ class MainWindow(QMainWindow):
                 )
             )
         self.sessions_box.setPlainText("\n".join(lines))
+
+    def _session_manager_summary(
+        self,
+        sessions: list[TraceSessionRecord],
+        visible_sessions: list[TraceSessionRecord],
+    ) -> str:
+        state_counts: dict[str, int] = {}
+        for session in sessions:
+            state_counts[session.state] = state_counts.get(session.state, 0) + 1
+        state_summary = ", ".join(f"{state} {count}" for state, count in sorted(state_counts.items()))
+        shown = len(visible_sessions)
+        total = len(sessions)
+        suffix = f" | {state_summary}" if state_summary else ""
+        if shown < total:
+            return f"Sessions: {total} | showing latest {shown}{suffix}"
+        return f"Sessions: {total}{suffix}"
 
     def refresh_saved_sessions(self) -> None:
         self.session_index_store.recover_missing_sessions()

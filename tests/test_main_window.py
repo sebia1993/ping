@@ -107,6 +107,49 @@ def test_main_window_renders_session_index_summary(qt_app, tmp_path) -> None:
         window.close()
 
 
+def test_main_window_session_manager_shows_summary_and_latest_display_limit(qt_app, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main_window_module, "SESSION_MANAGER_DISPLAY_LIMIT", 3)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    records = []
+    for index in range(5):
+        target = f"198.51.100.{index + 10}"
+        sample_path = tmp_path / target / "2026-01" / f"session{index}.samples.csv"
+        sample_path.parent.mkdir(parents=True, exist_ok=True)
+        sample_path.write_text("header\n", encoding="utf-8")
+        record = store.register_session(
+            target=target,
+            sample_path=sample_path,
+            route_path=sample_path.with_name(f"session{index}.routes.csv"),
+            started_at=now + timedelta(minutes=index),
+            interval_seconds=1,
+            measurement_mode="full_route",
+            target_count=1,
+        )
+        store.add_samples(record.session_id, index + 1, now + timedelta(minutes=index, seconds=5), segments=[sample_path])
+        store.finish_session(
+            record.session_id,
+            state=SESSION_STATE_ARCHIVED,
+            ended_at=now + timedelta(minutes=index, seconds=5),
+        )
+        records.append(record)
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        text = window.sessions_box.toPlainText()
+        assert text.splitlines()[0] == "Sessions: 5 | showing latest 3 | Archived 5"
+        assert window.session_combo.count() == 3
+        assert window.session_combo.findData(records[-1].session_id) >= 0
+        assert window.session_combo.findData(records[0].session_id) == -1
+        assert records[-1].target in text
+        assert records[0].target not in text
+    finally:
+        window.close()
+
+
 def test_main_window_recovers_stale_active_sessions_in_session_list(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime.now()
