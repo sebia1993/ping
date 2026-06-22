@@ -1110,6 +1110,7 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         )
 
         window.target_table.selectRow(1)
+        assert "Selected 1" in window.target_summary_status_label.text()
         window.pause_selected_targets()
         window.resume_selected_targets()
         window.pause_all_targets()
@@ -1130,6 +1131,7 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         assert worker.target_interval_updates == [(["203.0.113.10"], 5)]
         assert worker.interval_updates == [2]
         assert "Interval overrides" not in window.target_summary_status_label.text()
+        assert "Selected" not in window.target_summary_status_label.text()
         assert window.target_table.item(0, interval_column).text() == "2s"
         assert window.target_table.item(1, interval_column).text() == "2s"
         assert window.apply_interval_button.isEnabled() is True

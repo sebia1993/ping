@@ -336,6 +336,7 @@ class MainWindow(QMainWindow):
     def _build_target_table_panel(self) -> QFrame:
         self.target_table = create_target_table()
         self.target_table.cellDoubleClicked.connect(self.on_target_double_clicked)
+        self.target_table.itemSelectionChanged.connect(self._refresh_target_summary_selection)
 
         panel = _panel("targetPanel")
         layout = QVBoxLayout(panel)
@@ -1342,11 +1343,19 @@ class MainWindow(QMainWindow):
             return
         total_count = len(self._display_target_snapshots())
         summary = _all_targets_summary_line(snapshots, total_count=total_count)
+        selected_count = len(self._selected_target_addresses()) if hasattr(self, "target_table") else 0
+        if selected_count:
+            summary = f"{summary} | Selected {selected_count}"
         visible_targets = {snapshot.address for snapshot in snapshots if snapshot.address}
         override_count = len([target for target in self.target_interval_overrides if target in visible_targets])
         if override_count:
             summary = f"{summary} | Interval overrides {override_count}"
         self.target_summary_status_label.setText(summary)
+
+    def _refresh_target_summary_selection(self) -> None:
+        if not hasattr(self, "target_summary_status_label"):
+            return
+        self._update_all_targets_summary(self._visible_target_snapshots())
 
     def on_session_log_ready(self, path: str) -> None:
         """Worker가 만든 세션 CSV 경로를 받아 Session Manager와 export 기능을 연결합니다."""
