@@ -4,7 +4,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-from app.core.alerts import AlertEvent
+from app.core.alerts import AlertEvent, is_route_alert_key
 
 
 ALERT_ACTION_HEADERS = [
@@ -45,7 +45,7 @@ def append_alert_action(
                 "timestamp": _format_dt(event.timestamp),
                 "start": _format_dt(event.start),
                 "end": _format_dt(event.end),
-                "source": source or ("route" if event.key.startswith("route_changed:") else "alert"),
+                "source": source or ("route" if is_route_alert_key(event.key) else "alert"),
                 "severity": event.severity,
                 "title": event.title,
                 "message": event.message,

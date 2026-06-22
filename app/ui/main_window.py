@@ -29,7 +29,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.alerts import AlertEvent, AlertRuleConfig, alert_recovery_event, evaluate_target_alerts, route_change_alert
+from app.core.alerts import (
+    AlertEvent,
+    AlertRuleConfig,
+    alert_recovery_event,
+    evaluate_route_ip_alert,
+    evaluate_target_alerts,
+    is_route_alert_key,
+    route_change_alert,
+)
 from app.core.analyzer import analyze_path
 from app.core.models import HopObservation, MetricSnapshot
 from app.core.observation_stats import build_focus_snapshots, observations_in_range
@@ -370,6 +378,11 @@ class MainWindow(QMainWindow):
         self.mos_window_spin.setRange(1, 240)
         self.mos_window_spin.setValue(5)
         self.mos_window_spin.setSuffix("m")
+        self.route_ip_alert_check = QCheckBox("Route IP")
+        self.route_ip_alert_check.setToolTip("Alert when the watched IPv4 address appears in the current route")
+        self.route_ip_alert_edit = QLineEdit()
+        self.route_ip_alert_edit.setPlaceholderText("192.0.2.1")
+        self.route_ip_alert_edit.setMinimumWidth(105)
         self.sample_window_spin = QSpinBox()
         self.sample_window_spin.setRange(1, 100)
         self.sample_window_spin.setValue(10)
@@ -408,6 +421,8 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.mos_threshold_spin)
         alert_rule_row.addWidget(QLabel("MOS Window"))
         alert_rule_row.addWidget(self.mos_window_spin)
+        alert_rule_row.addWidget(self.route_ip_alert_check)
+        alert_rule_row.addWidget(self.route_ip_alert_edit)
         alert_rule_row.addWidget(QLabel("Actions"))
         alert_rule_row.addWidget(self.alert_timeline_action_check)
         alert_rule_row.addWidget(self.alert_comment_action_check)
@@ -1080,6 +1095,13 @@ class MainWindow(QMainWindow):
             current_target=self.current_target,
             config=self._alert_rule_config(),
         )
+        route_active_keys, route_events = evaluate_route_ip_alert(
+            self.snapshots,
+            self._watched_route_ip(),
+            self._latest_alert_timestamp(),
+        )
+        active_keys.update(route_active_keys)
+        events.extend(route_events)
         for event in events:
             if event.key not in previous_active_keys:
                 self._append_alert_event(event)
@@ -1089,6 +1111,18 @@ class MainWindow(QMainWindow):
             for key in sorted(ended_keys):
                 self._append_alert_event(alert_recovery_event(key, timestamp))
         self.active_alert_keys = active_keys
+
+    def _watched_route_ip(self) -> str:
+        if not hasattr(self, "route_ip_alert_check") or not self.route_ip_alert_check.isChecked():
+            return ""
+        watched_ip = self.route_ip_alert_edit.text().strip()
+        targets, invalid = parse_ipv4_targets(watched_ip)
+        return targets[0] if len(targets) == 1 and not invalid else ""
+
+    def _latest_alert_timestamp(self) -> datetime:
+        if self.target_history:
+            return self.target_history[-1].timestamp
+        return datetime.now()
 
     def _alert_rule_config(self) -> AlertRuleConfig:
         loss_threshold = float(self.loss_threshold_spin.value()) if hasattr(self, "loss_threshold_spin") else 20.0
@@ -1883,7 +1917,7 @@ class MainWindow(QMainWindow):
         for event in self.alert_events:
             if not self._alert_event_should_export(event):
                 continue
-            source = "route" if event.key.startswith("route_changed:") else "alert"
+            source = "route" if is_route_alert_key(event.key) else "alert"
             annotations.append(
                 ExportAnnotation(
                     start=event.start,

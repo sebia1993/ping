@@ -67,6 +67,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.mos_alert_check.isChecked() is False
         assert window.mos_threshold_spin.value() == 3.5
         assert window.mos_window_spin.value() == 5
+        assert window.route_ip_alert_check.isChecked() is False
+        assert window.route_ip_alert_edit.text() == ""
         assert window.timer_window_spin.value() == 5
         assert window.session_retention_days_spin.value() == 90
         assert window.statistics_start_edit.isEnabled() is False
@@ -1889,6 +1891,47 @@ def test_main_window_records_mos_alert_when_enabled(qt_app, tmp_path) -> None:
         assert [row["title"] for row in rows] == ["MOS alert"]
         assert rows[0]["message"].startswith("Estimated MOS ")
         assert window.graph._annotations[0].label == "MOS alert"
+    finally:
+        window.close()
+
+
+def test_main_window_records_route_ip_alert_and_recovery(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    first_history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True),
+    ]
+    second_history = [
+        HopObservation(now + timedelta(seconds=30), 0, "198.51.100.10", "Target", True, 21.0, STATUS_OK, True),
+    ]
+    first_snapshots = [
+        _snapshot(1, "192.0.2.1", "gateway"),
+        _snapshot(2, "203.0.113.50", "vpn"),
+    ]
+    second_snapshots = [
+        _snapshot(1, "192.0.2.1", "gateway"),
+        _snapshot(2, "203.0.113.99", "backup"),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=21.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.route_ip_alert_check.setChecked(True)
+        window.route_ip_alert_edit.setText("203.0.113.50")
+
+        window.on_measurement_updated(first_snapshots, target_snapshot, [target_snapshot], ["live"], first_history, first_history)
+        window.on_measurement_updated(second_snapshots, target_snapshot, [target_snapshot], ["live"], second_history, second_history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert [event.title for event in window.alert_events] == ["Route IP alert", "Alert ended"]
+        assert "Route IP alert" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["Route IP alert", "Alert ended"]
+        assert [row["source"] for row in rows] == ["route", "route"]
+        assert rows[0]["message"] == "Watched IP 203.0.113.50 appeared in route at Hop 2"
+        assert rows[1]["message"] == "Route IP alert recovered"
+        assert [annotation.label for annotation in window.graph._annotations] == ["Route IP alert", "Alert ended"]
+        assert window.annotations_for_export()[0].source == "route"
     finally:
         window.close()
 

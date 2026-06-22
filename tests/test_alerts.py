@@ -12,10 +12,11 @@ from app.core.alerts import (
     TIMER_ALERT_KEY,
     alert_recovery_event,
     estimate_mos,
+    evaluate_route_ip_alert,
     evaluate_target_alerts,
     route_change_alert,
 )
-from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation
+from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation, MetricSnapshot
 
 
 def test_evaluate_target_alerts_detects_sustained_loss_and_latency() -> None:
@@ -44,6 +45,22 @@ def test_route_change_alert_uses_unique_timestamp_key() -> None:
     assert event.key == "route_changed:2026-01-01T12:00:00"
     assert event.title == "Route changed"
     assert event.message == "changed Hop 1"
+
+
+def test_evaluate_route_ip_alert_detects_watched_ip_in_path() -> None:
+    timestamp = datetime(2026, 1, 1, 12, 0, 0)
+    snapshots = [
+        _snapshot(1, "192.0.2.1"),
+        _snapshot(2, "203.0.113.50"),
+        _snapshot(3, "198.51.100.10"),
+    ]
+
+    active_keys, events = evaluate_route_ip_alert(snapshots, "203.0.113.50", timestamp)
+
+    assert active_keys == {"route_ip_present:203.0.113.50"}
+    assert events[0].title == "Route IP alert"
+    assert events[0].message == "Watched IP 203.0.113.50 appeared in route at Hop 2"
+    assert events[0].series_key == "hop-2"
 
 
 def test_evaluate_target_alerts_uses_custom_rule_config() -> None:
@@ -214,3 +231,23 @@ def test_alert_recovery_event_records_ended_state() -> None:
     assert event.severity == "info"
     assert event.title == "Alert ended"
     assert event.message == "Sample count alert recovered"
+
+
+def _snapshot(hop_index: int, address: str) -> MetricSnapshot:
+    return MetricSnapshot(
+        hop_index=hop_index,
+        address=address,
+        hostname=None,
+        samples=1,
+        sent=1,
+        received=1,
+        timeout_count=0,
+        current_latency_ms=10.0,
+        avg_latency_ms=10.0,
+        min_latency_ms=10.0,
+        max_latency_ms=10.0,
+        loss_percent=0.0,
+        recent_loss_percent=0.0,
+        jitter_ms=0.0,
+        status=STATUS_OK,
+    )

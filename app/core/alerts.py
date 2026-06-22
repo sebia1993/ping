@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.core.models import HopObservation
+from app.core.models import HopObservation, MetricSnapshot
 
 
 LOSS_ALERT_KEY = "target_loss_20pct_3m"
@@ -12,6 +12,7 @@ JITTER_ALERT_KEY = "target_jitter_30ms"
 SAMPLE_ALERT_KEY = "target_sample_condition"
 TIMER_ALERT_KEY = "target_timer_condition"
 MOS_ALERT_KEY = "target_mos_below"
+ROUTE_IP_ALERT_KEY_PREFIX = "route_ip_present:"
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,39 @@ def route_change_alert(timestamp: datetime, summary: str) -> AlertEvent:
         message=summary,
         series_key=None,
     )
+
+
+def is_route_alert_key(key: str) -> bool:
+    return key.startswith("route_changed:") or key.startswith(ROUTE_IP_ALERT_KEY_PREFIX)
+
+
+def evaluate_route_ip_alert(
+    snapshots: list[MetricSnapshot],
+    watched_ip: str,
+    timestamp: datetime,
+) -> tuple[set[str], list[AlertEvent]]:
+    watched_ip = watched_ip.strip()
+    if not watched_ip:
+        return set(), []
+    matching = [snapshot for snapshot in snapshots if snapshot.address == watched_ip]
+    if not matching:
+        return set(), []
+    first = sorted(matching, key=lambda snapshot: snapshot.hop_index)[0]
+    key = f"{ROUTE_IP_ALERT_KEY_PREFIX}{watched_ip}"
+    return {
+        key,
+    }, [
+        AlertEvent(
+            key=key,
+            timestamp=timestamp,
+            start=timestamp,
+            end=timestamp,
+            severity="warning",
+            title="Route IP alert",
+            message=f"Watched IP {watched_ip} appeared in route at Hop {first.hop_index}",
+            series_key=f"hop-{first.hop_index}" if first.hop_index > 0 else "target",
+        )
+    ]
 
 
 def _target_points(observations: list[HopObservation], current_target: str) -> list[HopObservation]:
@@ -351,6 +385,8 @@ def _alert_title_for_key(alert_key: str) -> str:
         return "Timer alert"
     if alert_key == MOS_ALERT_KEY:
         return "MOS alert"
+    if alert_key.startswith(ROUTE_IP_ALERT_KEY_PREFIX):
+        return "Route IP alert"
     if alert_key.startswith("route_changed:"):
         return "Route changed"
     return "Alert"
