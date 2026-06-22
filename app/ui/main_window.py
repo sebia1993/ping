@@ -39,8 +39,10 @@ from app.ui.table_panels import (
     TARGET_SCORE_COLUMN,
     create_hop_table,
     create_target_table,
+    display_status,
     fmt_ms,
     populate_trace_table,
+    target_problem_score,
     update_hop_table,
     update_target_table,
 )
@@ -58,6 +60,7 @@ from app.storage.route_log import route_changes_in_range, route_log_path_for_ses
 from app.storage.session_index import SessionIndexStore, TraceSessionRecord, session_index_root_for_sample_path
 from app.storage.session_log import iter_observations, iter_observations_in_range, session_log_bounds
 from app.storage.statistics_exporter import TIMEZONE_LOCAL, TIMEZONE_UTC, StatisticsExportOptions
+from app.storage.target_summary_exporter import TargetSummaryExportRow, export_target_summary_csv
 from app.utils.filename import default_export_path
 from app.utils.validators import IPV4_ONLY_MESSAGE, parse_ipv4_targets, validate_target
 
@@ -244,12 +247,15 @@ class MainWindow(QMainWindow):
         self.resume_all_targets_button.clicked.connect(self.resume_all_targets)
         self.apply_interval_button = QPushButton("Apply interval")
         self.apply_interval_button.clicked.connect(self.apply_runtime_interval)
+        self.export_target_summary_button = QPushButton("Export summary")
+        self.export_target_summary_button.clicked.connect(self.save_target_summary_csv)
         self.problem_sort_check = QCheckBox("Problem first")
         self.problem_sort_check.toggled.connect(self._on_problem_sort_toggled)
         header.addWidget(heading)
         header.addStretch(1)
         header.addWidget(hint)
         header.addWidget(self.problem_sort_check)
+        header.addWidget(self.export_target_summary_button)
         header.addWidget(self.pause_selected_targets_button)
         header.addWidget(self.resume_selected_targets_button)
         header.addWidget(self.pause_all_targets_button)
@@ -1488,6 +1494,52 @@ class MainWindow(QMainWindow):
             raise RuntimeError(f"PNG save failed: {path}")
         return path
 
+    def save_target_summary_csv(self) -> None:
+        if self.export_worker and self.export_worker.isRunning():
+            QMessageBox.information(self, "Export", "An export is already running.")
+            return
+        snapshots = list(self._display_target_snapshots())
+        if not snapshots:
+            self.status_label.setText("No target summary data to export")
+            return
+        if getattr(self, "problem_sort_check", None) is not None and self.problem_sort_check.isChecked():
+            snapshots.sort(key=target_problem_score, reverse=True)
+        path = self._select_save_path("target_summary.csv", "CSV Files (*.csv)", target="all_targets")
+        if not path:
+            return
+        try:
+            saved_path = export_target_summary_csv(path, self._target_summary_export_rows(snapshots))
+        except OSError as exc:
+            QMessageBox.warning(self, "Export error", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"Target summary CSV saved: {saved_path}")
+
+    def _target_summary_export_rows(self, snapshots: list[MetricSnapshot]) -> list[TargetSummaryExportRow]:
+        rows: list[TargetSummaryExportRow] = []
+        for snapshot in snapshots:
+            failed = snapshot.sent - snapshot.received
+            rows.append(
+                TargetSummaryExportRow(
+                    target=snapshot.address or "",
+                    status=display_status(snapshot),
+                    current_latency_ms=snapshot.current_latency_ms,
+                    avg_latency_ms=snapshot.avg_latency_ms,
+                    min_latency_ms=snapshot.min_latency_ms,
+                    max_latency_ms=snapshot.max_latency_ms,
+                    loss_percent=snapshot.loss_percent,
+                    recent_loss_percent=snapshot.recent_loss_percent,
+                    sent=snapshot.sent,
+                    received=snapshot.received,
+                    failed=failed,
+                    timeout_count=snapshot.timeout_count,
+                    jitter_ms=snapshot.jitter_ms,
+                    samples=snapshot.samples,
+                    score=target_problem_score(snapshot),
+                )
+            )
+        return rows
+
     def save_statistics_csv(self) -> None:
         self._start_export(
             "stats_csv",
@@ -1715,6 +1767,8 @@ class MainWindow(QMainWindow):
         self.graph_png_button.setEnabled(enabled)
         self.stats_csv_button.setEnabled(enabled)
         self.stats_xlsx_button.setEnabled(enabled)
+        if hasattr(self, "export_target_summary_button"):
+            self.export_target_summary_button.setEnabled(enabled and self._has_target_summary_data())
 
     def _set_exporting(self, exporting: bool) -> None:
         self.csv_button.setEnabled(not exporting and self._has_export_data())
@@ -1723,6 +1777,8 @@ class MainWindow(QMainWindow):
         self.graph_png_button.setEnabled(not exporting and self._has_export_data())
         self.stats_csv_button.setEnabled(not exporting and self._has_export_data())
         self.stats_xlsx_button.setEnabled(not exporting and self._has_export_data())
+        if hasattr(self, "export_target_summary_button"):
+            self.export_target_summary_button.setEnabled(not exporting and self._has_target_summary_data())
         self.statistics_scope_combo.setEnabled(not exporting)
         self.statistics_group_combo.setEnabled(not exporting)
         self.statistics_timezone_combo.setEnabled(not exporting)
@@ -1753,6 +1809,9 @@ class MainWindow(QMainWindow):
             or self.focus_snapshots
             or self.focus_target_snapshots
         )
+
+    def _has_target_summary_data(self) -> bool:
+        return bool(self._display_target_snapshots())
 
     def _set_state_chip(self, text: str, tone: str) -> None:
         self.session_state_label.setText(text)

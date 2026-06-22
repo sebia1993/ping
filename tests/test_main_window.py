@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,6 +50,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.graph_png_button.isEnabled() is False
         assert window.stats_csv_button.isEnabled() is False
         assert window.stats_xlsx_button.isEnabled() is False
+        assert window.export_target_summary_button.isEnabled() is False
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_beep_action_check.isChecked() is False
@@ -769,6 +771,59 @@ def test_main_window_target_double_click_switches_summary_target(qt_app) -> None
         assert window.target_snapshot is second
         assert window.graph._points[0].address == "203.0.113.10"
         assert "Summary target selected" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_exports_target_summary_csv(qt_app, tmp_path, monkeypatch) -> None:
+    export_path = tmp_path / "target_summary.csv"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "CSV Files (*.csv)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    window = MainWindow()
+    now = datetime.now()
+    healthy = _snapshot(0, "198.51.100.10", None, latency=10.0, is_target=True)
+    critical = _snapshot(
+        0,
+        "203.0.113.10",
+        None,
+        loss=40.0,
+        latency=None,
+        received=0,
+        timeout_count=1,
+        status=STATUS_TIMEOUT,
+        is_target=True,
+    )
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.current_targets = ["198.51.100.10", "203.0.113.10"]
+        window.on_measurement_updated(
+            [],
+            healthy,
+            [healthy, critical],
+            ["live"],
+            [
+                HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+                HopObservation(now, 0, "203.0.113.10", "Target", False, None, STATUS_TIMEOUT, True),
+            ],
+            [],
+        )
+
+        assert window.export_target_summary_button.isEnabled() is True
+        window.problem_sort_check.setChecked(True)
+
+        window.save_target_summary_csv()
+
+        with export_path.open(newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.DictReader(handle))
+        assert [row["target"] for row in rows] == ["203.0.113.10", "198.51.100.10"]
+        assert rows[0]["status"] == "CRITICAL"
+        assert rows[0]["failed"] == "1"
+        assert rows[0]["loss_percent"] == "40.0"
+        assert "Target summary CSV saved" in window.status_label.text()
     finally:
         window.close()
 
