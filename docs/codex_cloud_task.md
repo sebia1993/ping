@@ -27,6 +27,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.
 - Analysis logic now distinguishes middle-hop-only latency/jitter from inherited end-to-end symptoms, reducing false bandwidth-saturation or Wi-Fi/congestion diagnoses when the final target is healthy.
 - Analysis logic now adds provider/border handoff cause codes when inherited loss starts at a specific hop, separates full target-only timeout as possible ICMP/firewall blocking, and includes report-ready evidence guidance for escalation.
+- Analysis logic now adds stable overlap guidance when multiple symptom families such as loss and jitter appear in the same focused sample set, helping operators prioritize the final target and first inherited hop.
 
 ## Constraints
 
@@ -56,7 +57,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
    - Cause codes now cover local LAN/Wi-Fi, local access link, ISP/upstream segment, provider/border handoff, provider/border congestion, intermediate-hop ICMP rate-limit/deprioritization, target ICMP/firewall block, and target/service filtering.
    - Keep final-destination-first interpretation.
    - Report evidence grouping is now available in TXT and HTML reports through the Cause Evidence Summary section.
-   - Continue improving operator-facing explanations when multiple symptoms overlap.
+   - Multiple symptom families now produce stable overlap guidance; continue refining evidence timelines and operator-facing escalation wording.
 
 4. Extend deterministic soak coverage.
    - The release verifier now covers a short 50-target simulated soak.
@@ -135,8 +136,8 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 
 7. Strengthen analysis logic.
    - PingPlotter documentation emphasizes checking the final destination first, then finding the first hop where the same symptom begins.
-   - The current analyzer already follows that direction and now classifies bandwidth saturation, ISP/upstream segment issues, provider/border handoff or congestion, intermediate-hop ICMP rate limiting/deprioritization, target ICMP/firewall blocking, target/service filtering, and Wi-Fi/LAN issues with clearer cause codes and recommended actions.
-   - Remaining parity work is richer root-cause grouping, report-ready evidence timelines, and better operator guidance when multiple symptoms overlap.
+   - The current analyzer already follows that direction and now classifies bandwidth saturation, ISP/upstream segment issues, provider/border handoff or congestion, intermediate-hop ICMP rate limiting/deprioritization, target ICMP/firewall blocking, target/service filtering, Wi-Fi/LAN issues, and overlapping symptom families with clearer cause codes and recommended actions.
+   - Remaining parity work is richer root-cause grouping and report-ready evidence timelines.
    - Reference:
      - https://www.pingplotter.com/manual/voiptroubleshooting/
 

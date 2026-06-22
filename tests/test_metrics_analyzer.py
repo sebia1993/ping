@@ -202,6 +202,28 @@ def test_analyzer_flags_target_jitter_even_when_hops_are_stable() -> None:
     assert not any(line.startswith("ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED:") for line in analysis)
 
 
+def test_analyzer_adds_overlap_guidance_for_loss_and_jitter() -> None:
+    snapshots = [
+        _snapshot(1, loss=0, status=STATUS_OK, jitter=3.0),
+        _snapshot(2, loss=40, status=STATUS_TIMEOUT, jitter=35.0),
+        _snapshot(3, loss=45, status=STATUS_TIMEOUT, jitter=38.0),
+    ]
+    target = _snapshot(0, loss=45, status=STATUS_TIMEOUT, jitter=42.0)
+
+    analysis = analyze_path(snapshots, target)
+
+    assert any(
+        line.startswith("ANALYSIS_MULTIPLE_SYMPTOMS_OVERLAP:")
+        and "loss, jitter" in line
+        for line in analysis
+    )
+    assert any(
+        line.startswith("CAUSE_MULTIPLE_SYMPTOM_OVERLAP:")
+        and "final destination" in line
+        for line in analysis
+    )
+
+
 def test_analyzer_reports_no_clear_issue_with_stable_code() -> None:
     snapshots = [
         _snapshot(1, loss=0, status=STATUS_OK, avg_latency=5.0),

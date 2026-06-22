@@ -199,6 +199,8 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
             )
         )
 
+    _append_overlap_guidance(analysis)
+
     if not analysis:
         analysis.append("현재 표본 기준으로 뚜렷한 손실 또는 지연 증가 구간은 보이지 않습니다.")
         analysis.append(
@@ -373,6 +375,71 @@ def _provider_handoff_action(snapshot: MetricSnapshot) -> str:
         f"Build a report for the provider showing Hop {snapshot.hop_index} as the first affected hop, "
         "the final target impact, and any user-impact comments."
     )
+
+
+def _append_overlap_guidance(analysis: list[str]) -> None:
+    symptoms = _detected_symptoms(analysis)
+    if len(symptoms) < 2:
+        return
+
+    symptom_label = ", ".join(symptoms)
+    analysis.append(
+        _diagnostic_line(
+            "ANALYSIS_MULTIPLE_SYMPTOMS_OVERLAP",
+            f"Multiple symptom families are present in the current samples: {symptom_label}.",
+            (
+                "Start with the final target impact, then find the earliest hop where the same symptoms "
+                "begin; keep isolated middle-hop ICMP symptoms separate."
+            ),
+        )
+    )
+    analysis.append(
+        _cause_line(
+            "CAUSE_MULTIPLE_SYMPTOM_OVERLAP",
+            f"The focused samples include overlapping symptom families: {symptom_label}.",
+            (
+                "Prioritize the final destination and the first inherited hop before escalating, "
+                "and avoid blaming isolated intermediate hops unless the final target shares the symptom."
+            ),
+        )
+    )
+
+
+def _detected_symptoms(analysis: list[str]) -> list[str]:
+    symptoms: list[str] = []
+    for line in analysis:
+        symptom = _symptom_family(line)
+        if symptom is not None and symptom not in symptoms:
+            symptoms.append(symptom)
+    return symptoms
+
+
+def _symptom_family(line: str) -> str | None:
+    if line.startswith(
+        (
+            "ANALYSIS_FIRST_HOP_LAN_WIFI:",
+            "ANALYSIS_TARGET_ONLY_LOSS_OR_FILTER:",
+            "ANALYSIS_MIDDLE_HOP_ICMP_RATE_LIMIT:",
+            "ANALYSIS_SEGMENT_LOSS_AFTER_HOP:",
+            "ANALYSIS_END_TO_END_LOSS:",
+        )
+    ):
+        return "loss"
+    if line.startswith(
+        (
+            "ANALYSIS_MIDDLE_HOP_LATENCY_DEPRIORITIZED:",
+            "ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION:",
+        )
+    ):
+        return "latency"
+    if line.startswith(
+        (
+            "ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED:",
+            "ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:",
+        )
+    ):
+        return "jitter"
+    return None
 
 
 def _diagnostic_line(code: str, summary: str, action: str) -> str:
