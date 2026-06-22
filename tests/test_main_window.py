@@ -63,6 +63,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.export_target_summary_button.isEnabled() is False
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
+        assert window.alert_log_action_check.isChecked() is False
         assert window.alert_beep_action_check.isChecked() is False
         assert window.alert_image_action_check.isChecked() is False
         assert window.alert_rest_action_check.isChecked() is False
@@ -2009,6 +2010,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.route_ip_alert_edit.setText("203.0.113.50")
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(True)
+        window.alert_log_action_check.setChecked(True)
         window.alert_beep_action_check.setChecked(True)
         window.alert_image_action_check.setChecked(True)
         window.alert_rest_action_check.setChecked(True)
@@ -2023,6 +2025,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert data["rules"]["loss_threshold_percent"] == 35
         assert data["rules"]["route_ip"] == "203.0.113.50"
         assert data["actions"]["timeline"] is False
+        assert data["actions"]["log"] is True
         assert data["actions"]["executable_path"] == r"C:\Tools\alert.exe"
 
         window.loss_threshold_spin.setValue(1)
@@ -2039,6 +2042,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.route_ip_alert_edit.clear()
         window.alert_timeline_action_check.setChecked(True)
         window.alert_comment_action_check.setChecked(False)
+        window.alert_log_action_check.setChecked(False)
         window.alert_beep_action_check.setChecked(False)
         window.alert_image_action_check.setChecked(False)
         window.alert_rest_action_check.setChecked(False)
@@ -2062,6 +2066,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.route_ip_alert_edit.text() == "203.0.113.50"
         assert window.alert_timeline_action_check.isChecked() is False
         assert window.alert_comment_action_check.isChecked() is True
+        assert window.alert_log_action_check.isChecked() is True
         assert window.alert_beep_action_check.isChecked() is True
         assert window.alert_image_action_check.isChecked() is True
         assert window.alert_rest_action_check.isChecked() is True
@@ -2098,6 +2103,35 @@ def test_main_window_alert_action_selection_controls_log_beep_and_timeline(qt_ap
         assert beep_calls == [True]
         assert rows[0]["title"] == "Latency alert"
         assert rows[0]["actions"] == "beep"
+        assert "Latency alert" in window.alerts_box.toPlainText()
+        assert window.graph._annotations == []
+        assert window.annotations_for_export() == []
+    finally:
+        window.close()
+
+
+def test_main_window_alert_log_action_writes_without_annotation(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 95.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=95.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(80)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_log_action_check.setChecked(True)
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["actions"] == "log"
         assert "Latency alert" in window.alerts_box.toPlainText()
         assert window.graph._annotations == []
         assert window.annotations_for_export() == []

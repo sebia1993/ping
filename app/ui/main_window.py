@@ -436,6 +436,7 @@ class MainWindow(QMainWindow):
         self.alert_timeline_action_check.setChecked(True)
         self.alert_comment_action_check = QCheckBox("Comment")
         self.alert_comment_action_check.setChecked(True)
+        self.alert_log_action_check = QCheckBox("Log")
         self.alert_beep_action_check = QCheckBox("Beep")
         self.alert_image_action_check = QCheckBox("Image")
         self.alert_rest_action_check = QCheckBox("REST")
@@ -471,6 +472,7 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(QLabel("Actions"))
         alert_rule_row.addWidget(self.alert_timeline_action_check)
         alert_rule_row.addWidget(self.alert_comment_action_check)
+        alert_rule_row.addWidget(self.alert_log_action_check)
         alert_rule_row.addWidget(self.alert_beep_action_check)
         alert_rule_row.addWidget(self.alert_image_action_check)
         alert_rule_row.addWidget(self.alert_rest_action_check)
@@ -1317,6 +1319,7 @@ class MainWindow(QMainWindow):
             "actions": {
                 "timeline": self.alert_timeline_action_check.isChecked(),
                 "comment": self.alert_comment_action_check.isChecked(),
+                "log": self.alert_log_action_check.isChecked(),
                 "beep": self.alert_beep_action_check.isChecked(),
                 "image": self.alert_image_action_check.isChecked(),
                 "rest": self.alert_rest_action_check.isChecked(),
@@ -1346,6 +1349,7 @@ class MainWindow(QMainWindow):
             self.route_ip_alert_edit.setText(str(rules.get("route_ip") or ""))
         _set_check_value(self.alert_timeline_action_check, actions.get("timeline"))
         _set_check_value(self.alert_comment_action_check, actions.get("comment"))
+        _set_check_value(self.alert_log_action_check, actions.get("log"))
         _set_check_value(self.alert_beep_action_check, actions.get("beep"))
         _set_check_value(self.alert_image_action_check, actions.get("image"))
         _set_check_value(self.alert_rest_action_check, actions.get("rest"))
@@ -1401,6 +1405,8 @@ class MainWindow(QMainWindow):
             actions.append("timeline_annotation")
         if self.alert_comment_action_check.isChecked():
             actions.append("comment")
+        if self.alert_log_action_check.isChecked():
+            actions.append("log")
         if self.alert_beep_action_check.isChecked():
             actions.append("beep")
         if self.alert_image_action_check.isChecked():
