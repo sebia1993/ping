@@ -126,6 +126,26 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                     "Treat this as ICMP rate-limit or firewall deprioritization unless later hops inherit the same loss.",
                 )
             )
+        isolated_latency = _isolated_middle_latency_hops(sampled_hops, final)
+        if isolated_latency:
+            hop_list = ", ".join(f"Hop {snapshot.hop_index}" for snapshot in isolated_latency[:5])
+            analysis.append(
+                f"{hop_list}에서만 지연시간이 높고 최종 대상은 정상입니다. 중간 장비의 ICMP 응답 지연 또는 낮은 처리 우선순위 가능성이 있습니다."
+            )
+            analysis.append(
+                _diagnostic_line(
+                    "ANALYSIS_MIDDLE_HOP_LATENCY_DEPRIORITIZED",
+                    f"Only intermediate hops show high latency: {hop_list}. The final target is healthy.",
+                    "Do not treat middle-hop-only latency as congestion unless later hops or the final target inherit it.",
+                )
+            )
+            analysis.append(
+                _cause_line(
+                    "CAUSE_INTERMEDIATE_HOP_ICMP_DEPRIORITIZATION",
+                    f"{hop_list} has high latency while the final target remains healthy.",
+                    "Treat this as ICMP response deprioritization or control-plane rate limiting unless the final target also slows down.",
+                )
+            )
 
     analysis.extend(_detect_segment_issue(sampled_hops, final))
 
@@ -199,10 +219,13 @@ def _detect_segment_issue(
             ]
 
     previous_avg = None
-    for snapshot in sampled_hops:
+    for index, snapshot in enumerate(sampled_hops):
         if snapshot.avg_latency_ms is None:
             continue
         if previous_avg is not None and snapshot.avg_latency_ms - previous_avg >= LATENCY_JUMP_MS:
+            if not _latency_jump_is_inherited(sampled_hops[index:], final, previous_avg):
+                previous_avg = snapshot.avg_latency_ms
+                continue
             return [
                 f"Hop {snapshot.hop_index} 이후 평균 지연시간이 크게 증가합니다. 해당 구간 이후 혼잡 또는 라우팅 품질 저하 가능성이 있습니다.",
                 _diagnostic_line(
@@ -229,6 +252,36 @@ def _detect_segment_issue(
         ]
 
     return []
+
+
+def _isolated_middle_latency_hops(
+    sampled_hops: list[MetricSnapshot],
+    final: MetricSnapshot | None,
+) -> list[MetricSnapshot]:
+    if final is None or not _healthy(final) or final.avg_latency_ms is None:
+        return []
+    return [
+        snapshot
+        for snapshot in sampled_hops[:-1]
+        if snapshot.avg_latency_ms is not None
+        and snapshot.avg_latency_ms - final.avg_latency_ms >= LATENCY_JUMP_MS
+    ]
+
+
+def _latency_jump_is_inherited(
+    tail: list[MetricSnapshot],
+    final: MetricSnapshot | None,
+    baseline_ms: float,
+) -> bool:
+    threshold = baseline_ms + LATENCY_JUMP_MS
+    latencies = [
+        snapshot.avg_latency_ms
+        for snapshot in tail
+        if snapshot.avg_latency_ms is not None
+    ]
+    if final is not None and final.avg_latency_ms is not None:
+        latencies.append(final.avg_latency_ms)
+    return len(latencies) >= 2 and all(latency >= threshold for latency in latencies)
 
 
 def _diagnostic_line(code: str, summary: str, action: str) -> str:

@@ -108,13 +108,29 @@ def test_analyzer_flags_latency_jump_after_hop() -> None:
         _snapshot(2, loss=0, status=STATUS_OK, avg_latency=10.0),
         _snapshot(3, loss=0, status=STATUS_OK, avg_latency=75.0),
     ]
-    target = _snapshot(0, loss=0, status=STATUS_OK)
+    target = _snapshot(0, loss=0, status=STATUS_OK, avg_latency=80.0)
 
     analysis = analyze_path(snapshots, target)
 
     assert any("Hop 3 이후 평균 지연시간" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION:") for line in analysis)
     assert any(line.startswith("CAUSE_BANDWIDTH_SATURATION:") for line in analysis)
+
+
+def test_analyzer_treats_middle_hop_only_latency_as_icmp_deprioritization() -> None:
+    snapshots = [
+        _snapshot(1, loss=0, status=STATUS_OK, avg_latency=5.0),
+        _snapshot(2, loss=0, status=STATUS_OK, avg_latency=90.0),
+        _snapshot(3, loss=0, status=STATUS_OK, avg_latency=7.0),
+    ]
+    target = _snapshot(0, loss=0, status=STATUS_OK, avg_latency=8.0)
+
+    analysis = analyze_path(snapshots, target)
+
+    assert any(line.startswith("ANALYSIS_MIDDLE_HOP_LATENCY_DEPRIORITIZED:") for line in analysis)
+    assert any(line.startswith("CAUSE_INTERMEDIATE_HOP_ICMP_DEPRIORITIZATION:") for line in analysis)
+    assert not any(line.startswith("ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION:") for line in analysis)
+    assert not any(line.startswith("CAUSE_BANDWIDTH_SATURATION:") for line in analysis)
 
 
 def test_analyzer_flags_jitter_with_stable_code() -> None:

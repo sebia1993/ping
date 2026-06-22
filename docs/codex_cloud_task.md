@@ -13,6 +13,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Statistics export supports grouping, timezone, and scope selection: All time, Visible timeline, Focus period.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.
+- Analysis logic now distinguishes middle-hop-only latency from inherited end-to-end latency, reducing false bandwidth-saturation diagnoses when the final target is healthy.
 
 ## Constraints
 
@@ -37,7 +38,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
    - Ensure visible-time exports work from session logs and live buffers.
 
 3. Strengthen analysis logic.
-   - Add clearer cause codes for bandwidth saturation, ISP segment issue, ICMP rate-limit, firewall block, and local LAN/Wi-Fi issue.
+   - Continue refining cause codes for bandwidth saturation, ISP segment issue, ICMP rate-limit, firewall block, and local LAN/Wi-Fi issue.
    - Keep final-destination-first interpretation.
 
 4. Extend deterministic soak coverage.
