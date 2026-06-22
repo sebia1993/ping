@@ -62,6 +62,9 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.load_target_group_button = QPushButton("Load group")
     owner.csv_button = QPushButton("CSV")
     owner.xlsx_button = QPushButton("XLSX")
+    owner.report_format_combo = QComboBox()
+    owner.report_format_combo.addItem("TXT Report", "txt")
+    owner.report_format_combo.addItem("HTML Report", "html")
     owner.report_button = QPushButton("Report")
     owner.graph_png_button = QPushButton("Graph PNG")
     owner.stats_csv_button = QPushButton("Stats CSV")
@@ -101,6 +104,7 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     layout.addWidget(owner.save_target_group_button, 3, 0)
     layout.addWidget(owner.save_selected_target_group_button, 3, 1)
     layout.addWidget(owner.load_target_group_button, 3, 2)
+    layout.addWidget(owner.report_format_combo, 3, 3)
 
     owner.status_label = QLabel("대기 중")
     owner.status_label.setObjectName("statusText")

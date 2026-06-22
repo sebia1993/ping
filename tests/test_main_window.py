@@ -70,6 +70,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.csv_button.isEnabled() is False
         assert window.xlsx_button.isEnabled() is False
         assert window.report_button.isEnabled() is False
+        assert window.report_format_combo.currentData() == "txt"
+        assert window.report_format_combo.isEnabled() is False
         assert window.graph_png_button.isEnabled() is False
         assert window.stats_csv_button.isEnabled() is False
         assert window.stats_xlsx_button.isEnabled() is False
@@ -1463,6 +1465,55 @@ def test_main_window_renders_trace_metrics_and_exports(qt_app) -> None:
         assert window.graph_png_button.isEnabled() is True
         assert window.stats_csv_button.isEnabled() is True
         assert window.stats_xlsx_button.isEnabled() is True
+    finally:
+        window.close()
+
+
+def test_main_window_starts_html_report_export(qt_app, tmp_path, monkeypatch) -> None:
+    created_workers: list[_FakeExportWorker] = []
+    export_path = tmp_path / "report.html"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "HTML Files (*.html)"
+
+    def fake_export_worker(**kwargs):
+        worker = _FakeExportWorker(**kwargs)
+        created_workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module, "ExportWorker", fake_export_worker)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=20.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.session_log_path = tmp_path / "session.csv"
+        window.focus_range = (now, now + timedelta(minutes=10))
+        window.on_measurement_updated(
+            [],
+            target_snapshot,
+            [target_snapshot],
+            ["Target path needs review"],
+            [HopObservation(now, 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True)],
+            [],
+        )
+        html_index = window.report_format_combo.findData("html")
+        assert html_index >= 0
+        window.report_format_combo.setCurrentIndex(html_index)
+
+        window.save_report()
+
+        assert len(created_workers) == 1
+        worker = created_workers[0]
+        assert worker.kwargs["kind"] == "html"
+        assert worker.kwargs["path"] == export_path
+        assert worker.kwargs["target"] == "198.51.100.10"
+        assert worker.kwargs["focus_range"] == window.focus_range
+        assert worker.started is True
+        assert window.report_button.isEnabled() is False
+        assert window.report_format_combo.isEnabled() is False
     finally:
         window.close()
 

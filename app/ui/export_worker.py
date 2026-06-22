@@ -11,7 +11,7 @@ from app.core.models import HopObservation, MetricSnapshot
 from app.storage.csv_exporter import export_csv
 from app.storage.excel_exporter import export_xlsx
 from app.storage.export_annotations import ExportAnnotation
-from app.storage.report_writer import write_text_report
+from app.storage.report_writer import write_html_report, write_text_report
 from app.storage.session_log import iter_observations, iter_observations_in_range
 from app.storage.statistics_exporter import (
     StatisticsExportOptions,
@@ -73,7 +73,23 @@ class ExportWorker(QThread):
                 observations = self._non_empty_statistics_observations(observations)
                 export_statistics_xlsx(self.path, self.target, observations, self.statistics_options)
             elif self.kind == "txt":
-                write_text_report(self.path, self.target, self.snapshots, self.analysis, self.annotations)
+                write_text_report(
+                    self.path,
+                    self.target,
+                    self.snapshots,
+                    self.analysis,
+                    self.annotations,
+                    self.focus_range,
+                )
+            elif self.kind == "html":
+                write_html_report(
+                    self.path,
+                    self.target,
+                    self.snapshots,
+                    self.analysis,
+                    self.annotations,
+                    self.focus_range,
+                )
             else:
                 raise RuntimeError(f"지원하지 않는 저장 형식입니다: {self.kind}")
         except Exception as exc:

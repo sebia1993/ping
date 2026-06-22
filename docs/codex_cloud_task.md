@@ -13,6 +13,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Timeline UX has a separate main-screen status chip for visible timeline range, distinct from the focus-period chip.
 - Main-screen timeline controls can apply 60s/10m/1h/6h/24h/48h visible ranges and reset focus/timeline back to current samples.
 - Statistics export supports grouping, timezone, empty-range protection, and scope selection: All time, Visible timeline, Focus period, Custom range.
+- Report export supports TXT and printable HTML templates with target, range, analysis, evidence annotations, and hop metrics.
 - PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.
@@ -38,7 +39,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 
 2. Expand Export/Report options.
    - Explicit Start/End Date export range controls are implemented for statistics exports as Custom range.
-   - Keep refining empty-range/error guidance and report templates.
+   - TXT and HTML report templates are implemented; keep refining operator-friendly report sections and optional image bundling.
    - Image export scope is implemented for Timeline graph, Trace table, and Both.
    - Ensure visible-time exports work from session logs and live buffers.
 
@@ -112,8 +113,8 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
      - https://www.pingplotter.com/manual/time_line_graphing/
 
 6. Expand export and report options.
-   - The current project supports CSV, XLSX, TXT, and PNG.
-   - PingPlotter-style parity should include All Time, Visible Time, explicit Start/End Date, grouping size, timezone, image options for Tracegraph, Timegraph, or both, and clear errors when a selected range has no samples.
+   - The current project supports CSV, XLSX, TXT, printable HTML reports, and PNG.
+   - PingPlotter-style parity should continue improving report presentation, optional image bundling, and clear errors when a selected range has no samples.
    - References:
      - https://www.pingplotter.com/manual/export-statistics/
      - https://www.pingplotter.com/manual/save-an-image/

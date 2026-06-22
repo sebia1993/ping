@@ -8,7 +8,7 @@ from app.storage.alert_action_log import append_alert_action, alert_action_log_p
 from app.storage.csv_exporter import export_csv
 from app.storage.excel_exporter import export_xlsx
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
-from app.storage.report_writer import write_text_report
+from app.storage.report_writer import write_html_report, write_text_report
 from app.storage import session_index as session_index_module
 from app.storage import session_log as session_log_module
 from app.storage.session_index import (
@@ -210,6 +210,38 @@ def test_text_report_contains_evidence_annotations(tmp_path) -> None:
     assert "Evidence Annotations:" in text
     assert "operator note" in text
     assert "ISP handoff degraded" in text
+
+
+def test_html_report_contains_printable_sections_and_escapes_values(tmp_path) -> None:
+    path = tmp_path / "report.html"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    annotation = ExportAnnotation(
+        start=now,
+        end=now + timedelta(seconds=30),
+        source="manual",
+        severity="warning",
+        title="operator <note>",
+        message="ISP handoff degraded",
+    )
+
+    write_html_report(
+        path,
+        "8.8.8.8",
+        [_sample_snapshot()],
+        ["Target path needs review"],
+        [annotation],
+        (now, now + timedelta(minutes=10)),
+    )
+
+    html = path.read_text(encoding="utf-8")
+    assert "<!doctype html>" in html
+    assert "<strong>Target:</strong> 8.8.8.8" in html
+    assert "2026-01-01T12:00:00 - 2026-01-01T12:10:00" in html
+    assert "<h2>Analysis</h2>" in html
+    assert "Target path needs review" in html
+    assert "<h2>Hop Metrics</h2>" in html
+    assert "operator &lt;note&gt;" in html
+    assert "ISP handoff degraded" in html
 
 
 def test_annotations_in_range_keeps_overlapping_events() -> None:
@@ -850,6 +882,37 @@ def test_export_worker_filters_session_log_by_focus_range(tmp_path) -> None:
     assert errors == []
     assert "192.168.0.2" in text
     assert "192.168.0.1" not in text
+
+
+def test_export_worker_writes_html_report_with_focus_range(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    export_path = tmp_path / "worker_report.html"
+    completed: list[str] = []
+    errors: list[str] = []
+    worker = ExportWorker(
+        kind="html",
+        path=export_path,
+        target="8.8.8.8",
+        session_log_path=None,
+        snapshots=[_sample_snapshot(address="203.0.113.5")],
+        analysis=["Target path needs review"],
+        annotations=[
+            ExportAnnotation(now, now + timedelta(seconds=1), "alert", "critical", "Loss alert", "loss evidence")
+        ],
+        focus_range=(now, now + timedelta(minutes=10)),
+    )
+    worker.export_completed.connect(completed.append)
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    html = export_path.read_text(encoding="utf-8")
+    assert errors == []
+    assert completed == [str(export_path)]
+    assert "Target path needs review" in html
+    assert "203.0.113.5" in html
+    assert "Loss alert" in html
+    assert "2026-01-01T12:00:00 - 2026-01-01T12:10:00" in html
 
 
 def test_grouped_statistics_aggregates_by_period_and_hop() -> None:

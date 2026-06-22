@@ -2721,7 +2721,11 @@ class MainWindow(QMainWindow):
         self._start_export("xlsx", "xlsx", "Excel Files (*.xlsx)")
 
     def save_report(self) -> None:
-        self._start_export("txt", "txt", "Text Files (*.txt)")
+        report_format = str(self.report_format_combo.currentData() or "txt") if hasattr(self, "report_format_combo") else "txt"
+        if report_format == "html":
+            self._start_export("html", "html", "HTML Files (*.html)")
+        else:
+            self._start_export("txt", "txt", "Text Files (*.txt)")
 
     def save_graph_png(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
@@ -3049,6 +3053,8 @@ class MainWindow(QMainWindow):
         self.csv_button.setEnabled(enabled)
         self.xlsx_button.setEnabled(enabled)
         self.report_button.setEnabled(enabled)
+        if hasattr(self, "report_format_combo"):
+            self.report_format_combo.setEnabled(enabled)
         self.graph_png_button.setEnabled(enabled)
         if hasattr(self, "graph_png_scope_combo"):
             self.graph_png_scope_combo.setEnabled(enabled)
@@ -3061,6 +3067,8 @@ class MainWindow(QMainWindow):
         self.csv_button.setEnabled(not exporting and self._has_export_data())
         self.xlsx_button.setEnabled(not exporting and self._has_export_data())
         self.report_button.setEnabled(not exporting and self._has_export_data())
+        if hasattr(self, "report_format_combo"):
+            self.report_format_combo.setEnabled(not exporting and self._has_export_data())
         self.graph_png_button.setEnabled(not exporting and self._has_export_data())
         if hasattr(self, "graph_png_scope_combo"):
             self.graph_png_scope_combo.setEnabled(not exporting and self._has_export_data())
