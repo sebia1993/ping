@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
         self.delete_session_button = QPushButton("Delete")
         self.delete_session_button.clicked.connect(self.delete_selected_session)
         self.refresh_sessions_button = QPushButton("Refresh")
-        self.refresh_sessions_button.clicked.connect(self._sync_sessions_box)
+        self.refresh_sessions_button.clicked.connect(self.refresh_saved_sessions)
         sessions_header.addWidget(sessions_title)
         sessions_header.addStretch(1)
         sessions_header.addWidget(self.session_combo)
@@ -1127,6 +1127,11 @@ class MainWindow(QMainWindow):
                 )
             )
         self.sessions_box.setPlainText("\n".join(lines))
+
+    def refresh_saved_sessions(self) -> None:
+        self.session_index_store.recover_missing_sessions()
+        self._sync_sessions_box()
+        self.status_label.setText("Session list refreshed from saved logs")
 
     def _sync_session_combo(self, sessions: list[TraceSessionRecord]) -> None:
         if not hasattr(self, "session_combo"):

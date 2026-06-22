@@ -94,6 +94,41 @@ def test_main_window_renders_session_index_summary(qt_app, tmp_path) -> None:
         window.close()
 
 
+def test_main_window_refresh_sessions_recovers_missing_saved_logs(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    indexed_path = tmp_path / "198.51.100.10" / "2026-01" / "indexed.samples.csv"
+    orphan_path = tmp_path / "203.0.113.20" / "2026-01" / "orphan.samples.csv"
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=indexed_path,
+        route_path=indexed_path.with_name("indexed.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+    with SessionLogWriter(orphan_path) as writer:
+        writer.write_many([
+            HopObservation(now + timedelta(minutes=1), 0, "203.0.113.20", "Target", True, 20.0, STATUS_OK, True),
+        ])
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        assert window.session_combo.count() == 1
+
+        window.refresh_saved_sessions()
+
+        assert window.session_combo.count() == 2
+        assert "203.0.113.20" in window.sessions_box.toPlainText()
+        assert window.status_label.text() == "Session list refreshed from saved logs"
+    finally:
+        window.close()
+
+
 def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)

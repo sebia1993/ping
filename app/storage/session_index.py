@@ -135,13 +135,20 @@ class SessionIndexStore:
         *,
         target: str | None = None,
         state: str | None = None,
+        recover_missing: bool = False,
     ) -> list[TraceSessionRecord]:
         records = self._read_records()
+        if recover_missing:
+            records = self._merge_recovered_records(records)
         if target:
             records = [record for record in records if record.target == target]
         if state:
             records = [record for record in records if record.state == state]
         return sorted(records, key=lambda record: record.start, reverse=True)
+
+    def recover_missing_sessions(self) -> list[TraceSessionRecord]:
+        with self._lock:
+            return self._merge_recovered_records(self._read_records())
 
     def find_session(self, session_id: str) -> TraceSessionRecord | None:
         return next((record for record in self._read_records() if record.session_id == session_id), None)
@@ -183,6 +190,21 @@ class SessionIndexStore:
             except OSError:
                 pass
         return records
+
+    def _merge_recovered_records(self, records: list[TraceSessionRecord]) -> list[TraceSessionRecord]:
+        recovered = _recover_records_from_logs(self.path.parent)
+        if not recovered:
+            return records
+        existing_ids = {record.session_id for record in records}
+        missing = [record for record in recovered if record.session_id not in existing_ids]
+        if not missing:
+            return records
+        merged = [*records, *missing]
+        try:
+            self._write_records(merged)
+        except OSError:
+            pass
+        return merged
 
     def _write_records(self, records: list[TraceSessionRecord]) -> None:
         payload = {

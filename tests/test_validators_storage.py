@@ -402,6 +402,42 @@ def test_session_index_recovers_sessions_from_logs_when_index_is_corrupt(tmp_pat
     assert store.find_session(sessions[0].session_id) is not None
 
 
+def test_session_index_merges_missing_log_sessions_into_valid_index(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    indexed_path = tmp_path / "198.51.100.10" / "2026-01" / "indexed.samples.csv"
+    orphan_path = tmp_path / "203.0.113.20" / "2026-01" / "orphan.samples.csv"
+    indexed = store.register_session(
+        target="198.51.100.10",
+        sample_path=indexed_path,
+        route_path=indexed_path.with_name("indexed.routes.csv"),
+        started_at=now,
+        interval_seconds=5,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(indexed.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+    with SessionLogWriter(orphan_path) as writer:
+        writer.write_many(
+            [
+                HopObservation(now + timedelta(minutes=1), 0, "203.0.113.20", "Target", True, 12.0, STATUS_OK, True),
+                HopObservation(now + timedelta(minutes=2), 0, "203.0.113.21", "Target", True, 15.0, STATUS_OK, True),
+            ]
+        )
+
+    sessions = store.list_sessions(recover_missing=True)
+
+    assert {session.target for session in sessions} == {"198.51.100.10", "203.0.113.20"}
+    indexed_session = store.find_session(indexed.session_id)
+    orphan_session = store.find_session(orphan_path.stem)
+    assert indexed_session is not None
+    assert indexed_session.interval_seconds == 5
+    assert orphan_session is not None
+    assert orphan_session.samples == 2
+    assert orphan_session.target_count == 2
+    assert orphan_session.last_error == "Recovered from session log scan"
+
+
 def test_session_index_retries_transient_replace_permission_error(tmp_path, monkeypatch) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 1, 12, 0, 0)
