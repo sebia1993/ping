@@ -404,6 +404,65 @@ def test_session_log_segment_index_falls_back_when_metadata_is_stale(tmp_path) -
     assert segments[-1].end == now + timedelta(hours=1)
 
 
+def test_session_log_segment_index_retries_transient_replace_permission_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    attempts = 0
+    original_replace = session_log_module._replace_path
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("temporarily locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_replace_path", flaky_replace)
+
+    try:
+        writer.write_many([_sample_observation()])
+
+        assert attempts == 3
+        assert session_log_segment_index_path(path).exists()
+    finally:
+        monkeypatch.setattr(session_log_module, "_replace_path", original_replace)
+        writer.close()
+
+
+def test_session_log_segment_index_preserves_existing_file_after_persistent_replace_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation(timestamp=now)])
+    index_path = session_log_segment_index_path(path)
+    original_index = index_path.read_text(encoding="utf-8")
+    original_replace = session_log_module._replace_path
+
+    def locked_replace(_source, _target):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_replace_path", locked_replace)
+
+    try:
+        try:
+            writer.write_many([_sample_observation(timestamp=now + timedelta(seconds=1))])
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("expected PermissionError")
+
+        assert index_path.read_text(encoding="utf-8") == original_index
+        assert [item for item in path.parent.iterdir() if item.name.startswith("tmp")] == []
+    finally:
+        monkeypatch.setattr(session_log_module, "_replace_path", original_replace)
+        writer.close()
+
+
 def test_session_log_create_uses_target_month_flex_directory(tmp_path) -> None:
     writer = SessionLogWriter.create("198.51.100.10", root=tmp_path)
     try:

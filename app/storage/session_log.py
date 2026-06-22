@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import tempfile
+import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +24,8 @@ OBSERVATION_HEADERS = [
     "status",
 ]
 SEGMENT_INDEX_VERSION = 1
+SEGMENT_INDEX_IO_RETRY_ATTEMPTS = 5
+SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -119,10 +123,7 @@ class SessionLogWriter:
                 for segment in self._segment_metadata
             ],
         }
-        session_log_segment_index_path(self.path).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _write_json_atomic(session_log_segment_index_path(self.path), payload)
 
 
 def observation_to_row(observation: HopObservation) -> list[object]:
@@ -257,6 +258,48 @@ def _read_segment_index_file(path: Path) -> list[SessionLogSegment] | None:
     if [segment.path for segment in indexed] != current_paths:
         return None
     return indexed
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    # 장시간 측정 중 전원 종료나 파일 잠금이 생겨도 기존 segment index가 반쯤 깨지지 않게 교체합니다.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        delete=False,
+        dir=path.parent,
+        encoding="utf-8",
+        newline="",
+    ) as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        temp_path = Path(handle.name)
+    try:
+        _replace_with_retries(temp_path, path)
+    except OSError:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _replace_with_retries(source: Path, target: Path) -> None:
+    _run_io_with_retries(lambda: _replace_path(source, target))
+
+
+def _replace_path(source: Path, target: Path) -> Path:
+    return source.replace(target)
+
+
+def _run_io_with_retries(operation):
+    last_error: OSError | None = None
+    for attempt in range(SEGMENT_INDEX_IO_RETRY_ATTEMPTS):
+        try:
+            return operation()
+        except PermissionError as exc:
+            last_error = exc
+            if attempt == SEGMENT_INDEX_IO_RETRY_ATTEMPTS - 1:
+                break
+            time.sleep(SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS)
+    if last_error is not None:
+        raise last_error
+    return operation()
 
 
 def _segment_from_index_row(root: Path, row: object) -> SessionLogSegment:

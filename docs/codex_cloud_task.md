@@ -7,6 +7,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Python/PySide6 desktop app.
 - Multi-target measurement is implemented.
 - Session logs, session index, open/export/delete, and segmented CSV storage are implemented.
+- Session segment metadata is written through atomic temp-file replace with transient PermissionError retries, matching the session index hardening style.
 - All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, selected-target group saving, and live selected-target count in the summary line.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
@@ -81,7 +82,8 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 2. Improve long-term storage and session recovery.
    - PingPlotter keeps saving sessions and allows operators to reopen, export, and manage them later through Session Manager.
    - PingPlotter Flex Storage separates storage by target and time range so many targets and long history can still load efficiently.
-   - The current project has segmented CSV storage, but the session database, restore, retention, delete, and resume model should be made stronger.
+   - The current project has segmented CSV storage, session index recovery, stale active-session recovery, retention/delete controls, resume preparation, and atomic segment-index replacement.
+   - Remaining parity work is a richer session database, stronger resume semantics, retention policy presets, and faster history browsing across many target-month buckets.
    - References:
      - https://www.pingplotter.com/manual/auto-saving-data/
      - https://www.pingplotter.com/manual/session-manager/
