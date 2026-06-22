@@ -63,6 +63,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_image_action_check.isChecked() is False
         assert window.alert_rest_action_check.isChecked() is False
         assert window.alert_rest_url_edit.text() == ""
+        assert window.alert_executable_action_check.isChecked() is False
+        assert window.alert_executable_path_edit.text() == ""
         assert window.jitter_threshold_spin.value() == 30
         assert window.mos_alert_check.isChecked() is False
         assert window.mos_threshold_spin.value() == 3.5
@@ -1787,6 +1789,49 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
                     "target": "198.51.100.10",
                     "series_key": "target",
                 },
+            )
+        ]
+    finally:
+        window.close()
+
+
+def test_main_window_alert_executable_action_launches_configured_file(qt_app, tmp_path, monkeypatch) -> None:
+    launched: list[tuple[Path, str, str, str]] = []
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    executable_path = tmp_path / "alert-action.exe"
+    executable_path.write_bytes(b"stub")
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 90.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=90.0, is_target=True)
+
+    def fake_launch(path: Path, event: AlertEvent, env: dict[str, str]) -> None:
+        launched.append((path, event.title, env["NPD_ALERT_TARGET"], env["NPD_ALERT_MESSAGE"]))
+
+    monkeypatch.setattr(window, "_launch_alert_executable", fake_launch)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(80)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_executable_action_check.setChecked(True)
+        window.alert_executable_path_edit.setText(str(executable_path))
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["actions"] == "executable"
+        assert launched == [
+            (
+                executable_path,
+                "Latency alert",
+                "198.51.100.10",
+                "Target latency 90.0 ms >= 80 ms",
             )
         ]
     finally:

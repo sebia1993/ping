@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -405,6 +407,10 @@ class MainWindow(QMainWindow):
         self.alert_rest_url_edit = QLineEdit()
         self.alert_rest_url_edit.setPlaceholderText("https://example/api/alert")
         self.alert_rest_url_edit.setMinimumWidth(170)
+        self.alert_executable_action_check = QCheckBox("Run")
+        self.alert_executable_path_edit = QLineEdit()
+        self.alert_executable_path_edit.setPlaceholderText("C:\\path\\action.exe")
+        self.alert_executable_path_edit.setMinimumWidth(165)
         for label, spin in [
             ("Loss", self.loss_threshold_spin),
             ("Window", self.loss_window_spin),
@@ -430,6 +436,8 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.alert_image_action_check)
         alert_rule_row.addWidget(self.alert_rest_action_check)
         alert_rule_row.addWidget(self.alert_rest_url_edit)
+        alert_rule_row.addWidget(self.alert_executable_action_check)
+        alert_rule_row.addWidget(self.alert_executable_path_edit)
         alert_rule_row.addStretch(1)
         self.alerts_box = QTextEdit()
         self.alerts_box.setReadOnly(True)
@@ -1175,6 +1183,8 @@ class MainWindow(QMainWindow):
             self.pending_alert_image_keys.add(event.key)
         if "rest" in actions:
             self._send_alert_rest_action(event)
+        if "executable" in actions:
+            self._run_alert_executable_action(event)
         if not actions:
             return []
         append_alert_action(
@@ -1202,6 +1212,12 @@ class MainWindow(QMainWindow):
             and self._alert_rest_url()
         ):
             actions.append("rest")
+        if (
+            hasattr(self, "alert_executable_action_check")
+            and self.alert_executable_action_check.isChecked()
+            and self._alert_executable_path() is not None
+        ):
+            actions.append("executable")
         return actions
 
     def _alert_rest_url(self) -> str:
@@ -1238,6 +1254,46 @@ class MainWindow(QMainWindow):
         )
         with urllib.request.urlopen(request, timeout=ALERT_REST_TIMEOUT_SECONDS):
             pass
+
+    def _alert_executable_path(self) -> Path | None:
+        if not hasattr(self, "alert_executable_path_edit"):
+            return None
+        value = self.alert_executable_path_edit.text().strip()
+        if not value:
+            return None
+        path = Path(os.path.expandvars(value)).expanduser()
+        return path if path.is_file() else None
+
+    def _run_alert_executable_action(self, event: AlertEvent) -> None:
+        path = self._alert_executable_path()
+        if path is None:
+            return
+        env = dict(os.environ)
+        env.update(
+            {
+                "NPD_ALERT_KEY": event.key,
+                "NPD_ALERT_TITLE": event.title,
+                "NPD_ALERT_MESSAGE": event.message,
+                "NPD_ALERT_SEVERITY": event.severity,
+                "NPD_ALERT_TARGET": self.current_target,
+            }
+        )
+        try:
+            self._launch_alert_executable(path, event, env)
+        except (OSError, ValueError) as exc:
+            self.status_label.setText(f"Alert executable action failed: {exc}")
+
+    def _launch_alert_executable(self, path: Path, _event: AlertEvent, env: dict[str, str]) -> None:
+        subprocess.Popen(
+            [str(path)],
+            cwd=str(path.parent),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
     def _save_pending_alert_images(self) -> None:
         if not self.pending_alert_image_keys:
