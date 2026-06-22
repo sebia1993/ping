@@ -57,6 +57,8 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.start_button.setObjectName("primaryButton")
     owner.stop_button = QPushButton("Stop")
     owner.stop_button.setObjectName("dangerButton")
+    owner.save_target_group_button = QPushButton("Save group")
+    owner.load_target_group_button = QPushButton("Load group")
     owner.csv_button = QPushButton("CSV")
     owner.xlsx_button = QPushButton("XLSX")
     owner.report_button = QPushButton("Report")
@@ -65,6 +67,8 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.stats_xlsx_button = QPushButton("Stats XLSX")
 
     owner.refresh_targets_button.clicked.connect(owner.refresh_trace_targets)
+    owner.save_target_group_button.clicked.connect(owner.save_target_group_preset)
+    owner.load_target_group_button.clicked.connect(owner.load_target_group_preset)
     owner.start_button.clicked.connect(owner.start_measurement)
     owner.stop_button.clicked.connect(owner.stop_measurement)
     owner.csv_button.clicked.connect(owner.save_csv)
@@ -92,6 +96,8 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     layout.addWidget(owner.probe_engine_combo, 1, 11)
     layout.addWidget(field_label_factory("TCP Port"), 2, 10)
     layout.addWidget(owner.tcp_port_spin, 2, 11)
+    layout.addWidget(owner.save_target_group_button, 3, 0)
+    layout.addWidget(owner.load_target_group_button, 3, 1)
 
     owner.status_label = QLabel("대기 중")
     owner.status_label.setObjectName("statusText")

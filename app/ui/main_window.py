@@ -629,6 +629,94 @@ class MainWindow(QMainWindow):
         layout.addWidget(safety)
         return footer
 
+    def save_target_group_preset(self) -> None:
+        targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
+        if invalid:
+            QMessageBox.warning(self, "Target group", f"{IPV4_ONLY_MESSAGE}\n\n제외된 입력: {', '.join(invalid[:8])}")
+            return
+        if not targets:
+            QMessageBox.warning(self, "Target group", "저장할 대상 IPv4 주소를 입력하세요.")
+            return
+        path = self._select_save_path("target_group.json", "JSON Files (*.json)", target="target_group")
+        if not path:
+            return
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._target_group_preset(targets), indent=2), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Target group", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"Target group saved: {path}")
+
+    def load_target_group_preset(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "불러오기",
+            str(Path.cwd() / "exports"),
+            "JSON Files (*.json)",
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Target group JSON must contain an object.")
+            targets = self._apply_target_group_preset(data)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Target group", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"Target group loaded: {len(targets)} target(s)")
+
+    def _target_group_preset(self, targets: list[str]) -> dict[str, object]:
+        trace_target = self.trace_target_combo.currentText().strip()
+        if trace_target not in targets:
+            trace_target = targets[0]
+        return {
+            "version": 1,
+            "targets": targets,
+            "trace_target": trace_target,
+            "settings": {
+                "interval_seconds": int(self.interval_combo.currentText()),
+                "unlimited": self.unlimited_check.isChecked(),
+                "count": self.count_spin.value(),
+                "measurement_mode": self.measurement_mode_combo.currentData() or MEASUREMENT_MODE_FULL_ROUTE,
+                "probe_engine": self.probe_engine_combo.currentData() or PROBE_ENGINE_ICMP,
+                "tcp_port": self.tcp_port_spin.value(),
+            },
+        }
+
+    def _apply_target_group_preset(self, data: dict[str, object]) -> list[str]:
+        target_values = data.get("targets")
+        if not isinstance(target_values, list):
+            raise ValueError("Target group JSON must contain a targets list.")
+        targets, invalid = parse_ipv4_targets("\n".join(str(target) for target in target_values))
+        if invalid or not targets:
+            raise ValueError("Target group JSON must contain valid IPv4 targets.")
+        settings = data.get("settings", {})
+        if settings is None:
+            settings = {}
+        if not isinstance(settings, dict):
+            raise ValueError("Target group JSON has invalid settings.")
+        self.target_input.setPlainText("\n".join(targets))
+        self.refresh_trace_targets()
+        trace_target = str(data.get("trace_target") or "")
+        if self.trace_target_combo.findText(trace_target) >= 0:
+            self.trace_target_combo.setCurrentText(trace_target)
+        _set_interval_combo_value(self.interval_combo, settings.get("interval_seconds"))
+        if isinstance(settings.get("unlimited"), bool):
+            self.unlimited_check.setChecked(bool(settings["unlimited"]))
+        _set_spin_value(self.count_spin, settings.get("count"))
+        _set_combo_current_data(self.measurement_mode_combo, settings.get("measurement_mode"))
+        _set_combo_current_data(self.probe_engine_combo, settings.get("probe_engine"))
+        _set_spin_value(self.tcp_port_spin, settings.get("tcp_port"))
+        self._on_probe_engine_changed()
+        return targets
+
     def start_measurement(self) -> None:
         targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
         if invalid:
@@ -2347,6 +2435,10 @@ class MainWindow(QMainWindow):
         self.target_input.setEnabled(not running)
         self.trace_target_combo.setEnabled(not running)
         self.refresh_targets_button.setEnabled(not running)
+        if hasattr(self, "save_target_group_button"):
+            self.save_target_group_button.setEnabled(not running)
+        if hasattr(self, "load_target_group_button"):
+            self.load_target_group_button.setEnabled(not running)
         self.measurement_mode_combo.setEnabled(not running)
         self.probe_engine_combo.setEnabled(not running)
         self.tcp_port_spin.setEnabled(not running and self._is_tcp_probe_selected())
@@ -2676,6 +2768,28 @@ def _set_check_value(check: QCheckBox, value: object) -> None:
     if value is None:
         return
     check.setChecked(bool(value))
+
+
+def _set_combo_current_data(combo: QComboBox, value: object) -> None:
+    if value is None:
+        return
+    index = combo.findData(value)
+    if index >= 0:
+        combo.setCurrentIndex(index)
+
+
+def _set_interval_combo_value(combo: QComboBox, value: object) -> None:
+    if value is None:
+        return
+    try:
+        interval = str(int(value))
+    except (TypeError, ValueError):
+        return
+    index = combo.findText(interval)
+    if index < 0:
+        combo.addItem(interval)
+        index = combo.findText(interval)
+    combo.setCurrentIndex(index)
 
 
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:

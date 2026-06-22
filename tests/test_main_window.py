@@ -54,6 +54,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.target_summary_status_label.text() == "Targets: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
+        assert window.save_target_group_button.text() == "Save group"
+        assert window.load_target_group_button.text() == "Load group"
         assert window.csv_button.isEnabled() is False
         assert window.xlsx_button.isEnabled() is False
         assert window.report_button.isEnabled() is False
@@ -835,6 +837,73 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert created_workers[0].stopped is True
         assert window.stop_button.isEnabled() is False
         assert window.session_state_label.text() == "중지"
+    finally:
+        window.close()
+
+
+def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "target_group.json"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow()
+
+    try:
+        window.target_input.setText("198.51.100.10\n203.0.113.20\n198.51.100.10")
+        window.refresh_trace_targets()
+        window.trace_target_combo.setCurrentText("203.0.113.20")
+        window.interval_combo.setCurrentText("5")
+        window.unlimited_check.setChecked(False)
+        window.count_spin.setValue(25)
+        mode_index = window.measurement_mode_combo.findData(MEASUREMENT_MODE_FINAL_HOP_ONLY)
+        probe_index = window.probe_engine_combo.findData(PROBE_ENGINE_TCP_CONNECT)
+        assert mode_index >= 0
+        assert probe_index >= 0
+        window.measurement_mode_combo.setCurrentIndex(mode_index)
+        window.probe_engine_combo.setCurrentIndex(probe_index)
+        window.tcp_port_spin.setValue(8443)
+
+        window.save_target_group_preset()
+
+        data = json.loads(preset_path.read_text(encoding="utf-8"))
+        assert data["version"] == 1
+        assert data["targets"] == ["198.51.100.10", "203.0.113.20"]
+        assert data["trace_target"] == "203.0.113.20"
+        assert data["settings"]["interval_seconds"] == 5
+        assert data["settings"]["unlimited"] is False
+        assert data["settings"]["count"] == 25
+        assert data["settings"]["measurement_mode"] == MEASUREMENT_MODE_FINAL_HOP_ONLY
+        assert data["settings"]["probe_engine"] == PROBE_ENGINE_TCP_CONNECT
+        assert data["settings"]["tcp_port"] == 8443
+
+        window.target_input.setText("8.8.8.8")
+        window.refresh_trace_targets()
+        window.interval_combo.setCurrentText("1")
+        window.unlimited_check.setChecked(True)
+        window.count_spin.setValue(100)
+        window.measurement_mode_combo.setCurrentIndex(window.measurement_mode_combo.findData(MEASUREMENT_MODE_FULL_ROUTE))
+        window.probe_engine_combo.setCurrentIndex(window.probe_engine_combo.findData("icmp"))
+        window.tcp_port_spin.setValue(443)
+
+        window.load_target_group_preset()
+
+        assert window.target_input.toPlainText().splitlines() == ["198.51.100.10", "203.0.113.20"]
+        assert window.trace_target_combo.currentText() == "203.0.113.20"
+        assert window.interval_combo.currentText() == "5"
+        assert window.unlimited_check.isChecked() is False
+        assert window.count_spin.value() == 25
+        assert window.count_spin.isEnabled() is True
+        assert window.measurement_mode_combo.currentData() == MEASUREMENT_MODE_FINAL_HOP_ONLY
+        assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
+        assert window.tcp_port_spin.value() == 8443
+        assert window.tcp_port_spin.isEnabled() is True
+        assert window.status_label.text() == "Target group loaded: 2 target(s)"
     finally:
         window.close()
 
