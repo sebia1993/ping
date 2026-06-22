@@ -64,6 +64,9 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_rest_action_check.isChecked() is False
         assert window.alert_rest_url_edit.text() == ""
         assert window.jitter_threshold_spin.value() == 30
+        assert window.mos_alert_check.isChecked() is False
+        assert window.mos_threshold_spin.value() == 3.5
+        assert window.mos_window_spin.value() == 5
         assert window.timer_window_spin.value() == 5
         assert window.session_retention_days_spin.value() == 90
         assert window.statistics_start_edit.isEnabled() is False
@@ -1851,6 +1854,41 @@ def test_main_window_records_jitter_alert_action(qt_app, tmp_path) -> None:
         assert [row["title"] for row in rows] == ["Jitter alert"]
         assert rows[0]["message"] == "Target jitter 28.9 ms >= 20 ms over last 4 samples"
         assert window.graph._annotations[0].label == "Jitter alert"
+    finally:
+        window.close()
+
+
+def test_main_window_records_mos_alert_when_enabled(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 160.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=20), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=40), 0, "198.51.100.10", "Target", True, 240.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=60), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=None, is_target=True, status=STATUS_TIMEOUT)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(1000)
+        window.jitter_threshold_spin.setValue(1000)
+        window.sample_window_spin.setValue(4)
+        window.sample_bad_spin.setValue(4)
+        window.timer_window_spin.setValue(5)
+        window.mos_alert_check.setChecked(True)
+        window.mos_threshold_spin.setValue(3.5)
+        window.mos_window_spin.setValue(1)
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert "MOS alert" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["MOS alert"]
+        assert rows[0]["message"].startswith("Estimated MOS ")
+        assert window.graph._annotations[0].label == "MOS alert"
     finally:
         window.close()
 

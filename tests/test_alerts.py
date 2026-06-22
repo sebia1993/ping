@@ -7,9 +7,11 @@ from app.core.alerts import (
     JITTER_ALERT_KEY,
     LATENCY_ALERT_KEY,
     LOSS_ALERT_KEY,
+    MOS_ALERT_KEY,
     SAMPLE_ALERT_KEY,
     TIMER_ALERT_KEY,
     alert_recovery_event,
+    estimate_mos,
     evaluate_target_alerts,
     route_change_alert,
 )
@@ -159,6 +161,48 @@ def test_evaluate_target_alerts_detects_timer_condition_and_resets_on_good_sampl
     assert TIMER_ALERT_KEY in active_keys
     assert events[-1].title == "Timer alert"
     assert events[-1].message == "Target stayed failed or >= 100 ms for 1m"
+
+
+def test_evaluate_target_alerts_detects_mos_condition_when_enabled() -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    observations = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 160.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=20), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=40), 0, "198.51.100.10", "Target", True, 240.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=60), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+    ]
+
+    active_keys, events = evaluate_target_alerts(
+        observations,
+        current_target="198.51.100.10",
+        config=AlertRuleConfig(
+            loss_threshold_percent=100.0,
+            loss_window_seconds=60,
+            latency_threshold_ms=1000.0,
+            jitter_threshold_ms=1000.0,
+            sample_window_count=4,
+            sample_failure_count=4,
+            timer_window_seconds=300,
+            mos_enabled=True,
+            mos_threshold=3.5,
+            mos_window_seconds=60,
+        ),
+    )
+
+    assert active_keys == {MOS_ALERT_KEY}
+    assert events[0].title == "MOS alert"
+    assert events[0].message.startswith("Estimated MOS ")
+    assert events[0].message.endswith("< 3.5 over 1m")
+
+
+def test_estimate_mos_keeps_good_path_above_common_voice_threshold() -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    observations = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True)
+        for index in range(5)
+    ]
+
+    assert estimate_mos(observations) > 4.0
 
 
 def test_alert_recovery_event_records_ended_state() -> None:

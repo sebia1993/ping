@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -358,6 +359,17 @@ class MainWindow(QMainWindow):
         self.jitter_threshold_spin.setRange(1, 1000)
         self.jitter_threshold_spin.setValue(30)
         self.jitter_threshold_spin.setSuffix("ms")
+        self.mos_alert_check = QCheckBox("MOS")
+        self.mos_alert_check.setToolTip("Alert when estimated voice quality drops below the threshold")
+        self.mos_threshold_spin = QDoubleSpinBox()
+        self.mos_threshold_spin.setRange(1.0, 4.5)
+        self.mos_threshold_spin.setDecimals(1)
+        self.mos_threshold_spin.setSingleStep(0.1)
+        self.mos_threshold_spin.setValue(3.5)
+        self.mos_window_spin = QSpinBox()
+        self.mos_window_spin.setRange(1, 240)
+        self.mos_window_spin.setValue(5)
+        self.mos_window_spin.setSuffix("m")
         self.sample_window_spin = QSpinBox()
         self.sample_window_spin.setRange(1, 100)
         self.sample_window_spin.setValue(10)
@@ -391,6 +403,11 @@ class MainWindow(QMainWindow):
         ]:
             alert_rule_row.addWidget(QLabel(label))
             alert_rule_row.addWidget(spin)
+        alert_rule_row.addWidget(self.mos_alert_check)
+        alert_rule_row.addWidget(QLabel("<"))
+        alert_rule_row.addWidget(self.mos_threshold_spin)
+        alert_rule_row.addWidget(QLabel("MOS Window"))
+        alert_rule_row.addWidget(self.mos_window_spin)
         alert_rule_row.addWidget(QLabel("Actions"))
         alert_rule_row.addWidget(self.alert_timeline_action_check)
         alert_rule_row.addWidget(self.alert_comment_action_check)
@@ -1078,6 +1095,9 @@ class MainWindow(QMainWindow):
         loss_window_minutes = self.loss_window_spin.value() if hasattr(self, "loss_window_spin") else 3
         latency_threshold = float(self.latency_threshold_spin.value()) if hasattr(self, "latency_threshold_spin") else 100.0
         jitter_threshold = float(self.jitter_threshold_spin.value()) if hasattr(self, "jitter_threshold_spin") else 30.0
+        mos_enabled = self.mos_alert_check.isChecked() if hasattr(self, "mos_alert_check") else False
+        mos_threshold = float(self.mos_threshold_spin.value()) if hasattr(self, "mos_threshold_spin") else 3.5
+        mos_window_minutes = self.mos_window_spin.value() if hasattr(self, "mos_window_spin") else 5
         sample_window = self.sample_window_spin.value() if hasattr(self, "sample_window_spin") else 10
         sample_bad = self.sample_bad_spin.value() if hasattr(self, "sample_bad_spin") else 10
         timer_window_minutes = self.timer_window_spin.value() if hasattr(self, "timer_window_spin") else 5
@@ -1089,6 +1109,9 @@ class MainWindow(QMainWindow):
             sample_window_count=int(sample_window),
             sample_failure_count=int(sample_bad),
             timer_window_seconds=int(timer_window_minutes) * 60,
+            mos_enabled=mos_enabled,
+            mos_threshold=mos_threshold,
+            mos_window_seconds=int(mos_window_minutes) * 60,
         )
 
     def _append_alert_event(

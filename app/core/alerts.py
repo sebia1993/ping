@@ -11,6 +11,7 @@ LATENCY_ALERT_KEY = "target_latency_100ms"
 JITTER_ALERT_KEY = "target_jitter_30ms"
 SAMPLE_ALERT_KEY = "target_sample_condition"
 TIMER_ALERT_KEY = "target_timer_condition"
+MOS_ALERT_KEY = "target_mos_below"
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,9 @@ class AlertRuleConfig:
     sample_window_count: int = 10
     sample_failure_count: int = 10
     timer_window_seconds: int = 300
+    mos_enabled: bool = False
+    mos_threshold: float = 3.5
+    mos_window_seconds: int = 300
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,11 @@ def evaluate_target_alerts(
     if timer_event is not None:
         active_keys.add(timer_event.key)
         events.append(timer_event)
+    if config is not None and config.mos_enabled:
+        mos_event = _mos_alert(points, config.mos_threshold, config.mos_window_seconds)
+        if mos_event is not None:
+            active_keys.add(mos_event.key)
+            events.append(mos_event)
     return active_keys, events
 
 
@@ -265,8 +274,60 @@ def _timer_alert(
     )
 
 
+def _mos_alert(
+    points: list[HopObservation],
+    threshold: float,
+    window_seconds: int,
+) -> AlertEvent | None:
+    window_seconds = max(int(window_seconds), 1)
+    end = points[-1].timestamp
+    start = end - timedelta(seconds=window_seconds)
+    window = [point for point in points if start <= point.timestamp <= end]
+    if len(window) < 2 or (window[-1].timestamp - window[0].timestamp).total_seconds() < window_seconds:
+        return None
+    mos = estimate_mos(window)
+    if mos >= threshold:
+        return None
+    return AlertEvent(
+        key=MOS_ALERT_KEY,
+        timestamp=end,
+        start=window[0].timestamp,
+        end=end,
+        severity="critical",
+        title="MOS alert",
+        message=f"Estimated MOS {mos:.2f} < {threshold:.1f} over {window_seconds // 60}m",
+    )
+
+
+def estimate_mos(points: list[HopObservation]) -> float:
+    if not points:
+        return 1.0
+    total = len(points)
+    lost = sum(1 for point in points if not point.success)
+    packet_loss = lost / total * 100
+    latencies = [point.latency_ms for point in points if point.success and point.latency_ms is not None]
+    average_latency = sum(latencies) / len(latencies) if latencies else 0.0
+    jitter = _average_consecutive_difference(latencies)
+    effective_latency = average_latency + jitter * 2 + 10
+    if effective_latency < 160:
+        r_value = 93.2 - (effective_latency / 40)
+    else:
+        r_value = 93.2 - ((effective_latency - 120) / 10)
+    r_value -= packet_loss * 2.5
+    r_value = min(max(r_value, 0.0), 100.0)
+    mos = 1 + (0.035 * r_value) + (0.000007 * r_value * (r_value - 60) * (100 - r_value))
+    return min(max(mos, 1.0), 5.0)
+
+
 def _is_bad_target_point(point: HopObservation, latency_threshold_ms: float) -> bool:
     return not point.success or (point.latency_ms is not None and point.latency_ms >= latency_threshold_ms)
+
+
+def _average_consecutive_difference(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    differences = [abs(current - previous) for previous, current in zip(values, values[1:])]
+    return sum(differences) / len(differences)
 
 
 def _sample_stdev(values: list[float]) -> float:
@@ -288,6 +349,8 @@ def _alert_title_for_key(alert_key: str) -> str:
         return "Sample count alert"
     if alert_key == TIMER_ALERT_KEY:
         return "Timer alert"
+    if alert_key == MOS_ALERT_KEY:
+        return "MOS alert"
     if alert_key.startswith("route_changed:"):
         return "Route changed"
     return "Alert"
