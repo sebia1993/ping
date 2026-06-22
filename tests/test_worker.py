@@ -536,7 +536,7 @@ def test_worker_keeps_recent_observations_and_streams_full_session_log(monkeypat
 
     log_path = tmp_path / "session_samples.csv"
 
-    def create_log(cls, target: str):
+    def create_log(cls, target: str, root=None):
         return cls(log_path)
 
     monkeypatch.setattr(worker_module.SessionLogWriter, "create", classmethod(create_log))
@@ -556,6 +556,34 @@ def test_worker_keeps_recent_observations_and_streams_full_session_log(monkeypat
     assert len(sessions) == 1
     assert sessions[0].sample_path == log_path
     assert sessions[0].samples == 360
+    assert sessions[0].state == SESSION_STATE_ARCHIVED
+
+
+def test_worker_can_write_session_logs_under_custom_root(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
+    log_root = tmp_path / "soak_session_logs"
+
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=2,
+        session_log_root=log_root,
+    )
+    log_paths: list[str] = []
+    worker.session_log_ready.connect(log_paths.append)
+
+    worker.run()
+
+    assert len(log_paths) == 1
+    log_path = Path(log_paths[0])
+    assert log_path.exists()
+    assert log_path.is_relative_to(log_root)
+    sessions = SessionIndexStore.create(log_root).list_sessions(target="198.51.100.10")
+    assert len(sessions) == 1
+    assert sessions[0].sample_path == log_path
+    assert sessions[0].samples >= 2
     assert sessions[0].state == SESSION_STATE_ARCHIVED
 
 

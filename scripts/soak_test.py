@@ -19,12 +19,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, PingResult
+from app.storage.session_log import iter_observations, session_log_segment_index
 from app.ui.worker import TRACE_REFRESH_SECONDS, MeasurementWorker
 
 
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.session_log_root is None:
+        args.session_log_root = args.output_dir / "session_logs"
+    args.session_log_root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     diagnostics_csv_path = args.output_dir / f"soak_{args.targets}_targets_{timestamp}.diagnostics.csv"
     health_csv_path = args.output_dir / f"soak_{args.targets}_targets_{timestamp}.health.csv"
@@ -37,6 +41,7 @@ def main() -> int:
     health_rows: list[dict[str, object]] = []
     event_loop_ticks: list[float] = []
     errors: list[str] = []
+    session_log_paths: list[str] = []
     ping_calls: dict[str, int] = {}
     timeout_start_index = max(1, int(args.targets * (1 - args.timeout_ratio)) + 1)
     traceroute_probe = StableTracerouteProbe()
@@ -56,6 +61,7 @@ def main() -> int:
         targets=targets,
         ping_probe_factory=ping_factory,
         traceroute_probe=traceroute_probe,
+        session_log_root=args.session_log_root,
     )
     worker.measurement_updated.connect(lambda *_args: updates.append(time.monotonic()))
     worker.diagnostics_updated.connect(
@@ -64,6 +70,7 @@ def main() -> int:
         )
     )
     worker.error_message.connect(errors.append)
+    worker.session_log_ready.connect(session_log_paths.append)
     connect_window(window, worker)
 
     tracemalloc.start()
@@ -123,6 +130,7 @@ def main() -> int:
         health_rows=health_rows,
         event_loop_ticks=event_loop_ticks,
         errors=errors,
+        session_log_paths=session_log_paths,
         ping_calls=ping_calls,
         traceroute_calls=traceroute_probe.calls,
         cpu_seconds=time.process_time() - process_started_at,
@@ -151,6 +159,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval-seconds", type=int, default=1)
     parser.add_argument("--timeout-delay-seconds", type=float, default=1.5)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "artifacts" / "soak")
+    parser.add_argument("--session-log-root", type=Path)
     parser.add_argument("--with-ui", action="store_true", help="Drive the real MainWindow slots offscreen.")
     parser.add_argument("--event-poll-seconds", type=float, default=0.05)
     parser.add_argument("--sample-seconds", type=float, default=1.0)
@@ -259,6 +268,7 @@ def build_summary(
     health_rows: list[dict[str, object]],
     event_loop_ticks: list[float],
     errors: list[str],
+    session_log_paths: list[str],
     ping_calls: dict[str, int],
     traceroute_calls: int,
     cpu_seconds: float,
@@ -268,6 +278,7 @@ def build_summary(
     health_csv_path: Path,
     stopped_cleanly: bool,
 ) -> dict[str, Any]:
+    session_stats = collect_session_log_stats(session_log_paths)
     update_gaps = [later - earlier for earlier, later in zip(updates, updates[1:])]
     event_gaps = [later - earlier for earlier, later in zip(event_loop_ticks, event_loop_ticks[1:])]
     current_memory_values = [int(row["current_memory_bytes"]) for row in health_rows]
@@ -292,6 +303,9 @@ def build_summary(
         "updates": len(updates),
         "errors": errors,
         "stopped_cleanly": stopped_cleanly,
+        "session_log_paths": session_log_paths,
+        "session_log_rows": session_stats["rows"],
+        "session_log_segments": session_stats["segments"],
         "ping_calls": sum(ping_calls.values()),
         "traceroute_calls": traceroute_calls,
         "active_threads_final": threading.active_count(),
@@ -377,6 +391,12 @@ def evaluate_summary(summary: dict[str, Any], args: argparse.Namespace) -> list[
         )
     if summary["cpu_percent"] > args.max_cpu_percent:
         failures.append(f"CPU usage too high: {summary['cpu_percent']:.1f}% > {args.max_cpu_percent:.1f}%")
+    if int(summary.get("session_log_segments", 0) or 0) < 1:
+        failures.append("session log was not created")
+    if int(summary.get("session_log_rows", 0) or 0) < int(summary.get("ping_calls", 0) or 0):
+        failures.append(
+            f"session log rows too low: {summary.get('session_log_rows', 0)} < ping calls {summary.get('ping_calls', 0)}"
+        )
     if require_backoff and summary["max_backoff_target_count"] < 1:
         failures.append("timeout backoff was not observed")
     if args.duration_seconds >= TRACE_REFRESH_SECONDS * 1.5:
@@ -394,6 +414,19 @@ def max_int(rows: list[dict[str, object]], key: str) -> int:
 
 def max_float(rows: list[dict[str, object]], key: str) -> float:
     return max((float(row.get(key, 0.0) or 0.0) for row in rows), default=0.0)
+
+
+def collect_session_log_stats(paths: list[str]) -> dict[str, int]:
+    rows = 0
+    segments = 0
+    for value in paths:
+        path = Path(value)
+        if not path.exists():
+            continue
+        indexed_segments = session_log_segment_index(path)
+        segments += len(indexed_segments)
+        rows += sum(1 for _observation in iter_observations(path))
+    return {"rows": rows, "segments": segments}
 
 
 def write_diagnostics_csv(path: Path, rows: list[dict[str, object]]) -> None:

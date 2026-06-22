@@ -14,6 +14,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from queue import Empty, Queue
 
 from PySide6.QtCore import QThread, Signal
@@ -253,6 +254,7 @@ class MeasurementWorker(QThread):
         probe_engine: str = PROBE_ENGINE_ICMP,
         tcp_port: int = 443,
         parent=None,
+        session_log_root: str | Path | None = None,
     ) -> None:
         super().__init__(parent)
         self.target = target.strip()
@@ -267,6 +269,7 @@ class MeasurementWorker(QThread):
         )
         self.probe_engine = probe_engine if probe_engine in PROBE_ENGINES else PROBE_ENGINE_ICMP
         self.tcp_port = max(min(int(tcp_port), 65535), 1)
+        self.session_log_root = Path(session_log_root) if session_log_root is not None else None
         # 아래 값들은 UI 버튼에서 들어오는 중지/일시정지/간격 변경 요청을 안전하게 반영하기 위한 상태입니다.
         self._stop_event = threading.Event()
         self._control_lock = threading.Lock()
@@ -371,7 +374,7 @@ class MeasurementWorker(QThread):
             # 프로그램이 중간에 꺼져도 Session Manager가 남은 CSV를 찾아 복구할 수 있습니다.
             self._ping_probe_pool = _ThreadLocalPingProbePool(self._new_ping_probe)
             self._hop_ping_probe_pool = _ThreadLocalPingProbePool(self._new_hop_ping_probe)
-            session_writer = SessionLogWriter.create(self.target)
+            session_writer = SessionLogWriter.create(self.target, root=self.session_log_root)
             route_log = RouteLogWriter.create_for_session(session_writer.path)
             session_index = SessionIndexStore.create(session_index_root_for_sample_path(session_writer.path))
             session_record = session_index.register_session(

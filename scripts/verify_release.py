@@ -41,6 +41,7 @@ def main() -> int:
         ("release policy", run_release_policy_check),
         ("qt smoke", run_qt_smoke),
         ("export smoke", run_export_smoke),
+        ("deterministic 50-target soak", run_soak_smoke),
     ]
     if args.live:
         checks.append(("live network smoke", run_live_smoke))
@@ -165,6 +166,40 @@ def run_export_smoke() -> None:
             path = base / name
             if not path.exists() or path.stat().st_size == 0:
                 raise RuntimeError(f"Export smoke failed: {name}")
+
+
+def run_soak_smoke() -> None:
+    with tempfile.TemporaryDirectory(prefix="npd_soak_") as tmp:
+        base = Path(tmp)
+        run_command(
+            [
+                sys.executable,
+                "scripts\\soak_test.py",
+                "--duration-seconds",
+                "5",
+                "--targets",
+                "50",
+                "--timeout-ratio",
+                "0.8",
+                "--interval-seconds",
+                "1",
+                "--timeout-delay-seconds",
+                "0.05",
+                "--output-dir",
+                str(base / "output"),
+                "--session-log-root",
+                str(base / "session_logs"),
+                "--event-poll-seconds",
+                "0.02",
+                "--sample-seconds",
+                "0.5",
+                "--progress-seconds",
+                "0",
+                "--max-cpu-percent",
+                "250",
+            ],
+            timeout=90,
+        )
 
 
 def run_live_smoke() -> None:

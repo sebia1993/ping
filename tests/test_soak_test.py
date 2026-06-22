@@ -31,6 +31,24 @@ def test_soak_evaluation_rejects_slow_average_ui_updates() -> None:
     assert any("average update gap too high" in failure for failure in failures)
 
 
+def test_soak_evaluation_rejects_missing_session_persistence() -> None:
+    args = _args()
+    summary = _summary(
+        updates=1778,
+        diagnostic_samples=1778,
+        max_update_gap_seconds=2.031,
+        avg_update_gap_seconds=1.013,
+        ping_calls=89_000,
+        session_log_rows=0,
+        session_log_segments=0,
+    )
+
+    failures = evaluate_summary(summary, args)
+
+    assert "session log was not created" in failures
+    assert any("session log rows too low" in failure for failure in failures)
+
+
 def _args() -> Namespace:
     return Namespace(
         duration_seconds=1800.0,
@@ -47,6 +65,7 @@ def _args() -> Namespace:
         max_memory_growth_mb=96.0,
         max_cpu_percent=80.0,
         no_require_backoff=False,
+        session_log_root=None,
     )
 
 
@@ -56,6 +75,9 @@ def _summary(
     diagnostic_samples: int,
     max_update_gap_seconds: float,
     avg_update_gap_seconds: float,
+    ping_calls: int = 89_000,
+    session_log_rows: int = 89_000,
+    session_log_segments: int = 1,
 ) -> dict[str, object]:
     return {
         "errors": [],
@@ -72,4 +94,7 @@ def _summary(
         "cpu_percent": 2.7,
         "max_backoff_target_count": 41,
         "traceroute_calls": 30,
+        "ping_calls": ping_calls,
+        "session_log_rows": session_log_rows,
+        "session_log_segments": session_log_segments,
     }

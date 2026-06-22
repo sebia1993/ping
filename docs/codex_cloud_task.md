@@ -11,6 +11,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Alert UI supports loss, latency, sample-count alert, route-change annotation, and alert-ended events.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
 - Statistics export supports grouping, timezone, and scope selection: All time, Visible timeline, Focus period.
+- Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 
 ## Constraints
 
@@ -38,9 +39,10 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
    - Add clearer cause codes for bandwidth saturation, ISP segment issue, ICMP rate-limit, firewall block, and local LAN/Wi-Fi issue.
    - Keep final-destination-first interpretation.
 
-4. Add longer deterministic soak tests.
-   - Cover 50+ targets with mocked probes and no real network dependency.
-   - Assert worker loop delay, queue depth, memory-bounded recent observations, and session-log writes.
+4. Extend deterministic soak coverage.
+   - The release verifier now covers a short 50-target simulated soak.
+   - Add longer manual or scheduled soak profiles for 30+ minute runs, UI-driven mode, and packaging-only environments.
+   - Keep asserting worker loop delay, queue depth, memory-bounded recent observations, timeout backoff, and session-log writes.
 
 5. Keep packaging healthy.
    - Run `python -m pytest -q`.
