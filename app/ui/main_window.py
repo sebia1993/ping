@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +17,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -70,6 +74,7 @@ STATISTICS_SCOPE_FOCUS = "focus"
 STATISTICS_SCOPE_CUSTOM = "custom"
 STALE_ACTIVE_SESSION_RECOVERY_SECONDS = 3600
 SESSION_MANAGER_DISPLAY_LIMIT = 100
+ALERT_REST_TIMEOUT_SECONDS = 3.0
 
 
 class MainWindow(QMainWindow):
@@ -371,6 +376,10 @@ class MainWindow(QMainWindow):
         self.alert_comment_action_check.setChecked(True)
         self.alert_beep_action_check = QCheckBox("Beep")
         self.alert_image_action_check = QCheckBox("Image")
+        self.alert_rest_action_check = QCheckBox("REST")
+        self.alert_rest_url_edit = QLineEdit()
+        self.alert_rest_url_edit.setPlaceholderText("https://example/api/alert")
+        self.alert_rest_url_edit.setMinimumWidth(170)
         for label, spin in [
             ("Loss", self.loss_threshold_spin),
             ("Window", self.loss_window_spin),
@@ -387,6 +396,8 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.alert_comment_action_check)
         alert_rule_row.addWidget(self.alert_beep_action_check)
         alert_rule_row.addWidget(self.alert_image_action_check)
+        alert_rule_row.addWidget(self.alert_rest_action_check)
+        alert_rule_row.addWidget(self.alert_rest_url_edit)
         alert_rule_row.addStretch(1)
         self.alerts_box = QTextEdit()
         self.alerts_box.setReadOnly(True)
@@ -1105,6 +1116,8 @@ class MainWindow(QMainWindow):
             QApplication.beep()
         if "image" in actions:
             self.pending_alert_image_keys.add(event.key)
+        if "rest" in actions:
+            self._send_alert_rest_action(event)
         if not actions:
             return []
         append_alert_action(
@@ -1126,7 +1139,48 @@ class MainWindow(QMainWindow):
             actions.append("beep")
         if self.alert_image_action_check.isChecked():
             actions.append("image")
+        if (
+            hasattr(self, "alert_rest_action_check")
+            and self.alert_rest_action_check.isChecked()
+            and self._alert_rest_url()
+        ):
+            actions.append("rest")
         return actions
+
+    def _alert_rest_url(self) -> str:
+        if not hasattr(self, "alert_rest_url_edit"):
+            return ""
+        return self.alert_rest_url_edit.text().strip()
+
+    def _send_alert_rest_action(self, event: AlertEvent) -> None:
+        url = self._alert_rest_url()
+        if not url:
+            return
+        payload = {
+            "key": event.key,
+            "timestamp": event.timestamp.isoformat(timespec="seconds"),
+            "start": event.start.isoformat(timespec="seconds"),
+            "end": event.end.isoformat(timespec="seconds"),
+            "severity": event.severity,
+            "title": event.title,
+            "message": event.message,
+            "target": self.current_target,
+            "series_key": event.series_key,
+        }
+        try:
+            self._post_alert_webhook(url, payload)
+        except (OSError, ValueError, urllib.error.URLError):
+            self.status_label.setText("Alert REST action failed")
+
+    def _post_alert_webhook(self, url: str, payload: dict[str, object]) -> None:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=ALERT_REST_TIMEOUT_SECONDS):
+            pass
 
     def _save_pending_alert_images(self) -> None:
         if not self.pending_alert_image_keys:
