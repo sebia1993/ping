@@ -10,7 +10,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Session segment metadata is written through atomic temp-file replace with transient PermissionError retries, matching the session index hardening style.
 - Session log writer failures are preserved as paused sessions with stable `SESSION_LOG_WRITE_FAILED` style last-error codes instead of leaving the stop reason blank.
 - Session Manager refresh reconciles existing indexed sessions against saved CSV segments, correcting sample counts, last timestamps, target counts, and segment lists after crashes or transient index-write failures.
-- All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, selected-target group saving, metadata-rich v2 target group presets with v1 compatibility, and live selected-target count in the summary line.
+- All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, selected-target group saving, metadata-rich v2 target group presets with v1 compatibility, saved per-target interval overrides, and live selected-target count in the summary line.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics and session metadata that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
 - Alert action logging distinguishes failed external actions as `email_failed`, `rest_failed`, and `executable_failed` so operators can see when an action was attempted but did not complete.
@@ -76,7 +76,7 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 
 1. Strengthen multi-target operations.
    - PingPlotter provides an All Targets Summary that lets operators compare many targets at a glance and change interval/config settings for multiple selected targets.
-   - The current project can measure multiple IPs, filter/sort the summary, batch-control selected/visible/problem/all target sets, save selected targets as reusable metadata-rich groups, validate group summary metadata on load, and show the active selected-target count before batch actions.
+   - The current project can measure multiple IPs, filter/sort the summary, batch-control selected/visible/problem/all target sets, save selected targets as reusable metadata-rich groups, validate group summary metadata on load, restore saved per-target interval overrides at start, and show the active selected-target count before batch actions.
    - Remaining parity work is in-app group library management and richer summary-history views.
    - References:
      - https://www.pingplotter.com/manual/summary_graphs/

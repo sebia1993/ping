@@ -1087,6 +1087,11 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         window.measurement_mode_combo.setCurrentIndex(mode_index)
         window.probe_engine_combo.setCurrentIndex(probe_index)
         window.tcp_port_spin.setValue(8443)
+        window.target_interval_overrides = {
+            "198.51.100.10": 5,
+            "203.0.113.20": 10,
+            "192.0.2.1": 7,
+        }
 
         window.save_target_group_preset()
 
@@ -1100,8 +1105,10 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         assert data["summary"]["measurement_mode"] == MEASUREMENT_MODE_FINAL_HOP_ONLY
         assert data["summary"]["probe_engine"] == PROBE_ENGINE_TCP_CONNECT
         assert data["summary"]["tcp_port"] == 8443
+        assert data["summary"]["target_interval_override_count"] == 1
         assert data["targets"] == ["198.51.100.10", "203.0.113.20"]
         assert data["trace_target"] == "203.0.113.20"
+        assert data["target_interval_overrides"] == {"203.0.113.20": 10}
         assert data["settings"]["interval_seconds"] == 5
         assert data["settings"]["unlimited"] is False
         assert data["settings"]["count"] == 25
@@ -1117,6 +1124,7 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         window.measurement_mode_combo.setCurrentIndex(window.measurement_mode_combo.findData(MEASUREMENT_MODE_FULL_ROUTE))
         window.probe_engine_combo.setCurrentIndex(window.probe_engine_combo.findData("icmp"))
         window.tcp_port_spin.setValue(443)
+        window.target_interval_overrides = {}
 
         window.load_target_group_preset()
 
@@ -1130,7 +1138,8 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
         assert window.tcp_port_spin.value() == 8443
         assert window.tcp_port_spin.isEnabled() is True
-        assert window.status_label.text() == "Target group loaded: 2 target(s) | target_group"
+        assert window.target_interval_overrides == {"203.0.113.20": 10}
+        assert window.status_label.text() == "Target group loaded: 2 target(s) | target_group | interval overrides 1"
     finally:
         window.close()
 
@@ -1173,6 +1182,7 @@ def test_main_window_loads_legacy_target_group_preset(qt_app, tmp_path, monkeypa
         assert window.measurement_mode_combo.currentData() == MEASUREMENT_MODE_FINAL_HOP_ONLY
         assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
         assert window.tcp_port_spin.value() == 8443
+        assert window.target_interval_overrides == {}
         assert window.status_label.text() == "Target group loaded: 2 target(s)"
     finally:
         window.close()
@@ -1213,6 +1223,113 @@ def test_main_window_rejects_target_group_summary_count_mismatch(qt_app, tmp_pat
         window.close()
 
 
+def test_main_window_rejects_target_group_interval_override_count_mismatch(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "bad_interval_group.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": TARGET_GROUP_PRESET_VERSION,
+                "name": "bad_interval_group",
+                "source": "all",
+                "summary": {
+                    "target_count": 2,
+                    "target_interval_override_count": 2,
+                },
+                "targets": ["198.51.100.10", "203.0.113.20"],
+                "trace_target": "198.51.100.10",
+                "target_interval_overrides": {"203.0.113.20": 5},
+                "settings": {"interval_seconds": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow()
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+
+    try:
+        window.target_input.setPlainText("8.8.8.8")
+        window.load_target_group_preset()
+
+        assert "target_interval_override_count does not match" in warnings[-1]
+        assert "target_interval_override_count does not match" in window.status_label.text()
+        assert window.target_interval_overrides == {}
+        assert window.target_input.toPlainText() == "8.8.8.8"
+    finally:
+        window.close()
+
+
+def test_main_window_applies_loaded_target_group_interval_overrides_on_start(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "interval_group.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": TARGET_GROUP_PRESET_VERSION,
+                "name": "interval_group",
+                "source": "all",
+                "summary": {
+                    "target_count": 2,
+                    "target_interval_override_count": 1,
+                },
+                "targets": ["198.51.100.10", "203.0.113.20"],
+                "trace_target": "198.51.100.10",
+                "target_interval_overrides": {"203.0.113.20": 5},
+                "settings": {
+                    "interval_seconds": 1,
+                    "unlimited": True,
+                    "measurement_mode": MEASUREMENT_MODE_FULL_ROUTE,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    created_workers: list[_FakeWorker] = []
+
+    def worker_factory(
+        target: str,
+        interval_seconds: int,
+        max_cycles: int | None,
+        targets: list[str],
+        measurement_mode: str,
+        probe_engine: str = "icmp",
+        tcp_port: int = 443,
+    ) -> "_FakeWorker":
+        worker = _FakeWorker(
+            target=target,
+            interval_seconds=interval_seconds,
+            max_cycles=max_cycles,
+            targets=targets,
+            measurement_mode=measurement_mode,
+            probe_engine=probe_engine,
+            tcp_port=tcp_port,
+        )
+        created_workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow(worker_factory=worker_factory)
+
+    try:
+        window.load_target_group_preset()
+        window.start_measurement()
+
+        assert window.target_interval_overrides == {"203.0.113.20": 5}
+        assert created_workers[0].interval_seconds == 1
+        assert created_workers[0].target_interval_updates == [(["203.0.113.20"], 5)]
+        assert created_workers[0].started is True
+    finally:
+        window.close()
+
+
 def test_main_window_saves_selected_target_group_from_summary(qt_app, tmp_path, monkeypatch) -> None:
     preset_path = tmp_path / "selected_target_group.json"
 
@@ -1248,8 +1365,10 @@ def test_main_window_saves_selected_target_group_from_summary(qt_app, tmp_path, 
         assert data["name"] == "selected_target_group"
         assert data["source"] == "selected"
         assert data["summary"]["target_count"] == 2
+        assert data["summary"]["target_interval_override_count"] == 0
         assert data["targets"] == ["203.0.113.20", "203.0.113.30"]
         assert data["trace_target"] == "203.0.113.20"
+        assert data["target_interval_overrides"] == {}
         assert window.status_label.text() == f"Target group saved: {preset_path} (2 target(s))"
     finally:
         window.close()

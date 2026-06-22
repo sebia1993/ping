@@ -834,14 +834,20 @@ class MainWindow(QMainWindow):
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Target group JSON must contain an object.")
+            targets = _target_group_targets(data)
+            target_interval_overrides = _target_group_interval_overrides(data, targets)
             targets = self._apply_target_group_preset(data)
+            self.target_interval_overrides = target_interval_overrides
+            self._refresh_target_interval_view()
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "Target group", str(exc))
             self.status_label.setText(str(exc))
             return
         group_name = _target_group_display_name(data)
         label = f" | {group_name}" if group_name else ""
-        self.status_label.setText(f"Target group loaded: {len(targets)} target(s){label}")
+        overrides = len(self.target_interval_overrides)
+        override_label = f" | interval overrides {overrides}" if overrides else ""
+        self.status_label.setText(f"Target group loaded: {len(targets)} target(s){label}{override_label}")
 
     def _target_group_preset(self, targets: list[str], *, name: str, source: str) -> dict[str, object]:
         trace_target = self.trace_target_combo.currentText().strip()
@@ -850,6 +856,11 @@ class MainWindow(QMainWindow):
         measurement_mode = self.measurement_mode_combo.currentData() or MEASUREMENT_MODE_FULL_ROUTE
         probe_engine = self.probe_engine_combo.currentData() or PROBE_ENGINE_ICMP
         tcp_port = self.tcp_port_spin.value()
+        target_interval_overrides = _filtered_target_interval_overrides(
+            self.target_interval_overrides,
+            targets,
+            global_interval=int(self.interval_combo.currentText()),
+        )
         return {
             "version": TARGET_GROUP_PRESET_VERSION,
             "name": name,
@@ -861,9 +872,11 @@ class MainWindow(QMainWindow):
                 "measurement_mode": measurement_mode,
                 "probe_engine": probe_engine,
                 "tcp_port": tcp_port,
+                "target_interval_override_count": len(target_interval_overrides),
             },
             "targets": targets,
             "trace_target": trace_target,
+            "target_interval_overrides": target_interval_overrides,
             "settings": {
                 "interval_seconds": int(self.interval_combo.currentText()),
                 "unlimited": self.unlimited_check.isChecked(),
@@ -876,13 +889,7 @@ class MainWindow(QMainWindow):
 
     def _apply_target_group_preset(self, data: dict[str, object]) -> list[str]:
         _validate_target_group_preset_version(data.get("version"))
-        target_values = data.get("targets")
-        if not isinstance(target_values, list):
-            raise ValueError("Target group JSON must contain a targets list.")
-        targets, invalid = parse_ipv4_targets("\n".join(str(target) for target in target_values))
-        if invalid or not targets:
-            raise ValueError("Target group JSON must contain valid IPv4 targets.")
-        _validate_target_group_summary(data.get("summary"), target_count=len(targets))
+        targets = _target_group_targets(data)
         settings = data.get("settings", {})
         if settings is None:
             settings = {}
@@ -929,9 +936,15 @@ class MainWindow(QMainWindow):
             return
 
         # 3단계: 이전 측정의 화면 상태를 비우고 새 세션 상태로 바꿉니다.
+        global_interval = int(self.interval_combo.currentText())
+        initial_target_interval_overrides = _filtered_target_interval_overrides(
+            self.target_interval_overrides,
+            targets,
+            global_interval=global_interval,
+        )
         self.current_target = target
         self.current_targets = targets
-        self.target_interval_overrides = {}
+        self.target_interval_overrides = dict(initial_target_interval_overrides)
         self.session_log_path = None
         self.route_log_path = None
         self.alert_action_log_path = None
@@ -971,7 +984,7 @@ class MainWindow(QMainWindow):
         # 아래 connect들은 Worker 결과가 도착했을 때 어떤 화면 함수를 호출할지 연결합니다.
         self.worker = self._create_measurement_worker(
             target=target,
-            interval_seconds=int(self.interval_combo.currentText()),
+            interval_seconds=global_interval,
             max_cycles=max_cycles,
             targets=targets,
             measurement_mode=measurement_mode,
@@ -982,6 +995,7 @@ class MainWindow(QMainWindow):
             auto_restore_final_hop_on_recovery=self._route_adjustment_recovery_enabled(),
         )
         setattr(self.worker, "resumed_from_session_id", resumed_from_session_id)
+        self._apply_initial_target_interval_overrides(initial_target_interval_overrides)
         self.worker.trace_completed.connect(self.on_trace_completed)
         if hasattr(self.worker, "route_changed"):
             self.worker.route_changed.connect(self.on_route_changed)
@@ -1104,6 +1118,15 @@ class MainWindow(QMainWindow):
             if target in self.current_targets:
                 self.target_interval_overrides[target] = interval_seconds
         self._refresh_target_interval_view()
+
+    def _apply_initial_target_interval_overrides(self, overrides: dict[str, int]) -> None:
+        if not overrides or not self.worker or not hasattr(self.worker, "set_target_interval_seconds"):
+            return
+        by_interval: dict[int, list[str]] = {}
+        for target, interval_seconds in overrides.items():
+            by_interval.setdefault(interval_seconds, []).append(target)
+        for interval_seconds, targets in sorted(by_interval.items()):
+            self.worker.set_target_interval_seconds(targets, interval_seconds)
 
     def _refresh_target_interval_view(self) -> None:
         if hasattr(self, "target_table") and self.target_snapshots:
@@ -3416,6 +3439,17 @@ def _validate_target_group_preset_version(value: object) -> None:
         raise ValueError(f"Target group JSON version is not supported: {version}")
 
 
+def _target_group_targets(data: dict[str, object]) -> list[str]:
+    target_values = data.get("targets")
+    if not isinstance(target_values, list):
+        raise ValueError("Target group JSON must contain a targets list.")
+    targets, invalid = parse_ipv4_targets("\n".join(str(target) for target in target_values))
+    if invalid or not targets:
+        raise ValueError("Target group JSON must contain valid IPv4 targets.")
+    _validate_target_group_summary(data.get("summary"), target_count=len(targets))
+    return targets
+
+
 def _validate_target_group_summary(summary: object, *, target_count: int) -> None:
     if summary in (None, ""):
         return
@@ -3430,6 +3464,61 @@ def _validate_target_group_summary(summary: object, *, target_count: int) -> Non
         raise ValueError("Target group JSON has invalid target_count metadata.") from exc
     if expected_count_int != target_count:
         raise ValueError("Target group JSON target_count does not match the targets list.")
+
+
+def _target_group_interval_overrides(data: dict[str, object], targets: list[str]) -> dict[str, int]:
+    raw_overrides = data.get("target_interval_overrides", {})
+    if raw_overrides in (None, ""):
+        return {}
+    if not isinstance(raw_overrides, dict):
+        raise ValueError("Target group JSON has invalid target_interval_overrides.")
+    target_set = set(targets)
+    overrides: dict[str, int] = {}
+    for target, value in raw_overrides.items():
+        target_text = str(target)
+        if target_text not in target_set:
+            continue
+        try:
+            interval = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Target group JSON has invalid target interval override.") from exc
+        if interval < 0:
+            raise ValueError("Target group JSON has invalid target interval override.")
+        overrides[target_text] = interval
+    _validate_target_group_interval_override_summary(data.get("summary"), override_count=len(overrides))
+    return overrides
+
+
+def _validate_target_group_interval_override_summary(summary: object, *, override_count: int) -> None:
+    if not isinstance(summary, dict):
+        return
+    expected_count = summary.get("target_interval_override_count")
+    if expected_count in (None, ""):
+        return
+    try:
+        expected_count_int = int(expected_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Target group JSON has invalid target_interval_override_count metadata.") from exc
+    if expected_count_int != override_count:
+        raise ValueError("Target group JSON target_interval_override_count does not match the overrides list.")
+
+
+def _filtered_target_interval_overrides(
+    overrides: dict[str, int],
+    targets: list[str],
+    *,
+    global_interval: int,
+) -> dict[str, int]:
+    target_set = set(targets)
+    filtered: dict[str, int] = {}
+    for target, interval_seconds in overrides.items():
+        if target not in target_set:
+            continue
+        interval = max(int(interval_seconds), 0)
+        if interval == global_interval:
+            continue
+        filtered[target] = interval
+    return filtered
 
 
 def _target_group_display_name(data: dict[str, object]) -> str:
