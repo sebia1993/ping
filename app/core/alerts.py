@@ -10,6 +10,7 @@ LOSS_ALERT_KEY = "target_loss_20pct_3m"
 LATENCY_ALERT_KEY = "target_latency_100ms"
 JITTER_ALERT_KEY = "target_jitter_30ms"
 SAMPLE_ALERT_KEY = "target_sample_condition"
+TIMER_ALERT_KEY = "target_timer_condition"
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class AlertRuleConfig:
     jitter_threshold_ms: float = 30.0
     sample_window_count: int = 10
     sample_failure_count: int = 10
+    timer_window_seconds: int = 300
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,14 @@ def evaluate_target_alerts(
     if sample_event is not None:
         active_keys.add(sample_event.key)
         events.append(sample_event)
+    timer_event = _timer_alert(
+        points,
+        latency_threshold_ms,
+        config.timer_window_seconds if config else 300,
+    )
+    if timer_event is not None:
+        active_keys.add(timer_event.key)
+        events.append(timer_event)
     return active_keys, events
 
 
@@ -222,6 +232,43 @@ def _sample_count_alert(
     )
 
 
+def _timer_alert(
+    points: list[HopObservation],
+    latency_threshold_ms: float,
+    window_seconds: int,
+) -> AlertEvent | None:
+    window_seconds = max(int(window_seconds), 1)
+    latest = points[-1]
+    if not _is_bad_target_point(latest, latency_threshold_ms):
+        return None
+    bad_tail: list[HopObservation] = []
+    for point in reversed(points):
+        if not _is_bad_target_point(point, latency_threshold_ms):
+            break
+        bad_tail.append(point)
+    bad_tail.reverse()
+    if len(bad_tail) < 2:
+        return None
+    duration_seconds = (bad_tail[-1].timestamp - bad_tail[0].timestamp).total_seconds()
+    if duration_seconds < window_seconds:
+        return None
+    window_minutes = window_seconds / 60
+    duration_label = f"{window_minutes:.1f}m" if window_seconds % 60 else f"{window_seconds // 60}m"
+    return AlertEvent(
+        key=TIMER_ALERT_KEY,
+        timestamp=bad_tail[-1].timestamp,
+        start=bad_tail[0].timestamp,
+        end=bad_tail[-1].timestamp,
+        severity="critical",
+        title="Timer alert",
+        message=f"Target stayed failed or >= {latency_threshold_ms:.0f} ms for {duration_label}",
+    )
+
+
+def _is_bad_target_point(point: HopObservation, latency_threshold_ms: float) -> bool:
+    return not point.success or (point.latency_ms is not None and point.latency_ms >= latency_threshold_ms)
+
+
 def _sample_stdev(values: list[float]) -> float:
     if len(values) < 2:
         return 0.0
@@ -239,6 +286,8 @@ def _alert_title_for_key(alert_key: str) -> str:
         return "Jitter alert"
     if alert_key == SAMPLE_ALERT_KEY:
         return "Sample count alert"
+    if alert_key == TIMER_ALERT_KEY:
+        return "Timer alert"
     if alert_key.startswith("route_changed:"):
         return "Route changed"
     return "Alert"

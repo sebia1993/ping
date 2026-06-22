@@ -360,6 +360,10 @@ class MainWindow(QMainWindow):
         self.sample_bad_spin.setRange(1, 100)
         self.sample_bad_spin.setValue(10)
         self.sample_bad_spin.setSuffix(" bad")
+        self.timer_window_spin = QSpinBox()
+        self.timer_window_spin.setRange(1, 240)
+        self.timer_window_spin.setValue(5)
+        self.timer_window_spin.setSuffix("m")
         self.alert_timeline_action_check = QCheckBox("Timeline")
         self.alert_timeline_action_check.setChecked(True)
         self.alert_comment_action_check = QCheckBox("Comment")
@@ -373,6 +377,7 @@ class MainWindow(QMainWindow):
             ("Jitter", self.jitter_threshold_spin),
             ("Samples", self.sample_window_spin),
             ("Bad", self.sample_bad_spin),
+            ("Timer", self.timer_window_spin),
         ]:
             alert_rule_row.addWidget(QLabel(label))
             alert_rule_row.addWidget(spin)
@@ -1054,6 +1059,7 @@ class MainWindow(QMainWindow):
         jitter_threshold = float(self.jitter_threshold_spin.value()) if hasattr(self, "jitter_threshold_spin") else 30.0
         sample_window = self.sample_window_spin.value() if hasattr(self, "sample_window_spin") else 10
         sample_bad = self.sample_bad_spin.value() if hasattr(self, "sample_bad_spin") else 10
+        timer_window_minutes = self.timer_window_spin.value() if hasattr(self, "timer_window_spin") else 5
         return AlertRuleConfig(
             loss_threshold_percent=loss_threshold,
             loss_window_seconds=int(loss_window_minutes) * 60,
@@ -1061,6 +1067,7 @@ class MainWindow(QMainWindow):
             jitter_threshold_ms=jitter_threshold,
             sample_window_count=int(sample_window),
             sample_failure_count=int(sample_bad),
+            timer_window_seconds=int(timer_window_minutes) * 60,
         )
 
     def _append_alert_event(

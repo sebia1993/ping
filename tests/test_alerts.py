@@ -8,6 +8,7 @@ from app.core.alerts import (
     LATENCY_ALERT_KEY,
     LOSS_ALERT_KEY,
     SAMPLE_ALERT_KEY,
+    TIMER_ALERT_KEY,
     alert_recovery_event,
     evaluate_target_alerts,
     route_change_alert,
@@ -117,6 +118,47 @@ def test_evaluate_target_alerts_detects_jitter_condition() -> None:
     assert active_keys == {JITTER_ALERT_KEY}
     assert events[0].title == "Jitter alert"
     assert events[0].message == "Target jitter 28.9 ms >= 20 ms over last 4 samples"
+
+
+def test_evaluate_target_alerts_detects_timer_condition_and_resets_on_good_sample() -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    observations = [
+        HopObservation(now, 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=30), 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=60), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=90), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+    ]
+
+    active_keys, events = evaluate_target_alerts(
+        observations,
+        current_target="198.51.100.10",
+        config=AlertRuleConfig(
+            loss_threshold_percent=100.0,
+            loss_window_seconds=180,
+            latency_threshold_ms=100.0,
+            timer_window_seconds=60,
+        ),
+    )
+
+    assert TIMER_ALERT_KEY not in active_keys
+
+    observations.append(
+        HopObservation(now + timedelta(seconds=120), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+    )
+    active_keys, events = evaluate_target_alerts(
+        observations,
+        current_target="198.51.100.10",
+        config=AlertRuleConfig(
+            loss_threshold_percent=100.0,
+            loss_window_seconds=180,
+            latency_threshold_ms=100.0,
+            timer_window_seconds=60,
+        ),
+    )
+
+    assert TIMER_ALERT_KEY in active_keys
+    assert events[-1].title == "Timer alert"
+    assert events[-1].message == "Target stayed failed or >= 100 ms for 1m"
 
 
 def test_alert_recovery_event_records_ended_state() -> None:

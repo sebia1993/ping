@@ -18,7 +18,7 @@ from queue import Empty, Queue
 
 from PySide6.QtCore import QThread, Signal
 
-from app.core.alerts import LATENCY_ALERT_KEY, LOSS_ALERT_KEY, evaluate_target_alerts
+from app.core.alerts import LATENCY_ALERT_KEY, LOSS_ALERT_KEY, TIMER_ALERT_KEY, evaluate_target_alerts
 from app.core.analyzer import analyze_path
 from app.core.metrics import MetricsSession, TargetMetricTracker
 from app.core.models import STATUS_ERROR, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, HopObservation, PingResult
@@ -50,7 +50,7 @@ SLOW_BACKOFF_SECONDS = 5.0
 MEASUREMENT_MODE_FULL_ROUTE = "full_route"
 MEASUREMENT_MODE_FINAL_HOP_ONLY = "final_hop_only"
 MEASUREMENT_MODES = {MEASUREMENT_MODE_FULL_ROUTE, MEASUREMENT_MODE_FINAL_HOP_ONLY}
-AUTO_FULL_ROUTE_ALERT_KEYS = {LOSS_ALERT_KEY, LATENCY_ALERT_KEY}
+AUTO_FULL_ROUTE_ALERT_KEYS = {LOSS_ALERT_KEY, LATENCY_ALERT_KEY, TIMER_ALERT_KEY}
 PROBE_ENGINE_ICMP = "icmp"
 PROBE_ENGINE_TCP_CONNECT = "tcp_connect"
 PROBE_ENGINES = {PROBE_ENGINE_ICMP, PROBE_ENGINE_TCP_CONNECT}
