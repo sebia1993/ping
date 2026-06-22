@@ -73,6 +73,10 @@ AUTO_FULL_ROUTE_ALERT_KEYS = {
 PROBE_ENGINE_ICMP = "icmp"
 PROBE_ENGINE_TCP_CONNECT = "tcp_connect"
 PROBE_ENGINES = {PROBE_ENGINE_ICMP, PROBE_ENGINE_TCP_CONNECT}
+WORKER_UNEXPECTED_ERROR_CODE = "WORKER_UNEXPECTED_ERROR"
+SESSION_LOG_WRITE_FAILED_CODE = "SESSION_LOG_WRITE_FAILED"
+ROUTE_LOG_CLOSE_FAILED_CODE = "ROUTE_LOG_CLOSE_FAILED"
+SESSION_INDEX_FINISH_FAILED_CODE = "SESSION_INDEX_FINISH_FAILED"
 
 
 @dataclass
@@ -229,7 +233,11 @@ class _AsyncSessionLogWriter:
         except Exception as exc:
             self._error = exc
         finally:
-            self._writer.close()
+            try:
+                self._writer.close()
+            except Exception as exc:
+                if self._error is None:
+                    self._error = exc
 
     @property
     def segment_paths(self) -> list[object]:
@@ -392,6 +400,7 @@ class MeasurementWorker(QThread):
         next_trace_refresh_due = time.monotonic() + TRACE_REFRESH_SECONDS
         loop_delays: deque[float] = deque(maxlen=120)
         completed_normally = False
+        last_error = ""
 
         try:
             # 세션 CSV와 세션 인덱스는 측정 시작 직후 만들어 둡니다.
@@ -577,20 +586,40 @@ class MeasurementWorker(QThread):
             self.status_message.emit(
                 "측정이 완료되었습니다." if not self._stop_event.is_set() else "측정이 중지되었습니다."
             )
+        except Exception as exc:
+            last_error = _error_code_summary(WORKER_UNEXPECTED_ERROR_CODE, exc)
+            self.error_message.emit(f"측정 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({last_error})")
         finally:
             self._stop_event.set()
             if session_log is not None:
-                session_log.close()
-            if session_index is not None and session_id is not None:
-                state = SESSION_STATE_ARCHIVED if completed_normally else SESSION_STATE_PAUSED
-                session_index.finish_session(
-                    session_id,
-                    state=state,
-                    ended_at=datetime.now(),
-                    segments=session_log.segment_paths if session_log is not None else None,
-                )
+                try:
+                    session_log.close()
+                except Exception as exc:
+                    session_error = _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc)
+                    last_error = _merge_error_summaries(last_error, session_error)
+                    self.error_message.emit(
+                        f"세션 로그 저장 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({session_error})"
+                    )
             if route_log is not None:
-                route_log.close()
+                try:
+                    route_log.close()
+                except Exception as exc:
+                    route_error = _error_code_summary(ROUTE_LOG_CLOSE_FAILED_CODE, exc)
+                    last_error = _merge_error_summaries(last_error, route_error)
+                    self.error_message.emit(f"경로 로그 종료 중 오류가 발생했습니다. ({route_error})")
+            if session_index is not None and session_id is not None:
+                state = SESSION_STATE_ARCHIVED if completed_normally and not last_error else SESSION_STATE_PAUSED
+                try:
+                    session_index.finish_session(
+                        session_id,
+                        state=state,
+                        ended_at=datetime.now(),
+                        segments=session_log.segment_paths if session_log is not None else None,
+                        last_error=last_error,
+                    )
+                except Exception as exc:
+                    index_error = _error_code_summary(SESSION_INDEX_FINISH_FAILED_CODE, exc)
+                    self.error_message.emit(f"세션 인덱스 마감 중 오류가 발생했습니다. ({index_error})")
             if self._ping_probe_pool is not None:
                 self._ping_probe_pool.close()
                 self._ping_probe_pool = None
@@ -1163,3 +1192,15 @@ class MeasurementWorker(QThread):
         if pending:
             return f"측정 중... {trace_prefix}대상 Ping {completed}/{total}, {pending}개 응답 대기"
         return f"측정 중... {trace_prefix}대상 Ping {completed}/{total}"
+
+
+def _error_code_summary(code: str, exc: Exception) -> str:
+    return f"{code}: {type(exc).__name__}"
+
+
+def _merge_error_summaries(current: str, extra: str) -> str:
+    if not current:
+        return extra
+    if not extra or extra in current.split("; "):
+        return current
+    return f"{current}; {extra}"

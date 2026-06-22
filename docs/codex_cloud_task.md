@@ -8,6 +8,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - Multi-target measurement is implemented.
 - Session logs, session index, open/export/delete, and segmented CSV storage are implemented.
 - Session segment metadata is written through atomic temp-file replace with transient PermissionError retries, matching the session index hardening style.
+- Session log writer failures are preserved as paused sessions with stable `SESSION_LOG_WRITE_FAILED` style last-error codes instead of leaving the stop reason blank.
 - All Targets Summary has problem-first sorting, double-click target switching, selected/visible/problem/all batch controls, selected-target group saving, and live selected-target count in the summary line.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics and session metadata that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.

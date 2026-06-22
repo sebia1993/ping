@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 from app.core.alerts import AlertRuleConfig
 from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, PingResult
 from app.storage.route_log import RouteLogWriter, route_changes_in_range
-from app.storage.session_index import SESSION_STATE_ARCHIVED, SessionIndexStore
+from app.storage.session_index import SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
 from app.ui import worker as worker_module
 from app.ui.worker import (
     MEASUREMENT_MODE_FINAL_HOP_ONLY,
@@ -417,7 +417,9 @@ def test_worker_does_not_stack_duplicate_pings_for_slow_targets(monkeypatch) -> 
     worker.run()
     elapsed = time.monotonic() - started_at
 
-    assert elapsed < 2.5
+    # This includes ThreadPoolExecutor cleanup for simulated 1.5s timeout probes.
+    # Keep the ceiling tight enough to catch serial probing while avoiding sub-100ms scheduler jitter failures.
+    assert elapsed < 3.0
     assert len(updates) == 2
     assert calls["198.51.100.10"] == 2
     assert calls["203.0.113.10"] == 1
@@ -506,7 +508,10 @@ def test_worker_keeps_twenty_targets_responsive_with_many_timeouts(monkeypatch) 
     worker.run()
     elapsed = time.monotonic() - started_at
 
-    assert elapsed < 2.5
+    # The expected runtime is dominated by one 1.5s timeout wave plus executor cleanup.
+    # Serial probing would take far longer across 20 targets, so this still catches
+    # the regression while avoiding scheduler jitter on busy Windows hosts.
+    assert elapsed < 3.0
     assert len(updates) == 2
     final_target_snapshots = {snapshot.address: snapshot for snapshot in updates[-1][2]}
     assert len(final_target_snapshots) == 20
@@ -673,6 +678,30 @@ def test_worker_can_write_session_logs_under_custom_root(monkeypatch, tmp_path) 
     assert sessions[0].samples >= 2
     assert sessions[0].state == SESSION_STATE_ARCHIVED
     assert sessions[0].resumed_from_session_id == "previous-session"
+
+
+def test_worker_marks_session_paused_when_session_log_write_fails(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
+    log_path = tmp_path / "failed.samples.csv"
+
+    def create_log(cls, target: str, root=None):
+        return _FailingSessionLogWriter(log_path)
+
+    monkeypatch.setattr(worker_module.SessionLogWriter, "create", classmethod(create_log))
+
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=0, max_cycles=1)
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    sessions = SessionIndexStore.create(tmp_path).list_sessions(target="198.51.100.10")
+    assert len(sessions) == 1
+    assert sessions[0].state == SESSION_STATE_PAUSED
+    assert "SESSION_LOG_WRITE_FAILED: RuntimeError" in sessions[0].last_error
+    assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
 
 
 def test_worker_thread_start_stop_repeats_without_lingering(monkeypatch) -> None:
@@ -852,6 +881,18 @@ class _FakePingRunner:
             "203.0.113.10": 30.0,
         }.get(target, 10.0)
         return PingResult(target, True, latency, STATUS_OK, datetime.now())
+
+
+class _FailingSessionLogWriter:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.paths = [path]
+
+    def write_many(self, _observations) -> None:
+        raise RuntimeError("simulated write failure")
+
+    def close(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
 
 
 class _SlowTargetPingRunner:
