@@ -6,6 +6,7 @@ from app.core.models import MetricSnapshot, STATUS_OK
 LOSS_WARN_PERCENT = 5.0
 LOSS_BAD_PERCENT = 20.0
 LATENCY_JUMP_MS = 50.0
+JITTER_WARN_MS = 30.0
 
 
 # 이 파일은 "수집된 수치"를 사람이 이해할 수 있는 진단 문장으로 바꾸는 곳입니다.
@@ -146,14 +147,32 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                     "Treat this as ICMP response deprioritization or control-plane rate limiting unless the final target also slows down.",
                 )
             )
+        isolated_jitter = _isolated_middle_jitter_hops(sampled_hops, final)
+        if isolated_jitter:
+            hop_list = ", ".join(f"Hop {snapshot.hop_index}" for snapshot in isolated_jitter[:5])
+            analysis.append(
+                f"{hop_list} shows high jitter only at intermediate hops while the final target is healthy. This usually points to ICMP/control-plane deprioritization."
+            )
+            analysis.append(
+                _diagnostic_line(
+                    "ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED",
+                    f"Only intermediate hops show high jitter: {hop_list}. The final target is healthy.",
+                    "Do not treat middle-hop-only jitter as Wi-Fi or bandwidth congestion unless the final target also varies.",
+                )
+            )
+            analysis.append(
+                _cause_line(
+                    "CAUSE_INTERMEDIATE_HOP_JITTER_DEPRIORITIZATION",
+                    f"{hop_list} has high jitter while the final target remains healthy.",
+                    "Treat this as ICMP response deprioritization or control-plane rate limiting unless later hops inherit the same jitter.",
+                )
+            )
 
     analysis.extend(_detect_segment_issue(sampled_hops, final))
 
-    jitter_hops = [
-        snapshot for snapshot in sampled_hops if snapshot.jitter_ms is not None and snapshot.jitter_ms >= 30.0
-    ]
+    jitter_hops = _impact_jitter_hops(sampled_hops, final)
     if jitter_hops:
-        hop_list = ", ".join(f"Hop {snapshot.hop_index}" for snapshot in jitter_hops[:5])
+        hop_list = ", ".join(_snapshot_label(snapshot) for snapshot in jitter_hops[:5])
         analysis.append(f"{hop_list}에서 지연 편차가 큽니다. 간헐적 혼잡 또는 무선 품질 저하 가능성이 있습니다.")
         analysis.append(
             _diagnostic_line(
@@ -266,6 +285,43 @@ def _isolated_middle_latency_hops(
         if snapshot.avg_latency_ms is not None
         and snapshot.avg_latency_ms - final.avg_latency_ms >= LATENCY_JUMP_MS
     ]
+
+
+def _isolated_middle_jitter_hops(
+    sampled_hops: list[MetricSnapshot],
+    final: MetricSnapshot | None,
+) -> list[MetricSnapshot]:
+    if final is None or not _healthy(final) or _jittery(final):
+        return []
+    return [
+        snapshot
+        for snapshot in sampled_hops[:-1]
+        if _jittery(snapshot)
+    ]
+
+
+def _impact_jitter_hops(
+    sampled_hops: list[MetricSnapshot],
+    final: MetricSnapshot | None,
+) -> list[MetricSnapshot]:
+    if final is not None and _jittery(final):
+        jittery_hops = [snapshot for snapshot in sampled_hops if _jittery(snapshot)]
+        return [*jittery_hops, final]
+    if final is not None and _healthy(final):
+        return []
+    return [snapshot for snapshot in sampled_hops if _jittery(snapshot)]
+
+
+def _jittery(snapshot: MetricSnapshot) -> bool:
+    return (
+        _has_samples(snapshot)
+        and snapshot.jitter_ms is not None
+        and snapshot.jitter_ms >= JITTER_WARN_MS
+    )
+
+
+def _snapshot_label(snapshot: MetricSnapshot) -> str:
+    return "Target" if snapshot.hop_index <= 0 else f"Hop {snapshot.hop_index}"
 
 
 def _latency_jump_is_inherited(

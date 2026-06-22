@@ -14,7 +14,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.
-- Analysis logic now distinguishes middle-hop-only latency from inherited end-to-end latency, reducing false bandwidth-saturation diagnoses when the final target is healthy.
+- Analysis logic now distinguishes middle-hop-only latency/jitter from inherited end-to-end symptoms, reducing false bandwidth-saturation or Wi-Fi/congestion diagnoses when the final target is healthy.
 
 ## Constraints
 

@@ -133,19 +133,50 @@ def test_analyzer_treats_middle_hop_only_latency_as_icmp_deprioritization() -> N
     assert not any(line.startswith("CAUSE_BANDWIDTH_SATURATION:") for line in analysis)
 
 
+def test_analyzer_treats_middle_hop_only_jitter_as_icmp_deprioritization() -> None:
+    snapshots = [
+        _snapshot(1, loss=0, status=STATUS_OK, jitter=4.0),
+        _snapshot(2, loss=0, status=STATUS_OK, jitter=45.0),
+        _snapshot(3, loss=0, status=STATUS_OK, jitter=5.0),
+    ]
+    target = _snapshot(0, loss=0, status=STATUS_OK, jitter=6.0)
+
+    analysis = analyze_path(snapshots, target)
+
+    assert any(line.startswith("ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED:") for line in analysis)
+    assert any(line.startswith("CAUSE_INTERMEDIATE_HOP_JITTER_DEPRIORITIZATION:") for line in analysis)
+    assert not any(line.startswith("ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:") for line in analysis)
+    assert not any(line.startswith("CAUSE_JITTER_OR_LOCAL_CONGESTION:") for line in analysis)
+
+
 def test_analyzer_flags_jitter_with_stable_code() -> None:
     snapshots = [
         _snapshot(1, loss=0, status=STATUS_OK, jitter=5.0),
         _snapshot(2, loss=0, status=STATUS_OK, jitter=35.0),
         _snapshot(3, loss=0, status=STATUS_OK, jitter=0.0),
     ]
-    target = _snapshot(0, loss=0, status=STATUS_OK)
+    target = _snapshot(0, loss=0, status=STATUS_OK, jitter=35.0)
 
     analysis = analyze_path(snapshots, target)
 
     assert any("지연 편차" in line for line in analysis)
     assert any(line.startswith("ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:") for line in analysis)
     assert any(line.startswith("CAUSE_JITTER_OR_LOCAL_CONGESTION:") for line in analysis)
+
+
+def test_analyzer_flags_target_jitter_even_when_hops_are_stable() -> None:
+    snapshots = [
+        _snapshot(1, loss=0, status=STATUS_OK, jitter=2.0),
+        _snapshot(2, loss=0, status=STATUS_OK, jitter=3.0),
+        _snapshot(3, loss=0, status=STATUS_OK, jitter=4.0),
+    ]
+    target = _snapshot(0, loss=0, status=STATUS_OK, jitter=42.0)
+
+    analysis = analyze_path(snapshots, target)
+
+    assert any(line.startswith("ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:") and "Target" in line for line in analysis)
+    assert any(line.startswith("CAUSE_JITTER_OR_LOCAL_CONGESTION:") and "Target" in line for line in analysis)
+    assert not any(line.startswith("ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED:") for line in analysis)
 
 
 def test_analyzer_reports_no_clear_issue_with_stable_code() -> None:
