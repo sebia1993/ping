@@ -21,12 +21,17 @@ ROUTE_IP_ALERT_KEY_PREFIX = "route_ip_present:"
 class AlertRuleConfig:
     """알림 설정 화면에서 사용자가 조정하는 기준값 묶음입니다."""
 
+    loss_enabled: bool = True
     loss_threshold_percent: float = 20.0
     loss_window_seconds: int = 180
+    latency_enabled: bool = True
     latency_threshold_ms: float = 100.0
+    jitter_enabled: bool = True
     jitter_threshold_ms: float = 30.0
+    sample_enabled: bool = True
     sample_window_count: int = 10
     sample_failure_count: int = 10
+    timer_enabled: bool = True
     timer_window_seconds: int = 300
     mos_enabled: bool = False
     mos_threshold: float = 3.5
@@ -75,39 +80,44 @@ def evaluate_target_alerts(
 
     active_keys: set[str] = set()
     events: list[AlertEvent] = []
-    loss_event = _loss_alert(points, loss_threshold_percent, loss_window_seconds)
-    if loss_event is not None:
-        active_keys.add(loss_event.key)
-        events.append(loss_event)
-    latency_event = _latency_alert(points, latency_threshold_ms)
-    if latency_event is not None:
-        active_keys.add(latency_event.key)
-        events.append(latency_event)
-    jitter_event = _jitter_alert(
-        points,
-        jitter_threshold_ms,
-        config.sample_window_count if config else 10,
-    )
-    if jitter_event is not None:
-        active_keys.add(jitter_event.key)
-        events.append(jitter_event)
-    sample_event = _sample_count_alert(
-        points,
-        latency_threshold_ms,
-        config.sample_window_count if config else 10,
-        config.sample_failure_count if config else 10,
-    )
-    if sample_event is not None:
-        active_keys.add(sample_event.key)
-        events.append(sample_event)
-    timer_event = _timer_alert(
-        points,
-        latency_threshold_ms,
-        config.timer_window_seconds if config else 300,
-    )
-    if timer_event is not None:
-        active_keys.add(timer_event.key)
-        events.append(timer_event)
+    if config is None or config.loss_enabled:
+        loss_event = _loss_alert(points, loss_threshold_percent, loss_window_seconds)
+        if loss_event is not None:
+            active_keys.add(loss_event.key)
+            events.append(loss_event)
+    if config is None or config.latency_enabled:
+        latency_event = _latency_alert(points, latency_threshold_ms)
+        if latency_event is not None:
+            active_keys.add(latency_event.key)
+            events.append(latency_event)
+    if config is None or config.jitter_enabled:
+        jitter_event = _jitter_alert(
+            points,
+            jitter_threshold_ms,
+            config.sample_window_count if config else 10,
+        )
+        if jitter_event is not None:
+            active_keys.add(jitter_event.key)
+            events.append(jitter_event)
+    if config is None or config.sample_enabled:
+        sample_event = _sample_count_alert(
+            points,
+            latency_threshold_ms,
+            config.sample_window_count if config else 10,
+            config.sample_failure_count if config else 10,
+        )
+        if sample_event is not None:
+            active_keys.add(sample_event.key)
+            events.append(sample_event)
+    if config is None or config.timer_enabled:
+        timer_event = _timer_alert(
+            points,
+            latency_threshold_ms,
+            config.timer_window_seconds if config else 300,
+        )
+        if timer_event is not None:
+            active_keys.add(timer_event.key)
+            events.append(timer_event)
     if config is not None and config.mos_enabled:
         mos_event = _mos_alert(points, config.mos_threshold, config.mos_window_seconds)
         if mos_event is not None:

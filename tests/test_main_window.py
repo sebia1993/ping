@@ -69,6 +69,11 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.stats_csv_button.isEnabled() is False
         assert window.stats_xlsx_button.isEnabled() is False
         assert window.export_target_summary_button.isEnabled() is False
+        assert window.loss_alert_check.isChecked() is True
+        assert window.latency_alert_check.isChecked() is True
+        assert window.jitter_alert_check.isChecked() is True
+        assert window.sample_alert_check.isChecked() is True
+        assert window.timer_alert_check.isChecked() is True
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_log_action_check.isChecked() is False
@@ -2136,6 +2141,28 @@ def test_main_window_custom_alert_rules_write_action_log(qt_app, tmp_path) -> No
         window.close()
 
 
+def test_main_window_disabled_alert_condition_does_not_fire(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 90.0, STATUS_OK, True),
+    ]
+    target_snapshot = _snapshot(0, "198.51.100.10", None, latency=90.0, is_target=True)
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.latency_threshold_spin.setValue(80)
+        window.latency_alert_check.setChecked(False)
+
+        window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+
+        assert window.alerts_box.toPlainText() == "No alert events."
+        assert read_alert_actions(window.alert_action_log_path) == []
+    finally:
+        window.close()
+
+
 def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeypatch) -> None:
     preset_path = tmp_path / "voice_alerts.json"
 
@@ -2150,6 +2177,11 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
     window = MainWindow()
 
     try:
+        window.loss_alert_check.setChecked(False)
+        window.latency_alert_check.setChecked(True)
+        window.jitter_alert_check.setChecked(False)
+        window.sample_alert_check.setChecked(True)
+        window.timer_alert_check.setChecked(False)
         window.loss_threshold_spin.setValue(35)
         window.loss_window_spin.setValue(7)
         window.latency_threshold_spin.setValue(180)
@@ -2176,12 +2208,22 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
 
         data = json.loads(preset_path.read_text(encoding="utf-8"))
         assert data["version"] == 1
+        assert data["rules"]["loss_enabled"] is False
         assert data["rules"]["loss_threshold_percent"] == 35
+        assert data["rules"]["latency_enabled"] is True
+        assert data["rules"]["jitter_enabled"] is False
+        assert data["rules"]["sample_enabled"] is True
+        assert data["rules"]["timer_enabled"] is False
         assert data["rules"]["route_ip"] == "203.0.113.50"
         assert data["actions"]["timeline"] is False
         assert data["actions"]["log"] is True
         assert data["actions"]["executable_path"] == r"C:\Tools\alert.exe"
 
+        window.loss_alert_check.setChecked(True)
+        window.latency_alert_check.setChecked(False)
+        window.jitter_alert_check.setChecked(True)
+        window.sample_alert_check.setChecked(False)
+        window.timer_alert_check.setChecked(True)
         window.loss_threshold_spin.setValue(1)
         window.loss_window_spin.setValue(1)
         window.latency_threshold_spin.setValue(1)
@@ -2206,12 +2248,17 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
 
         window.load_alert_rule_preset()
 
+        assert window.loss_alert_check.isChecked() is False
         assert window.loss_threshold_spin.value() == 35
         assert window.loss_window_spin.value() == 7
+        assert window.latency_alert_check.isChecked() is True
         assert window.latency_threshold_spin.value() == 180
+        assert window.jitter_alert_check.isChecked() is False
         assert window.jitter_threshold_spin.value() == 45
+        assert window.sample_alert_check.isChecked() is True
         assert window.sample_window_spin.value() == 12
         assert window.sample_bad_spin.value() == 8
+        assert window.timer_alert_check.isChecked() is False
         assert window.timer_window_spin.value() == 9
         assert window.mos_alert_check.isChecked() is True
         assert window.mos_threshold_spin.value() == 3.2

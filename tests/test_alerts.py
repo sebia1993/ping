@@ -86,6 +86,33 @@ def test_evaluate_target_alerts_uses_custom_rule_config() -> None:
     assert events[1].message == "Target latency 90.0 ms >= 80 ms"
 
 
+def test_evaluate_target_alerts_respects_disabled_conditions() -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    observations = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=30), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=60), 0, "198.51.100.10", "Target", True, 120.0, STATUS_OK, True),
+    ]
+
+    active_keys, events = evaluate_target_alerts(
+        observations,
+        current_target="198.51.100.10",
+        config=AlertRuleConfig(
+            loss_enabled=False,
+            latency_enabled=False,
+            jitter_enabled=False,
+            sample_enabled=False,
+            timer_enabled=False,
+            loss_threshold_percent=30.0,
+            loss_window_seconds=60,
+            latency_threshold_ms=80.0,
+        ),
+    )
+
+    assert active_keys == set()
+    assert events == []
+
+
 def test_evaluate_target_alerts_detects_sample_count_condition() -> None:
     now = datetime(2026, 1, 1, 12, 0, 0)
     observations = [

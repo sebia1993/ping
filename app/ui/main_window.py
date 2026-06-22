@@ -418,6 +418,8 @@ class MainWindow(QMainWindow):
         alerts_title.setObjectName("panelTitle")
         alert_rule_row = QHBoxLayout()
         alert_rule_row.setSpacing(6)
+        self.loss_alert_check = QCheckBox("Loss")
+        self.loss_alert_check.setChecked(True)
         self.loss_threshold_spin = QSpinBox()
         self.loss_threshold_spin.setRange(1, 100)
         self.loss_threshold_spin.setValue(20)
@@ -426,10 +428,14 @@ class MainWindow(QMainWindow):
         self.loss_window_spin.setRange(1, 60)
         self.loss_window_spin.setValue(3)
         self.loss_window_spin.setSuffix("m")
+        self.latency_alert_check = QCheckBox("Latency")
+        self.latency_alert_check.setChecked(True)
         self.latency_threshold_spin = QSpinBox()
         self.latency_threshold_spin.setRange(1, 5000)
         self.latency_threshold_spin.setValue(100)
         self.latency_threshold_spin.setSuffix("ms")
+        self.jitter_alert_check = QCheckBox("Jitter")
+        self.jitter_alert_check.setChecked(True)
         self.jitter_threshold_spin = QSpinBox()
         self.jitter_threshold_spin.setRange(1, 1000)
         self.jitter_threshold_spin.setValue(30)
@@ -450,6 +456,8 @@ class MainWindow(QMainWindow):
         self.route_ip_alert_edit = QLineEdit()
         self.route_ip_alert_edit.setPlaceholderText("192.0.2.1")
         self.route_ip_alert_edit.setMinimumWidth(105)
+        self.sample_alert_check = QCheckBox("Sample")
+        self.sample_alert_check.setChecked(True)
         self.sample_window_spin = QSpinBox()
         self.sample_window_spin.setRange(1, 100)
         self.sample_window_spin.setValue(10)
@@ -458,6 +466,8 @@ class MainWindow(QMainWindow):
         self.sample_bad_spin.setRange(1, 100)
         self.sample_bad_spin.setValue(10)
         self.sample_bad_spin.setSuffix(" bad")
+        self.timer_alert_check = QCheckBox("Timer")
+        self.timer_alert_check.setChecked(True)
         self.timer_window_spin = QSpinBox()
         self.timer_window_spin.setRange(1, 240)
         self.timer_window_spin.setValue(5)
@@ -481,17 +491,16 @@ class MainWindow(QMainWindow):
         self.save_alert_preset_button.clicked.connect(self.save_alert_rule_preset)
         self.load_alert_preset_button = QPushButton("Load preset")
         self.load_alert_preset_button.clicked.connect(self.load_alert_rule_preset)
-        for label, spin in [
-            ("Loss", self.loss_threshold_spin),
-            ("Window", self.loss_window_spin),
-            ("Latency", self.latency_threshold_spin),
-            ("Jitter", self.jitter_threshold_spin),
-            ("Samples", self.sample_window_spin),
-            ("Bad", self.sample_bad_spin),
-            ("Timer", self.timer_window_spin),
+        for checkbox, fields in [
+            (self.loss_alert_check, [self.loss_threshold_spin, self.loss_window_spin]),
+            (self.latency_alert_check, [self.latency_threshold_spin]),
+            (self.jitter_alert_check, [self.jitter_threshold_spin]),
+            (self.sample_alert_check, [self.sample_window_spin, self.sample_bad_spin]),
+            (self.timer_alert_check, [self.timer_window_spin]),
         ]:
-            alert_rule_row.addWidget(QLabel(label))
-            alert_rule_row.addWidget(spin)
+            alert_rule_row.addWidget(checkbox)
+            for field in fields:
+                alert_rule_row.addWidget(field)
         alert_rule_row.addWidget(self.mos_alert_check)
         alert_rule_row.addWidget(QLabel("<"))
         alert_rule_row.addWidget(self.mos_threshold_spin)
@@ -1448,12 +1457,17 @@ class MainWindow(QMainWindow):
         sample_bad = self.sample_bad_spin.value() if hasattr(self, "sample_bad_spin") else 10
         timer_window_minutes = self.timer_window_spin.value() if hasattr(self, "timer_window_spin") else 5
         return AlertRuleConfig(
+            loss_enabled=self.loss_alert_check.isChecked() if hasattr(self, "loss_alert_check") else True,
             loss_threshold_percent=loss_threshold,
             loss_window_seconds=int(loss_window_minutes) * 60,
+            latency_enabled=self.latency_alert_check.isChecked() if hasattr(self, "latency_alert_check") else True,
             latency_threshold_ms=latency_threshold,
+            jitter_enabled=self.jitter_alert_check.isChecked() if hasattr(self, "jitter_alert_check") else True,
             jitter_threshold_ms=jitter_threshold,
+            sample_enabled=self.sample_alert_check.isChecked() if hasattr(self, "sample_alert_check") else True,
             sample_window_count=int(sample_window),
             sample_failure_count=int(sample_bad),
+            timer_enabled=self.timer_alert_check.isChecked() if hasattr(self, "timer_alert_check") else True,
             timer_window_seconds=int(timer_window_minutes) * 60,
             mos_enabled=mos_enabled,
             mos_threshold=mos_threshold,
@@ -1500,12 +1514,17 @@ class MainWindow(QMainWindow):
         return {
             "version": 1,
             "rules": {
+                "loss_enabled": self.loss_alert_check.isChecked(),
                 "loss_threshold_percent": self.loss_threshold_spin.value(),
                 "loss_window_minutes": self.loss_window_spin.value(),
+                "latency_enabled": self.latency_alert_check.isChecked(),
                 "latency_threshold_ms": self.latency_threshold_spin.value(),
+                "jitter_enabled": self.jitter_alert_check.isChecked(),
                 "jitter_threshold_ms": self.jitter_threshold_spin.value(),
+                "sample_enabled": self.sample_alert_check.isChecked(),
                 "sample_window_count": self.sample_window_spin.value(),
                 "sample_failure_count": self.sample_bad_spin.value(),
+                "timer_enabled": self.timer_alert_check.isChecked(),
                 "timer_window_minutes": self.timer_window_spin.value(),
                 "mos_enabled": self.mos_alert_check.isChecked(),
                 "mos_threshold": float(self.mos_threshold_spin.value()),
@@ -1531,12 +1550,17 @@ class MainWindow(QMainWindow):
         actions = data.get("actions", {})
         if not isinstance(rules, dict) or not isinstance(actions, dict):
             raise ValueError("Alert preset JSON has invalid rules/actions.")
+        _set_check_value(self.loss_alert_check, rules.get("loss_enabled"))
         _set_spin_value(self.loss_threshold_spin, rules.get("loss_threshold_percent"))
         _set_spin_value(self.loss_window_spin, rules.get("loss_window_minutes"))
+        _set_check_value(self.latency_alert_check, rules.get("latency_enabled"))
         _set_spin_value(self.latency_threshold_spin, rules.get("latency_threshold_ms"))
+        _set_check_value(self.jitter_alert_check, rules.get("jitter_enabled"))
         _set_spin_value(self.jitter_threshold_spin, rules.get("jitter_threshold_ms"))
+        _set_check_value(self.sample_alert_check, rules.get("sample_enabled"))
         _set_spin_value(self.sample_window_spin, rules.get("sample_window_count"))
         _set_spin_value(self.sample_bad_spin, rules.get("sample_failure_count"))
+        _set_check_value(self.timer_alert_check, rules.get("timer_enabled"))
         _set_spin_value(self.timer_window_spin, rules.get("timer_window_minutes"))
         _set_check_value(self.mos_alert_check, rules.get("mos_enabled"))
         _set_double_spin_value(self.mos_threshold_spin, rules.get("mos_threshold"))
