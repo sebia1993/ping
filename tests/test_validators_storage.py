@@ -926,6 +926,60 @@ def test_export_worker_writes_grouped_statistics_csv_from_focus_range(tmp_path) 
     assert "192.168.0.1" not in text
 
 
+def test_export_worker_rejects_empty_statistics_csv_range(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    session_path = tmp_path / "session.csv"
+    writer = SessionLogWriter(session_path)
+    writer.write_many([_sample_observation(timestamp=now, address="192.168.0.1")])
+    writer.close()
+
+    export_path = tmp_path / "empty_statistics.csv"
+    completed: list[str] = []
+    errors: list[str] = []
+    worker = ExportWorker(
+        kind="stats_csv",
+        path=export_path,
+        target="8.8.8.8",
+        session_log_path=session_path,
+        snapshots=[],
+        analysis=[],
+        focus_range=(now + timedelta(minutes=5), now + timedelta(minutes=10)),
+        statistics_options=StatisticsExportOptions(grouping_seconds=300),
+    )
+    worker.export_completed.connect(completed.append)
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    assert completed == []
+    assert errors == ["No statistics samples matched the selected export range."]
+    assert not export_path.exists()
+
+
+def test_export_worker_rejects_empty_statistics_xlsx_override(tmp_path) -> None:
+    export_path = tmp_path / "empty_statistics.xlsx"
+    completed: list[str] = []
+    errors: list[str] = []
+    worker = ExportWorker(
+        kind="stats_xlsx",
+        path=export_path,
+        target="8.8.8.8",
+        session_log_path=None,
+        snapshots=[],
+        analysis=[],
+        observations_override=[],
+        statistics_options=StatisticsExportOptions(grouping_seconds=300),
+    )
+    worker.export_completed.connect(completed.append)
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    assert completed == []
+    assert errors == ["No statistics samples matched the selected export range."]
+    assert not export_path.exists()
+
+
 def test_export_statistics_xlsx_writes_statistics_sheet(tmp_path) -> None:
     path = tmp_path / "statistics.xlsx"
     export_statistics_xlsx(

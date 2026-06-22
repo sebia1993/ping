@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
+from itertools import chain
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -65,8 +67,10 @@ class ExportWorker(QThread):
             elif self.kind == "xlsx":
                 export_xlsx(self.path, self.target, observations, self.snapshots, self.analysis, self.annotations)
             elif self.kind == "stats_csv":
+                observations = self._non_empty_statistics_observations(observations)
                 export_statistics_csv(self.path, observations, self.statistics_options)
             elif self.kind == "stats_xlsx":
+                observations = self._non_empty_statistics_observations(observations)
                 export_statistics_xlsx(self.path, self.target, observations, self.statistics_options)
             elif self.kind == "txt":
                 write_text_report(self.path, self.target, self.snapshots, self.analysis, self.annotations)
@@ -76,3 +80,14 @@ class ExportWorker(QThread):
             self.error_message.emit(str(exc))
             return
         self.export_completed.emit(str(self.path))
+
+    @staticmethod
+    def _non_empty_statistics_observations(
+        observations: Iterable[HopObservation],
+    ) -> Iterable[HopObservation]:
+        iterator = iter(observations)
+        try:
+            first = next(iterator)
+        except StopIteration as exc:
+            raise RuntimeError("No statistics samples matched the selected export range.") from exc
+        return chain([first], iterator)

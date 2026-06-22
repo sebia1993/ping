@@ -10,7 +10,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 - All Targets Summary has problem-first sorting and double-click target switching.
 - Alert UI supports loss, latency, jitter, sample-count, timer, MOS, route-IP, route-change, alert-ended events, and start/end action trigger controls.
 - Probe engine UI supports ICMP and TCP Connect, with diagnostics that clarify TCP Connect measures the final target service port while route discovery still uses Windows tracert/ICMP.
-- Statistics export supports grouping, timezone, and scope selection: All time, Visible timeline, Focus period.
+- Statistics export supports grouping, timezone, empty-range protection, and scope selection: All time, Visible timeline, Focus period, Custom range.
 - PNG image export supports Timeline graph, Trace table, and Both scopes from the main export panel.
 - Release verification includes a deterministic 50-target soak smoke test with simulated probes, timeout backoff checks, and session-log persistence checks.
 - `scripts\soak_test.py` supports named profiles: `release` for fast 50-target release smoke, `long` for 30-minute 50-target stability, and `ui` for offscreen MainWindow wiring.
@@ -34,7 +34,8 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
    - Make timeline range and focus range visually distinct.
 
 2. Expand Export/Report options.
-   - Add explicit Start/End Date export range controls.
+   - Explicit Start/End Date export range controls are implemented for statistics exports as Custom range.
+   - Keep refining empty-range/error guidance and report templates.
    - Image export scope is implemented for Timeline graph, Trace table, and Both.
    - Ensure visible-time exports work from session logs and live buffers.
 
@@ -107,7 +108,7 @@ Core conclusion: prioritize multi-target long-run stability, session save/restor
 
 6. Expand export and report options.
    - The current project supports CSV, XLSX, TXT, and PNG.
-   - PingPlotter-style parity should include All Time, Visible Time, explicit Start/End Date, grouping size, timezone, and image options for Tracegraph, Timegraph, or both.
+   - PingPlotter-style parity should include All Time, Visible Time, explicit Start/End Date, grouping size, timezone, image options for Tracegraph, Timegraph, or both, and clear errors when a selected range has no samples.
    - References:
      - https://www.pingplotter.com/manual/export-statistics/
      - https://www.pingplotter.com/manual/save-an-image/
