@@ -72,6 +72,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.route_ip_alert_check.isChecked() is False
         assert window.route_ip_alert_edit.text() == ""
         assert window.timer_window_spin.value() == 5
+        assert window.session_filter_edit.text() == ""
         assert window.session_retention_days_spin.value() == 90
         assert window.statistics_start_edit.isEnabled() is False
         assert window.statistics_end_edit.isEnabled() is False
@@ -156,6 +157,70 @@ def test_main_window_session_manager_shows_summary_and_latest_display_limit(qt_a
         assert window.session_combo.findData(records[0].session_id) == -1
         assert records[-1].target in text
         assert records[0].target not in text
+    finally:
+        window.close()
+
+
+def test_main_window_filters_saved_sessions(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    archived_path = tmp_path / "198.51.100.10" / "2026-01" / "archived.samples.csv"
+    archived_path.parent.mkdir(parents=True)
+    archived_path.write_text("header\n", encoding="utf-8")
+    archived = store.register_session(
+        target="198.51.100.10",
+        sample_path=archived_path,
+        route_path=archived_path.with_name("archived.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(archived.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=5))
+    missing_path = tmp_path / "203.0.113.10" / "2026-01" / "missing.samples.csv"
+    missing = store.register_session(
+        target="203.0.113.10",
+        sample_path=missing_path,
+        route_path=missing_path.with_name("missing.routes.csv"),
+        started_at=now + timedelta(minutes=1),
+        interval_seconds=10,
+        measurement_mode=f"{MEASUREMENT_MODE_FINAL_HOP_ONLY}:{PROBE_ENGINE_TCP_CONNECT}:port443",
+        target_count=3,
+    )
+    store.finish_session(
+        missing.session_id,
+        state=SESSION_STATE_WILL_DELETE,
+        ended_at=now + timedelta(minutes=1, seconds=5),
+        last_error="Session log missing: 203.0.113.10",
+    )
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        assert window.session_combo.count() == 2
+
+        window.session_filter_edit.setText("203.0.113")
+        text = window.sessions_box.toPlainText()
+        assert text.splitlines()[0] == "Sessions: 1/2 | Will Delete 1"
+        assert "203.0.113.10" in text
+        assert "198.51.100.10" not in text
+        assert window.session_combo.count() == 1
+        assert window.session_combo.findData(missing.session_id) == 0
+
+        window.session_filter_edit.setText("tcp_connect port443")
+        assert "203.0.113.10" in window.sessions_box.toPlainText()
+        assert window.session_combo.count() == 1
+
+        window.session_filter_edit.setText("session log missing")
+        assert "203.0.113.10" in window.sessions_box.toPlainText()
+        assert window.session_combo.count() == 1
+
+        window.session_filter_edit.setText("no-match")
+        text = window.sessions_box.toPlainText()
+        assert text.splitlines()[0] == "Sessions: 0/2"
+        assert "No saved sessions match filter." in text
+        assert window.session_combo.count() == 0
     finally:
         window.close()
 

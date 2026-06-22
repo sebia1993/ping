@@ -458,6 +458,11 @@ class MainWindow(QMainWindow):
         sessions_header = QHBoxLayout()
         self.session_combo = QComboBox()
         self.session_combo.setMinimumWidth(170)
+        self.session_filter_edit = QLineEdit()
+        self.session_filter_edit.setPlaceholderText("Filter sessions")
+        self.session_filter_edit.setClearButtonEnabled(True)
+        self.session_filter_edit.setMinimumWidth(160)
+        self.session_filter_edit.textChanged.connect(lambda *_args: self._sync_sessions_box())
         self.open_session_button = QPushButton("Open")
         self.open_session_button.clicked.connect(self.open_selected_session)
         self.resume_session_button = QPushButton("Resume")
@@ -475,6 +480,7 @@ class MainWindow(QMainWindow):
         self.prune_sessions_button = QPushButton("Prune old")
         self.prune_sessions_button.clicked.connect(self.prune_old_sessions)
         sessions_header.addWidget(sessions_title)
+        sessions_header.addWidget(self.session_filter_edit)
         sessions_header.addStretch(1)
         sessions_header.addWidget(self.session_combo)
         sessions_header.addWidget(self.open_session_button)
@@ -1370,12 +1376,17 @@ class MainWindow(QMainWindow):
             )
             self.session_index_store.reconcile_missing_session_files()
         sessions = self.session_index_store.list_sessions()
-        visible_sessions = sessions[:SESSION_MANAGER_DISPLAY_LIMIT]
+        filtered_sessions = self._filtered_session_records(sessions)
+        visible_sessions = filtered_sessions[:SESSION_MANAGER_DISPLAY_LIMIT]
         self._sync_session_combo(visible_sessions)
         if not sessions:
             self.sessions_box.setPlainText("No saved sessions.")
             return
-        lines = [self._session_manager_summary(sessions, visible_sessions)]
+        lines = [self._session_manager_summary(sessions, filtered_sessions, visible_sessions)]
+        if not filtered_sessions:
+            lines.append("No saved sessions match filter.")
+            self.sessions_box.setPlainText("\n".join(lines))
+            return
         for session in visible_sessions:
             end = session.end.strftime("%H:%M:%S") if session.end is not None else "running"
             lines.append(
@@ -1395,18 +1406,34 @@ class MainWindow(QMainWindow):
     def _session_manager_summary(
         self,
         sessions: list[TraceSessionRecord],
+        filtered_sessions: list[TraceSessionRecord],
         visible_sessions: list[TraceSessionRecord],
     ) -> str:
         state_counts: dict[str, int] = {}
-        for session in sessions:
+        filter_text = self._session_filter_text()
+        summary_sessions = filtered_sessions if filter_text else sessions
+        for session in summary_sessions:
             state_counts[session.state] = state_counts.get(session.state, 0) + 1
         state_summary = ", ".join(f"{state} {count}" for state, count in sorted(state_counts.items()))
         shown = len(visible_sessions)
+        filtered_total = len(filtered_sessions)
         total = len(sessions)
+        label = f"Sessions: {filtered_total}/{total}" if filter_text else f"Sessions: {total}"
         suffix = f" | {state_summary}" if state_summary else ""
-        if shown < total:
-            return f"Sessions: {total} | showing latest {shown}{suffix}"
-        return f"Sessions: {total}{suffix}"
+        if shown < filtered_total:
+            return f"{label} | showing latest {shown}{suffix}"
+        return f"{label}{suffix}"
+
+    def _filtered_session_records(self, sessions: list[TraceSessionRecord]) -> list[TraceSessionRecord]:
+        terms = self._session_filter_text().casefold().split()
+        if not terms:
+            return sessions
+        return [session for session in sessions if _session_matches_filter(session, terms)]
+
+    def _session_filter_text(self) -> str:
+        if not hasattr(self, "session_filter_edit"):
+            return ""
+        return self.session_filter_edit.text().strip()
 
     def refresh_saved_sessions(self) -> None:
         self.session_index_store.recover_missing_sessions()
@@ -2251,6 +2278,23 @@ def _apply_default_font() -> None:
             if families:
                 family = families[0]
     app.setFont(QFont(family, 9))
+
+
+def _session_matches_filter(session: TraceSessionRecord, terms: list[str]) -> bool:
+    values = [
+        session.session_id,
+        session.target,
+        session.state,
+        session.measurement_mode,
+        str(session.interval_seconds or ""),
+        str(session.target_count),
+        str(session.sample_path),
+        str(session.route_path or ""),
+        session.last_error,
+        " ".join(str(segment) for segment in session.segments),
+    ]
+    haystack = " ".join(value for value in values if value).casefold()
+    return all(term in haystack for term in terms)
 
 
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
