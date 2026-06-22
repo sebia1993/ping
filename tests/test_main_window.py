@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -68,6 +69,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_rest_url_edit.text() == ""
         assert window.alert_executable_action_check.isChecked() is False
         assert window.alert_executable_path_edit.text() == ""
+        assert window.save_alert_preset_button.text() == "Save preset"
+        assert window.load_alert_preset_button.text() == "Load preset"
         assert window.jitter_threshold_spin.value() == 30
         assert window.mos_alert_check.isChecked() is False
         assert window.mos_threshold_spin.value() == 3.5
@@ -1974,6 +1977,98 @@ def test_main_window_custom_alert_rules_write_action_log(qt_app, tmp_path) -> No
         assert "Latency alert" in text
         assert [row["title"] for row in rows] == ["Loss alert", "Latency alert"]
         assert all(row["actions"] == "timeline_annotation;comment" for row in rows)
+    finally:
+        window.close()
+
+
+def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "voice_alerts.json"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    window = MainWindow()
+
+    try:
+        window.loss_threshold_spin.setValue(35)
+        window.loss_window_spin.setValue(7)
+        window.latency_threshold_spin.setValue(180)
+        window.jitter_threshold_spin.setValue(45)
+        window.sample_window_spin.setValue(12)
+        window.sample_bad_spin.setValue(8)
+        window.timer_window_spin.setValue(9)
+        window.mos_alert_check.setChecked(True)
+        window.mos_threshold_spin.setValue(3.2)
+        window.mos_window_spin.setValue(4)
+        window.route_ip_alert_check.setChecked(True)
+        window.route_ip_alert_edit.setText("203.0.113.50")
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(True)
+        window.alert_beep_action_check.setChecked(True)
+        window.alert_image_action_check.setChecked(True)
+        window.alert_rest_action_check.setChecked(True)
+        window.alert_rest_url_edit.setText("https://collector.example/alerts")
+        window.alert_executable_action_check.setChecked(True)
+        window.alert_executable_path_edit.setText(r"C:\Tools\alert.exe")
+
+        window.save_alert_rule_preset()
+
+        data = json.loads(preset_path.read_text(encoding="utf-8"))
+        assert data["version"] == 1
+        assert data["rules"]["loss_threshold_percent"] == 35
+        assert data["rules"]["route_ip"] == "203.0.113.50"
+        assert data["actions"]["timeline"] is False
+        assert data["actions"]["executable_path"] == r"C:\Tools\alert.exe"
+
+        window.loss_threshold_spin.setValue(1)
+        window.loss_window_spin.setValue(1)
+        window.latency_threshold_spin.setValue(1)
+        window.jitter_threshold_spin.setValue(1)
+        window.sample_window_spin.setValue(1)
+        window.sample_bad_spin.setValue(1)
+        window.timer_window_spin.setValue(1)
+        window.mos_alert_check.setChecked(False)
+        window.mos_threshold_spin.setValue(1.0)
+        window.mos_window_spin.setValue(1)
+        window.route_ip_alert_check.setChecked(False)
+        window.route_ip_alert_edit.clear()
+        window.alert_timeline_action_check.setChecked(True)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_beep_action_check.setChecked(False)
+        window.alert_image_action_check.setChecked(False)
+        window.alert_rest_action_check.setChecked(False)
+        window.alert_rest_url_edit.clear()
+        window.alert_executable_action_check.setChecked(False)
+        window.alert_executable_path_edit.clear()
+
+        window.load_alert_rule_preset()
+
+        assert window.loss_threshold_spin.value() == 35
+        assert window.loss_window_spin.value() == 7
+        assert window.latency_threshold_spin.value() == 180
+        assert window.jitter_threshold_spin.value() == 45
+        assert window.sample_window_spin.value() == 12
+        assert window.sample_bad_spin.value() == 8
+        assert window.timer_window_spin.value() == 9
+        assert window.mos_alert_check.isChecked() is True
+        assert window.mos_threshold_spin.value() == 3.2
+        assert window.mos_window_spin.value() == 4
+        assert window.route_ip_alert_check.isChecked() is True
+        assert window.route_ip_alert_edit.text() == "203.0.113.50"
+        assert window.alert_timeline_action_check.isChecked() is False
+        assert window.alert_comment_action_check.isChecked() is True
+        assert window.alert_beep_action_check.isChecked() is True
+        assert window.alert_image_action_check.isChecked() is True
+        assert window.alert_rest_action_check.isChecked() is True
+        assert window.alert_rest_url_edit.text() == "https://collector.example/alerts"
+        assert window.alert_executable_action_check.isChecked() is True
+        assert window.alert_executable_path_edit.text() == r"C:\Tools\alert.exe"
+        assert "Alert preset loaded" in window.status_label.text()
     finally:
         window.close()
 

@@ -446,6 +446,10 @@ class MainWindow(QMainWindow):
         self.alert_executable_path_edit = QLineEdit()
         self.alert_executable_path_edit.setPlaceholderText("C:\\path\\action.exe")
         self.alert_executable_path_edit.setMinimumWidth(165)
+        self.save_alert_preset_button = QPushButton("Save preset")
+        self.save_alert_preset_button.clicked.connect(self.save_alert_rule_preset)
+        self.load_alert_preset_button = QPushButton("Load preset")
+        self.load_alert_preset_button.clicked.connect(self.load_alert_rule_preset)
         for label, spin in [
             ("Loss", self.loss_threshold_spin),
             ("Window", self.loss_window_spin),
@@ -473,6 +477,8 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.alert_rest_url_edit)
         alert_rule_row.addWidget(self.alert_executable_action_check)
         alert_rule_row.addWidget(self.alert_executable_path_edit)
+        alert_rule_row.addWidget(self.save_alert_preset_button)
+        alert_rule_row.addWidget(self.load_alert_preset_button)
         alert_rule_row.addStretch(1)
         self.alerts_box = QTextEdit()
         self.alerts_box.setReadOnly(True)
@@ -1254,6 +1260,100 @@ class MainWindow(QMainWindow):
             mos_threshold=mos_threshold,
             mos_window_seconds=int(mos_window_minutes) * 60,
         )
+
+    def save_alert_rule_preset(self) -> None:
+        path = self._select_save_path("alert_preset.json", "JSON Files (*.json)", target="alert_rules")
+        if not path:
+            return
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._alert_rule_preset(), indent=2), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Alert preset", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"Alert preset saved: {path}")
+
+    def load_alert_rule_preset(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "불러오기",
+            str(Path.cwd() / "exports"),
+            "JSON Files (*.json)",
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Alert preset JSON must contain an object.")
+            self._apply_alert_rule_preset(data)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Alert preset", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"Alert preset loaded: {path}")
+
+    def _alert_rule_preset(self) -> dict[str, object]:
+        return {
+            "version": 1,
+            "rules": {
+                "loss_threshold_percent": self.loss_threshold_spin.value(),
+                "loss_window_minutes": self.loss_window_spin.value(),
+                "latency_threshold_ms": self.latency_threshold_spin.value(),
+                "jitter_threshold_ms": self.jitter_threshold_spin.value(),
+                "sample_window_count": self.sample_window_spin.value(),
+                "sample_failure_count": self.sample_bad_spin.value(),
+                "timer_window_minutes": self.timer_window_spin.value(),
+                "mos_enabled": self.mos_alert_check.isChecked(),
+                "mos_threshold": float(self.mos_threshold_spin.value()),
+                "mos_window_minutes": self.mos_window_spin.value(),
+                "route_ip_enabled": self.route_ip_alert_check.isChecked(),
+                "route_ip": self.route_ip_alert_edit.text().strip(),
+            },
+            "actions": {
+                "timeline": self.alert_timeline_action_check.isChecked(),
+                "comment": self.alert_comment_action_check.isChecked(),
+                "beep": self.alert_beep_action_check.isChecked(),
+                "image": self.alert_image_action_check.isChecked(),
+                "rest": self.alert_rest_action_check.isChecked(),
+                "rest_url": self.alert_rest_url_edit.text().strip(),
+                "executable": self.alert_executable_action_check.isChecked(),
+                "executable_path": self.alert_executable_path_edit.text().strip(),
+            },
+        }
+
+    def _apply_alert_rule_preset(self, data: dict[str, object]) -> None:
+        rules = data.get("rules", {})
+        actions = data.get("actions", {})
+        if not isinstance(rules, dict) or not isinstance(actions, dict):
+            raise ValueError("Alert preset JSON has invalid rules/actions.")
+        _set_spin_value(self.loss_threshold_spin, rules.get("loss_threshold_percent"))
+        _set_spin_value(self.loss_window_spin, rules.get("loss_window_minutes"))
+        _set_spin_value(self.latency_threshold_spin, rules.get("latency_threshold_ms"))
+        _set_spin_value(self.jitter_threshold_spin, rules.get("jitter_threshold_ms"))
+        _set_spin_value(self.sample_window_spin, rules.get("sample_window_count"))
+        _set_spin_value(self.sample_bad_spin, rules.get("sample_failure_count"))
+        _set_spin_value(self.timer_window_spin, rules.get("timer_window_minutes"))
+        _set_check_value(self.mos_alert_check, rules.get("mos_enabled"))
+        _set_double_spin_value(self.mos_threshold_spin, rules.get("mos_threshold"))
+        _set_spin_value(self.mos_window_spin, rules.get("mos_window_minutes"))
+        _set_check_value(self.route_ip_alert_check, rules.get("route_ip_enabled"))
+        if "route_ip" in rules:
+            self.route_ip_alert_edit.setText(str(rules.get("route_ip") or ""))
+        _set_check_value(self.alert_timeline_action_check, actions.get("timeline"))
+        _set_check_value(self.alert_comment_action_check, actions.get("comment"))
+        _set_check_value(self.alert_beep_action_check, actions.get("beep"))
+        _set_check_value(self.alert_image_action_check, actions.get("image"))
+        _set_check_value(self.alert_rest_action_check, actions.get("rest"))
+        if "rest_url" in actions:
+            self.alert_rest_url_edit.setText(str(actions.get("rest_url") or ""))
+        _set_check_value(self.alert_executable_action_check, actions.get("executable"))
+        if "executable_path" in actions:
+            self.alert_executable_path_edit.setText(str(actions.get("executable_path") or ""))
 
     def _append_alert_event(
         self,
@@ -2546,6 +2646,30 @@ def _session_storage_segment_paths(session: TraceSessionRecord) -> tuple[Path, .
         seen.add(key)
         paths.append(path)
     return tuple(paths)
+
+
+def _set_spin_value(spin: QSpinBox, value: object) -> None:
+    if value is None:
+        return
+    try:
+        spin.setValue(int(value))
+    except (TypeError, ValueError):
+        return
+
+
+def _set_double_spin_value(spin: QDoubleSpinBox, value: object) -> None:
+    if value is None:
+        return
+    try:
+        spin.setValue(float(value))
+    except (TypeError, ValueError):
+        return
+
+
+def _set_check_value(check: QCheckBox, value: object) -> None:
+    if value is None:
+        return
+    check.setChecked(bool(value))
 
 
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
