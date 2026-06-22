@@ -83,6 +83,9 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_email_server_edit.text() == ""
         assert window.alert_email_to_edit.text() == ""
         assert window.alert_email_from_edit.text() == ""
+        assert window.alert_email_security_combo.currentData() == main_window_module.ALERT_EMAIL_SECURITY_PLAIN
+        assert window.alert_email_user_edit.text() == ""
+        assert window.alert_email_password_env_edit.text() == ""
         assert window.alert_rest_action_check.isChecked() is False
         assert window.alert_rest_url_edit.text() == ""
         assert window.alert_executable_action_check.isChecked() is False
@@ -2207,6 +2210,11 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.alert_email_server_edit.setText("smtp.example:2525")
         window.alert_email_to_edit.setText("ops@example.com")
         window.alert_email_from_edit.setText("npd@example.com")
+        window.alert_email_security_combo.setCurrentIndex(
+            window.alert_email_security_combo.findData(main_window_module.ALERT_EMAIL_SECURITY_STARTTLS)
+        )
+        window.alert_email_user_edit.setText("alert-user")
+        window.alert_email_password_env_edit.setText("NPD_SMTP_PASSWORD")
         window.alert_rest_action_check.setChecked(True)
         window.alert_rest_url_edit.setText("https://collector.example/alerts")
         window.alert_executable_action_check.setChecked(True)
@@ -2229,6 +2237,9 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert data["actions"]["email_server"] == "smtp.example:2525"
         assert data["actions"]["email_to"] == "ops@example.com"
         assert data["actions"]["email_from"] == "npd@example.com"
+        assert data["actions"]["email_security"] == main_window_module.ALERT_EMAIL_SECURITY_STARTTLS
+        assert data["actions"]["email_username"] == "alert-user"
+        assert data["actions"]["email_password_env"] == "NPD_SMTP_PASSWORD"
         assert data["actions"]["executable_path"] == r"C:\Tools\alert.exe"
 
         window.loss_alert_check.setChecked(True)
@@ -2257,6 +2268,11 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         window.alert_email_server_edit.clear()
         window.alert_email_to_edit.clear()
         window.alert_email_from_edit.clear()
+        window.alert_email_security_combo.setCurrentIndex(
+            window.alert_email_security_combo.findData(main_window_module.ALERT_EMAIL_SECURITY_PLAIN)
+        )
+        window.alert_email_user_edit.clear()
+        window.alert_email_password_env_edit.clear()
         window.alert_rest_action_check.setChecked(False)
         window.alert_rest_url_edit.clear()
         window.alert_executable_action_check.setChecked(False)
@@ -2290,6 +2306,9 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.alert_email_server_edit.text() == "smtp.example:2525"
         assert window.alert_email_to_edit.text() == "ops@example.com"
         assert window.alert_email_from_edit.text() == "npd@example.com"
+        assert window.alert_email_security_combo.currentData() == main_window_module.ALERT_EMAIL_SECURITY_STARTTLS
+        assert window.alert_email_user_edit.text() == "alert-user"
+        assert window.alert_email_password_env_edit.text() == "NPD_SMTP_PASSWORD"
         assert window.alert_rest_action_check.isChecked() is True
         assert window.alert_rest_url_edit.text() == "https://collector.example/alerts"
         assert window.alert_executable_action_check.isChecked() is True
@@ -2410,7 +2429,7 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
 
 
 def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, monkeypatch) -> None:
-    sent: list[tuple[str, int, str, str, str, str]] = []
+    sent: list[dict[str, object]] = []
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
     history = [
@@ -2418,8 +2437,31 @@ def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, mo
     ]
     target_snapshot = _snapshot(0, "198.51.100.10", None, latency=90.0, is_target=True)
 
-    def fake_send_email(host: str, port: int, sender: str, recipient: str, subject: str, body: str) -> None:
-        sent.append((host, port, sender, recipient, subject, body))
+    def fake_send_email(
+        host: str,
+        port: int,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        *,
+        security: str,
+        username: str,
+        password_env: str,
+    ) -> None:
+        sent.append(
+            {
+                "host": host,
+                "port": port,
+                "sender": sender,
+                "recipient": recipient,
+                "subject": subject,
+                "body": body,
+                "security": security,
+                "username": username,
+                "password_env": password_env,
+            }
+        )
 
     monkeypatch.setattr(window, "_send_alert_email", fake_send_email)
 
@@ -2434,6 +2476,11 @@ def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, mo
         window.alert_email_server_edit.setText("smtp.example:2525")
         window.alert_email_to_edit.setText("ops@example.com")
         window.alert_email_from_edit.setText("npd@example.com")
+        window.alert_email_security_combo.setCurrentIndex(
+            window.alert_email_security_combo.findData(main_window_module.ALERT_EMAIL_SECURITY_STARTTLS)
+        )
+        window.alert_email_user_edit.setText("alert-user")
+        window.alert_email_password_env_edit.setText("NPD_SMTP_PASSWORD")
 
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
@@ -2441,16 +2488,68 @@ def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, mo
         assert rows[0]["title"] == "Latency alert"
         assert rows[0]["actions"] == "email"
         assert sent
-        host, port, sender, recipient, subject, body = sent[0]
-        assert (host, port, sender, recipient) == (
+        assert sent[0]["host"] == "smtp.example"
+        assert sent[0]["port"] == 2525
+        assert sent[0]["sender"] == "npd@example.com"
+        assert sent[0]["recipient"] == "ops@example.com"
+        assert sent[0]["security"] == main_window_module.ALERT_EMAIL_SECURITY_STARTTLS
+        assert sent[0]["username"] == "alert-user"
+        assert sent[0]["password_env"] == "NPD_SMTP_PASSWORD"
+        assert "Latency alert" in str(sent[0]["subject"])
+        assert "Target: 198.51.100.10" in str(sent[0]["body"])
+        assert "Target latency 90.0 ms >= 80 ms" in str(sent[0]["body"])
+    finally:
+        window.close()
+
+
+def test_main_window_send_alert_email_supports_starttls_auth(qt_app, monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class FakeSmtp:
+        def __init__(self, host: str, port: int, timeout: float) -> None:
+            calls.append(("init", host, port, timeout))
+
+        def __enter__(self):
+            calls.append(("enter",))
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            calls.append(("exit",))
+
+        def starttls(self) -> None:
+            calls.append(("starttls",))
+
+        def login(self, username: str, password: str) -> None:
+            calls.append(("login", username, password))
+
+        def send_message(self, message) -> None:
+            calls.append(("send", message["From"], message["To"], message["Subject"]))
+
+    monkeypatch.setattr(main_window_module.smtplib, "SMTP", FakeSmtp)
+    monkeypatch.setenv("NPD_SMTP_PASSWORD", "test-password")
+    window = MainWindow()
+
+    try:
+        window._send_alert_email(
             "smtp.example",
-            2525,
+            587,
             "npd@example.com",
             "ops@example.com",
+            "Latency alert",
+            "body",
+            security=main_window_module.ALERT_EMAIL_SECURITY_STARTTLS,
+            username="alert-user",
+            password_env="NPD_SMTP_PASSWORD",
         )
-        assert "Latency alert" in subject
-        assert "Target: 198.51.100.10" in body
-        assert "Target latency 90.0 ms >= 80 ms" in body
+
+        assert calls == [
+            ("init", "smtp.example", 587, main_window_module.ALERT_EMAIL_TIMEOUT_SECONDS),
+            ("enter",),
+            ("starttls",),
+            ("login", "alert-user", "test-password"),
+            ("send", "npd@example.com", "ops@example.com", "Latency alert"),
+            ("exit",),
+        ]
     finally:
         window.close()
 

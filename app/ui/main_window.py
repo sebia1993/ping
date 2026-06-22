@@ -9,6 +9,7 @@ import subprocess
 import urllib.error
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -105,6 +106,25 @@ SESSION_MANAGER_DISPLAY_LIMIT = 100
 ALERT_REST_TIMEOUT_SECONDS = 3.0
 ALERT_EMAIL_TIMEOUT_SECONDS = 5.0
 DEFAULT_ALERT_EMAIL_FROM = "network-path-diagnostics@localhost"
+ALERT_EMAIL_SECURITY_PLAIN = "plain"
+ALERT_EMAIL_SECURITY_STARTTLS = "starttls"
+ALERT_EMAIL_SECURITY_SSL = "ssl"
+ALERT_EMAIL_SECURITY_MODES = {
+    ALERT_EMAIL_SECURITY_PLAIN,
+    ALERT_EMAIL_SECURITY_STARTTLS,
+    ALERT_EMAIL_SECURITY_SSL,
+}
+
+
+@dataclass(frozen=True)
+class AlertEmailConfig:
+    host: str
+    port: int
+    sender: str
+    recipient: str
+    security: str = ALERT_EMAIL_SECURITY_PLAIN
+    username: str = ""
+    password_env: str = ""
 
 
 class MainWindow(QMainWindow):
@@ -493,6 +513,16 @@ class MainWindow(QMainWindow):
         self.alert_email_from_edit = QLineEdit()
         self.alert_email_from_edit.setPlaceholderText("from@example.com")
         self.alert_email_from_edit.setMinimumWidth(140)
+        self.alert_email_security_combo = QComboBox()
+        self.alert_email_security_combo.addItem("Plain", ALERT_EMAIL_SECURITY_PLAIN)
+        self.alert_email_security_combo.addItem("STARTTLS", ALERT_EMAIL_SECURITY_STARTTLS)
+        self.alert_email_security_combo.addItem("SSL", ALERT_EMAIL_SECURITY_SSL)
+        self.alert_email_user_edit = QLineEdit()
+        self.alert_email_user_edit.setPlaceholderText("SMTP user")
+        self.alert_email_user_edit.setMinimumWidth(100)
+        self.alert_email_password_env_edit = QLineEdit()
+        self.alert_email_password_env_edit.setPlaceholderText("password env")
+        self.alert_email_password_env_edit.setMinimumWidth(105)
         self.alert_rest_action_check = QCheckBox("REST")
         self.alert_rest_url_edit = QLineEdit()
         self.alert_rest_url_edit.setPlaceholderText("https://example/api/alert")
@@ -532,6 +562,9 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.alert_email_server_edit)
         alert_rule_row.addWidget(self.alert_email_to_edit)
         alert_rule_row.addWidget(self.alert_email_from_edit)
+        alert_rule_row.addWidget(self.alert_email_security_combo)
+        alert_rule_row.addWidget(self.alert_email_user_edit)
+        alert_rule_row.addWidget(self.alert_email_password_env_edit)
         alert_rule_row.addWidget(self.alert_rest_action_check)
         alert_rule_row.addWidget(self.alert_rest_url_edit)
         alert_rule_row.addWidget(self.alert_executable_action_check)
@@ -1560,6 +1593,9 @@ class MainWindow(QMainWindow):
                 "email_server": self.alert_email_server_edit.text().strip(),
                 "email_to": self.alert_email_to_edit.text().strip(),
                 "email_from": self.alert_email_from_edit.text().strip(),
+                "email_security": self.alert_email_security_combo.currentData() or ALERT_EMAIL_SECURITY_PLAIN,
+                "email_username": self.alert_email_user_edit.text().strip(),
+                "email_password_env": self.alert_email_password_env_edit.text().strip(),
                 "rest": self.alert_rest_action_check.isChecked(),
                 "rest_url": self.alert_rest_url_edit.text().strip(),
                 "executable": self.alert_executable_action_check.isChecked(),
@@ -1602,6 +1638,11 @@ class MainWindow(QMainWindow):
             self.alert_email_to_edit.setText(str(actions.get("email_to") or ""))
         if "email_from" in actions:
             self.alert_email_from_edit.setText(str(actions.get("email_from") or ""))
+        _set_combo_current_data(self.alert_email_security_combo, actions.get("email_security"))
+        if "email_username" in actions:
+            self.alert_email_user_edit.setText(str(actions.get("email_username") or ""))
+        if "email_password_env" in actions:
+            self.alert_email_password_env_edit.setText(str(actions.get("email_password_env") or ""))
         _set_check_value(self.alert_rest_action_check, actions.get("rest"))
         if "rest_url" in actions:
             self.alert_rest_url_edit.setText(str(actions.get("rest_url") or ""))
@@ -1684,7 +1725,7 @@ class MainWindow(QMainWindow):
             actions.append("executable")
         return actions
 
-    def _alert_email_config(self) -> tuple[str, int, str, str] | None:
+    def _alert_email_config(self) -> AlertEmailConfig | None:
         if not hasattr(self, "alert_email_server_edit"):
             return None
         server = self.alert_email_server_edit.text().strip()
@@ -1701,13 +1742,23 @@ class MainWindow(QMainWindow):
         if not host or not (1 <= port <= 65535):
             return None
         sender = self.alert_email_from_edit.text().strip() or DEFAULT_ALERT_EMAIL_FROM
-        return host, port, sender, recipient
+        security = str(self.alert_email_security_combo.currentData() or ALERT_EMAIL_SECURITY_PLAIN)
+        if security not in ALERT_EMAIL_SECURITY_MODES:
+            security = ALERT_EMAIL_SECURITY_PLAIN
+        return AlertEmailConfig(
+            host=host,
+            port=port,
+            sender=sender,
+            recipient=recipient,
+            security=security,
+            username=self.alert_email_user_edit.text().strip(),
+            password_env=self.alert_email_password_env_edit.text().strip(),
+        )
 
     def _send_alert_email_action(self, event: AlertEvent) -> None:
         config = self._alert_email_config()
         if config is None:
             return
-        host, port, sender, recipient = config
         subject = f"[NetworkPathDiagnostics] {event.severity.upper()} {event.title}"
         body = "\n".join(
             [
@@ -1721,7 +1772,17 @@ class MainWindow(QMainWindow):
             ]
         )
         try:
-            self._send_alert_email(host, port, sender, recipient, subject, body)
+            self._send_alert_email(
+                config.host,
+                config.port,
+                config.sender,
+                config.recipient,
+                subject,
+                body,
+                security=config.security,
+                username=config.username,
+                password_env=config.password_env,
+            )
         except (OSError, smtplib.SMTPException, ValueError) as exc:
             self.status_label.setText(f"Alert email action failed: {exc}")
 
@@ -1733,13 +1794,27 @@ class MainWindow(QMainWindow):
         recipient: str,
         subject: str,
         body: str,
+        *,
+        security: str = ALERT_EMAIL_SECURITY_PLAIN,
+        username: str = "",
+        password_env: str = "",
     ) -> None:
         message = EmailMessage()
         message["From"] = sender
         message["To"] = recipient
         message["Subject"] = subject
         message.set_content(body)
-        with smtplib.SMTP(host, port, timeout=ALERT_EMAIL_TIMEOUT_SECONDS) as smtp:
+        smtp_class = smtplib.SMTP_SSL if security == ALERT_EMAIL_SECURITY_SSL else smtplib.SMTP
+        with smtp_class(host, port, timeout=ALERT_EMAIL_TIMEOUT_SECONDS) as smtp:
+            if security == ALERT_EMAIL_SECURITY_STARTTLS:
+                smtp.starttls()
+            if username:
+                if not password_env:
+                    raise ValueError("SMTP password environment variable is not configured.")
+                password = os.environ.get(password_env, "")
+                if not password:
+                    raise ValueError("SMTP password environment variable is not set.")
+                smtp.login(username, password)
             smtp.send_message(message)
 
     def _alert_rest_url(self) -> str:
