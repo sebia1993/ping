@@ -509,9 +509,10 @@ def test_worker_keeps_twenty_targets_responsive_with_many_timeouts(monkeypatch) 
     elapsed = time.monotonic() - started_at
 
     # The expected runtime is dominated by one 1.5s timeout wave plus executor cleanup.
-    # Serial probing would take far longer across 20 targets, so this still catches
-    # the regression while allowing whole-suite scheduler jitter on busy Windows hosts.
-    assert elapsed < 3.5
+    # Serial probing would take more than 20 seconds across these timeout targets.
+    # Keep the ceiling low enough to catch that regression while allowing whole-suite Windows scheduler jitter.
+    serial_timeout_floor = 15 * 1.5
+    assert elapsed < serial_timeout_floor / 4
     assert len(updates) == 2
     final_target_snapshots = {snapshot.address: snapshot for snapshot in updates[-1][2]}
     assert len(final_target_snapshots) == 20

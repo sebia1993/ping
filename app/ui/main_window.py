@@ -1474,12 +1474,26 @@ class MainWindow(QMainWindow):
             return
         total_count = len(self._display_target_snapshots())
         summary = _all_targets_summary_line(snapshots, total_count=total_count)
+        updated_at = self._latest_visible_target_update_time(snapshots)
+        if updated_at is not None:
+            summary = f"{summary} | 갱신 {updated_at.strftime('%H:%M:%S')}"
         self.target_summary_status_label.setText(summary)
 
     def _refresh_target_summary_selection(self) -> None:
         if not hasattr(self, "target_summary_status_label"):
             return
         self._update_all_targets_summary(self._visible_target_snapshots())
+
+    def _latest_visible_target_update_time(self, snapshots: list[MetricSnapshot]) -> datetime | None:
+        visible_addresses = {snapshot.address for snapshot in snapshots if snapshot.address}
+        if not visible_addresses:
+            return None
+        timestamps = [
+            observation.timestamp
+            for observation in self._graph_observations_for_rows()
+            if observation.address in visible_addresses
+        ]
+        return max(timestamps) if timestamps else None
 
     def on_session_log_ready(self, path: str) -> None:
         """Worker가 만든 세션 CSV 경로를 받아 Session Manager와 export 기능을 연결합니다."""

@@ -56,6 +56,19 @@ def test_latency_graph_downsamples_long_series_without_losing_time_bounds(qt_app
     assert graph._series[0].points[-1].timestamp == points[-1].timestamp
 
 
+def test_latency_graph_time_axis_labels_use_visible_sample_times(qt_app) -> None:
+    graph = LatencyGraphWidget()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 1.0, STATUS_OK, True)
+        for index in range(120)
+    ]
+
+    graph.set_series([TimelineSeries("target", "Target", points)])
+
+    assert graph._time_axis_labels() == ("최근 12:00:00", "현재 12:01:59")
+
+
 def test_latency_graph_pans_visible_range_and_resets_current(qt_app) -> None:
     graph = LatencyGraphWidget()
     now = datetime(2026, 1, 1, 12, 0, 0)

@@ -1652,6 +1652,7 @@ def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
         assert window.graph._points == [observations[1]]
         assert window.target_graph_widgets["198.51.100.10"]._points == [observations[0]]
         assert window.target_graph_widgets["203.0.113.20"]._points == [observations[2]]
+        assert f"갱신 {now.strftime('%H:%M:%S')}" in window.target_summary_status_label.text()
         assert "현재 18.0 ms" in window.target_graph_metric_labels["203.0.113.10"].text()
         assert "손실 35.0%" in window.target_graph_metric_labels["203.0.113.20"].text()
     finally:

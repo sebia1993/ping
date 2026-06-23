@@ -201,10 +201,7 @@ class LatencyGraphWidget(QWidget):
             self._draw_multi_series(painter, plot_rect)
 
         self._draw_overview(painter, plot_rect)
-
-        painter.setPen(QColor("#374151"))
-        painter.drawText(plot_rect.left(), self.rect().bottom() - 8, "최근")
-        painter.drawText(plot_rect.right() - 28, self.rect().bottom() - 8, "현재")
+        self._draw_time_axis_labels(painter, plot_rect)
 
     def _plot_rect(self) -> QRect:
         left = 64 if len(self._series) > 1 else 42
@@ -338,6 +335,30 @@ class LatencyGraphWidget(QWidget):
             overview_rect.height(),
         )
         painter.fillRect(viewport, QColor("#2563eb"))
+
+    def _draw_time_axis_labels(self, painter: QPainter, rect: QRect) -> None:
+        left_label, right_label = self._time_axis_labels()
+        bottom = self.rect().bottom()
+        painter.setPen(QColor("#374151"))
+        painter.drawText(QRect(rect.left(), bottom - 16, 180, 14), Qt.AlignLeft | Qt.AlignVCenter, left_label)
+        painter.drawText(QRect(rect.right() - 180, bottom - 16, 180, 14), Qt.AlignRight | Qt.AlignVCenter, right_label)
+
+    def _time_axis_labels(self) -> tuple[str, str]:
+        visible_start, visible_end = self._visible_range()
+        if visible_start is None or visible_end is None:
+            return "최근", "현재"
+        visible_timestamps = [
+            point.timestamp
+            for series in self._series
+            for point in self._visible_points(series.points)
+        ]
+        if visible_timestamps:
+            start = min(visible_timestamps)
+            end = max(visible_timestamps)
+        else:
+            start = datetime.fromtimestamp(visible_start)
+            end = datetime.fromtimestamp(visible_end)
+        return f"최근 {start.strftime('%H:%M:%S')}", f"현재 {end.strftime('%H:%M:%S')}"
 
     def _visible_points(self, points: list[HopObservation]) -> list[HopObservation]:
         visible_start, visible_end = self._visible_range()
