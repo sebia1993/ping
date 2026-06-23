@@ -157,6 +157,7 @@ class MainWindow(QMainWindow):
         self.export_worker: ExportWorker | None = None
         self.graph_detail_window: GraphDetailWindow | None = None
         self.advanced_features_visible = False
+        self.target_panel_expanded = False
         self.worker_factory = worker_factory or MeasurementWorker
         self.session_index_store = SessionIndexStore.create()
 
@@ -320,7 +321,7 @@ class MainWindow(QMainWindow):
         table_header.addWidget(hint)
         table_layout.addLayout(table_header)
         table_layout.addWidget(self.table, 1)
-        layout.addWidget(self.hop_table_panel, 2)
+        layout.addWidget(self.hop_table_panel, 1)
 
         graph_panel = _panel("graphPanel")
         graph_layout = QVBoxLayout(graph_panel)
@@ -388,7 +389,7 @@ class MainWindow(QMainWindow):
         self.target_graph_scroll.setWidget(self.target_graph_container)
         graph_layout.addLayout(graph_header)
         graph_layout.addWidget(self.target_graph_scroll, 1)
-        layout.addWidget(graph_panel, 1)
+        layout.addWidget(graph_panel, 8)
 
         return container
 
@@ -408,6 +409,9 @@ class MainWindow(QMainWindow):
         hint.setObjectName("muted")
         self.target_summary_status_label = QLabel("IP: 0")
         self.target_summary_status_label.setObjectName("muted")
+        self.toggle_target_panel_button = QPushButton("IP 현황 보기")
+        self.toggle_target_panel_button.setObjectName("targetPanelToggle")
+        self.toggle_target_panel_button.clicked.connect(self.toggle_target_panel)
         self.target_filter_edit = QLineEdit()
         self.target_filter_edit.setPlaceholderText("IP 필터")
         self.target_filter_edit.setClearButtonEnabled(True)
@@ -451,6 +455,7 @@ class MainWindow(QMainWindow):
         header.addWidget(hint)
         header.addStretch(1)
         header.addWidget(self.target_summary_status_label)
+        header.addWidget(self.toggle_target_panel_button)
         controls = QHBoxLayout()
         controls.setSpacing(6)
         controls.addWidget(self.target_filter_edit)
@@ -475,7 +480,25 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.target_advanced_controls_panel)
         layout.addWidget(self.target_table)
         self._apply_simple_target_columns()
+        self._sync_target_panel_visibility()
         return panel
+
+    def toggle_target_panel(self) -> None:
+        self.target_panel_expanded = not self.target_panel_expanded
+        self._sync_target_panel_visibility()
+        if self.target_panel_expanded:
+            self._render_current_view(force_graph=True)
+
+    def _sync_target_panel_visibility(self) -> None:
+        if not hasattr(self, "target_table"):
+            return
+        self.target_table.setVisible(self.target_panel_expanded)
+        if hasattr(self, "target_advanced_controls_panel"):
+            self.target_advanced_controls_panel.setVisible(
+                self.target_panel_expanded and self.advanced_features_visible
+            )
+        if hasattr(self, "toggle_target_panel_button"):
+            self.toggle_target_panel_button.setText("IP 현황 접기" if self.target_panel_expanded else "IP 현황 보기")
 
     def _apply_simple_target_columns(self) -> None:
         if not hasattr(self, "target_table"):
@@ -884,6 +907,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "main_splitter"):
             self.main_splitter.setSizes([960, 420] if self.advanced_features_visible else [1, 0])
         self._sync_target_columns_for_mode()
+        self._sync_target_panel_visibility()
 
     def save_target_group_preset(self) -> None:
         targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
@@ -1412,6 +1436,7 @@ class MainWindow(QMainWindow):
             self._apply_target_problem_sort()
         self._update_all_targets_summary(target_snapshots)
         self._update_target_summary(target_snapshot)
+        self._sync_running_target_summary()
         self._request_graph_render(force=force_graph or bool(self.pending_alert_image_keys))
         self._save_pending_alert_images()
         self.analysis_box.setPlainText("\n".join(f"- {line}" for line in analysis))
@@ -3410,10 +3435,26 @@ class MainWindow(QMainWindow):
             and self.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
         )
 
+    def _running_target_summary_text(self) -> str:
+        targets = list(self.current_targets)
+        if not targets and hasattr(self, "target_input"):
+            targets, _invalid = parse_ipv4_targets(self.target_input.toPlainText())
+        primary = self.current_target or (targets[0] if targets else "-")
+        return f"측정 IP {len(targets)}개 | 기준 IP {primary}"
+
+    def _sync_running_target_summary(self) -> None:
+        label = getattr(self, "running_target_summary_label", None)
+        if label is not None:
+            label.setText(self._running_target_summary_text())
+
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.target_input.setEnabled(not running)
+        self.target_input.setVisible(not running)
+        if hasattr(self, "running_target_summary_label"):
+            self._sync_running_target_summary()
+            self.running_target_summary_label.setVisible(running)
         self.trace_target_combo.setEnabled(not running)
         self.refresh_targets_button.setEnabled(not running)
         if hasattr(self, "save_target_group_button"):
@@ -4210,6 +4251,14 @@ QLabel#mutedStrong {
     color: #4b5563;
     font-weight: 600;
 }
+QLabel#runningTargetSummary {
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 6px;
+    color: #1f2937;
+    font-weight: 700;
+    padding: 8px 10px;
+}
 QLabel#targetGraphEmpty {
     color: #6b7280;
     padding: 18px;
@@ -4294,6 +4343,9 @@ QPushButton#primaryButton {
 QPushButton#dangerButton {
     color: #b91c1c;
     border-color: #fecaca;
+}
+QPushButton#targetPanelToggle {
+    padding: 6px 10px;
 }
 QPushButton:disabled {
     color: #9ca3af;

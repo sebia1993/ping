@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -110,11 +111,17 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.engine_note_label = QLabel("")
     owner.engine_note_label.setObjectName("warningText")
     owner.engine_note_label.setWordWrap(True)
+    owner.running_target_summary_label = QLabel("")
+    owner.running_target_summary_label.setObjectName("runningTargetSummary")
+    owner.running_target_summary_label.setWordWrap(True)
+    owner.running_target_summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    owner.running_target_summary_label.setVisible(False)
 
     simple_row = QHBoxLayout()
     simple_row.setSpacing(10)
     simple_row.addWidget(field_label_factory("IP 주소"))
     simple_row.addWidget(owner.target_input, 1)
+    simple_row.addWidget(owner.running_target_summary_label, 1)
     simple_row.addWidget(owner.start_button)
     simple_row.addWidget(owner.stop_button)
     root.addLayout(simple_row)

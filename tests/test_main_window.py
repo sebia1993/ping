@@ -67,6 +67,9 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.target_summary_status_label.text() == "IP: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
+        assert window.target_panel_expanded is False
+        assert window.target_table.isHidden() is True
+        assert window.toggle_target_panel_button.text() == "IP 현황 보기"
         assert window.advanced_features_visible is False
         assert window.advanced_controls_panel.isHidden() is True
         assert window.target_advanced_controls_panel.isHidden() is True
@@ -134,6 +137,13 @@ def test_main_window_initial_state(qt_app) -> None:
         window.set_advanced_features_visible(True)
         assert window.advanced_features_visible is True
         assert window.right_panel.isHidden() is False
+        assert window.target_table.isHidden() is True
+        assert window.target_advanced_controls_panel.isHidden() is True
+        window.toggle_target_panel()
+        assert window.target_panel_expanded is True
+        assert window.target_table.isHidden() is False
+        assert window.target_advanced_controls_panel.isHidden() is False
+        assert window.toggle_target_panel_button.text() == "IP 현황 접기"
         assert window.target_table.isColumnHidden(TARGET_HEADERS.index("평균")) is False
         assert window.sessions_box.toPlainText()
     finally:
@@ -1052,12 +1062,18 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert created_workers[0].started is True
         assert window.start_button.isEnabled() is False
         assert window.stop_button.isEnabled() is True
+        assert window.target_input.isHidden() is True
+        assert window.running_target_summary_label.isHidden() is False
+        assert window.running_target_summary_label.text() == "측정 IP 2개 | 기준 IP 192.168.0.1"
 
         window.stop_measurement()
 
         assert created_workers[0].stopped is True
         assert window.stop_button.isEnabled() is False
         assert window.session_state_label.text() == "중지"
+        window.on_worker_finished()
+        assert window.target_input.isHidden() is False
+        assert window.running_target_summary_label.isHidden() is True
     finally:
         window.close()
 
