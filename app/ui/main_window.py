@@ -120,6 +120,8 @@ ALERT_EMAIL_SECURITY_MODES = {
     ALERT_EMAIL_SECURITY_STARTTLS,
     ALERT_EMAIL_SECURITY_SSL,
 }
+SIMPLE_DEFAULT_INTERVAL_SECONDS = 1
+SIMPLE_DEFAULT_TCP_PORT = 443
 GRAPH_PNG_SCOPE_TIMELINE = "timeline"
 GRAPH_PNG_SCOPE_TRACE = "trace"
 GRAPH_PNG_SCOPE_BOTH = "both"
@@ -246,11 +248,6 @@ class MainWindow(QMainWindow):
 
     def _build_menu_bar(self) -> None:
         view_menu = self.menuBar().addMenu("보기")
-        self.advanced_features_action = QAction("고급 기능 표시", self)
-        self.advanced_features_action.setCheckable(True)
-        self.advanced_features_action.toggled.connect(self.set_advanced_features_visible)
-        view_menu.addAction(self.advanced_features_action)
-
         self.open_graph_detail_action = QAction("그래프 확대", self)
         self.open_graph_detail_action.triggered.connect(self.open_graph_detail)
         view_menu.addAction(self.open_graph_detail_action)
@@ -273,11 +270,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(title_group, 1)
 
         self.session_state_label = _chip("대기", "neutral")
-        self.permission_label = _chip("일반 권한", "success")
-        self.icmp_notice_label = _chip("ICMP 주의", "warning")
         layout.addWidget(self.session_state_label)
-        layout.addWidget(self.permission_label)
-        layout.addWidget(self.icmp_notice_label)
         return header
 
     def _build_controls(self) -> QFrame:
@@ -494,9 +487,7 @@ class MainWindow(QMainWindow):
             return
         self.target_table.setVisible(self.target_panel_expanded)
         if hasattr(self, "target_advanced_controls_panel"):
-            self.target_advanced_controls_panel.setVisible(
-                self.target_panel_expanded and self.advanced_features_visible
-            )
+            self.target_advanced_controls_panel.setVisible(False)
         if hasattr(self, "toggle_target_panel_button"):
             self.toggle_target_panel_button.setText("IP 현황 접기" if self.target_panel_expanded else "IP 현황 보기")
 
@@ -510,11 +501,7 @@ class MainWindow(QMainWindow):
     def _sync_target_columns_for_mode(self) -> None:
         if not hasattr(self, "target_table"):
             return
-        if self.advanced_features_visible:
-            for column in range(self.target_table.columnCount()):
-                self.target_table.setColumnHidden(column, column == TARGET_SCORE_COLUMN)
-        else:
-            self._apply_simple_target_columns()
+        self._apply_simple_target_columns()
 
     def _build_metrics_strip(self) -> QFrame:
         strip = _panel("metrics")
@@ -887,7 +874,7 @@ class MainWindow(QMainWindow):
         return footer
 
     def set_advanced_features_visible(self, visible: bool) -> None:
-        self.advanced_features_visible = bool(visible)
+        self.advanced_features_visible = False
         for name in (
             "advanced_controls_panel",
             "target_advanced_controls_panel",
@@ -899,13 +886,9 @@ class MainWindow(QMainWindow):
         ):
             widget = getattr(self, name, None)
             if widget is not None:
-                widget.setVisible(self.advanced_features_visible)
-        if hasattr(self, "advanced_features_action"):
-            self.advanced_features_action.blockSignals(True)
-            self.advanced_features_action.setChecked(self.advanced_features_visible)
-            self.advanced_features_action.blockSignals(False)
+                widget.setVisible(False)
         if hasattr(self, "main_splitter"):
-            self.main_splitter.setSizes([960, 420] if self.advanced_features_visible else [1, 0])
+            self.main_splitter.setSizes([1, 0])
         self._sync_target_columns_for_mode()
         self._sync_target_panel_visibility()
 
@@ -1050,15 +1033,15 @@ class MainWindow(QMainWindow):
         targets = limited_targets
         self._apply_trace_targets(targets)
 
-        # 2단계: tracert 기준 대상이 측정 대상 목록 안에 있는지 확인합니다.
-        target = self.trace_target_combo.currentText().strip() or targets[0]
+        # 2단계: 단순 화면에서는 입력된 첫 번째 IP를 기준 대상으로 사용합니다.
+        target = targets[0]
         valid, message = validate_target(target)
-        if not valid or target not in targets:
-            QMessageBox.warning(self, "입력 오류", message or "Tracert 대상은 등록된 IPv4 주소 중 하나여야 합니다.")
+        if not valid:
+            QMessageBox.warning(self, "입력 오류", message or "첫 번째 IPv4 주소를 확인하세요.")
             return
 
         # 3단계: 이전 측정의 화면 상태를 비우고 새 세션 상태로 바꿉니다.
-        global_interval = int(self.interval_combo.currentText())
+        global_interval = SIMPLE_DEFAULT_INTERVAL_SECONDS
         initial_target_interval_overrides = _filtered_target_interval_overrides(
             self.target_interval_overrides,
             targets,
@@ -1098,9 +1081,9 @@ class MainWindow(QMainWindow):
         self._update_target_summary(None)
         self._set_state_chip("탐색", "active")
 
-        max_cycles = None if self.unlimited_check.isChecked() else self.count_spin.value()
-        measurement_mode = self.measurement_mode_combo.currentData() or MEASUREMENT_MODE_FULL_ROUTE
-        probe_engine = self.probe_engine_combo.currentData()
+        max_cycles = None
+        measurement_mode = MEASUREMENT_MODE_FINAL_HOP_ONLY
+        probe_engine = PROBE_ENGINE_ICMP
         resumed_from_session_id = self._consume_resume_source_for_targets(targets)
 
         # 4단계: 실제 측정은 별도 QThread인 Worker에서 진행합니다.
@@ -1112,7 +1095,7 @@ class MainWindow(QMainWindow):
             targets=targets,
             measurement_mode=measurement_mode,
             probe_engine=probe_engine,
-            tcp_port=self.tcp_port_spin.value(),
+            tcp_port=SIMPLE_DEFAULT_TCP_PORT,
             alert_rule_config=self._alert_rule_config(),
             auto_full_route_on_alert=self._route_adjustment_start_enabled(),
             auto_restore_final_hop_on_recovery=self._route_adjustment_recovery_enabled(),

@@ -45,6 +45,7 @@ from app.ui.main_window import (
 from app.ui.worker import (
     MEASUREMENT_MODE_FINAL_HOP_ONLY,
     MEASUREMENT_MODE_FULL_ROUTE,
+    PROBE_ENGINE_ICMP,
     PROBE_ENGINE_TCP_CONNECT,
 )
 
@@ -63,6 +64,14 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_table.columnCount() == len(ALERT_HEADERS)
         assert window.alert_table.rowCount() == 0
         assert window.windowTitle() == "네트워크 경로 진단"
+        view_actions = [
+            action.text()
+            for menu_action in window.menuBar().actions()
+            if menu_action.menu() is not None
+            for action in menu_action.menu().actions()
+        ]
+        assert "고급 기능 표시" not in view_actions
+        assert "그래프 확대" in view_actions
         assert window.timeline_label.text() == "Timeline: Live"
         assert window.target_summary_status_label.text() == "IP: 0"
         assert window.target_filter_edit.text() == ""
@@ -135,16 +144,16 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.export_session_button.isEnabled() == (window.session_combo.count() > 0)
         assert window.graph_detail_button.text() == "그래프 확대"
         window.set_advanced_features_visible(True)
-        assert window.advanced_features_visible is True
-        assert window.right_panel.isHidden() is False
+        assert window.advanced_features_visible is False
+        assert window.right_panel.isHidden() is True
         assert window.target_table.isHidden() is True
         assert window.target_advanced_controls_panel.isHidden() is True
         window.toggle_target_panel()
         assert window.target_panel_expanded is True
         assert window.target_table.isHidden() is False
-        assert window.target_advanced_controls_panel.isHidden() is False
+        assert window.target_advanced_controls_panel.isHidden() is True
         assert window.toggle_target_panel_button.text() == "IP 현황 접기"
-        assert window.target_table.isColumnHidden(TARGET_HEADERS.index("평균")) is False
+        assert window.target_table.isColumnHidden(TARGET_HEADERS.index("평균")) is True
         assert window.sessions_box.toPlainText()
     finally:
         window.close()
@@ -1052,19 +1061,19 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         window.start_measurement()
 
         assert len(created_workers) == 1
-        assert created_workers[0].target == "192.168.0.1"
+        assert created_workers[0].target == "8.8.8.8"
         assert created_workers[0].targets == ["8.8.8.8", "192.168.0.1"]
-        assert created_workers[0].interval_seconds == 2
-        assert created_workers[0].max_cycles == 3
+        assert created_workers[0].interval_seconds == 1
+        assert created_workers[0].max_cycles is None
         assert created_workers[0].measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
-        assert created_workers[0].probe_engine == PROBE_ENGINE_TCP_CONNECT
-        assert created_workers[0].tcp_port == 8443
+        assert created_workers[0].probe_engine == PROBE_ENGINE_ICMP
+        assert created_workers[0].tcp_port == 443
         assert created_workers[0].started is True
         assert window.start_button.isEnabled() is False
         assert window.stop_button.isEnabled() is True
         assert window.target_input.isHidden() is True
         assert window.running_target_summary_label.isHidden() is False
-        assert window.running_target_summary_label.text() == "측정 IP 2개 | 기준 IP 192.168.0.1"
+        assert window.running_target_summary_label.text() == "측정 IP 2개 | 기준 IP 8.8.8.8"
 
         window.stop_measurement()
 
