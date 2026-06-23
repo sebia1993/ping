@@ -63,7 +63,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.session_table.columnCount() == len(SESSION_HEADERS)
         assert window.alert_table.columnCount() == len(ALERT_HEADERS)
         assert window.alert_table.rowCount() == 0
-        assert window.windowTitle() == "네트워크 경로 진단"
+        assert window.windowTitle() == "멀티핑체크"
         view_actions = [
             action.text()
             for menu_action in window.menuBar().actions()
@@ -72,7 +72,7 @@ def test_main_window_initial_state(qt_app) -> None:
         ]
         assert "고급 기능 표시" not in view_actions
         assert "그래프 확대" not in view_actions
-        assert window.command_title_label.text() == "네트워크 경로 진단"
+        assert window.command_title_label.text() == "멀티핑체크"
         assert window.target_input.maximumHeight() == 52
         assert window.timeline_label.text() == "Timeline: Live"
         assert window.target_summary_status_label.text() == "IP: 0"

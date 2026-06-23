@@ -1,4 +1,4 @@
-# Network Path Diagnostics
+# MultiPingCheck
 
 Windows 일반 사용자 권한에서 동작하는 Python 기반 네트워크 경로 품질 진단 도구입니다.
 상용 제품의 이름, UI, 로고, 디자인, 자산을 복제하지 않는 자체 운영 도구로 구현합니다.
@@ -58,7 +58,7 @@ python scripts\verify_release.py --target <FIELD_TARGET>
 .\build_windows_exe.ps1
 ```
 
-생성 결과는 `dist\NetworkPathDiagnostics\NetworkPathDiagnostics.exe`에 위치합니다.
+생성 결과는 `dist\MultiPingCheck\MultiPingCheck.exe`에 위치합니다.
 
 ## GitHub Release publish
 

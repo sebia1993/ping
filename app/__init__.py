@@ -1,2 +1,1 @@
-"""Network Path Diagnostics application package."""
-
+"""MultiPingCheck application package."""

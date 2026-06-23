@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+APP_DISPLAY_NAME = "멀티핑체크"
+APP_BINARY_NAME = "MultiPingCheck"
+
 from app.core.models import STATUS_OK, HopObservation, MetricSnapshot
 from app.core.ping_runner import CommandPingRunner
 from app.core.traceroute import run_traceroute
@@ -26,7 +29,7 @@ from app.utils.validators import validate_target
 # 릴리즈를 올리기 전에 "소스 테스트, GUI 기본 실행, 저장 파일 생성, 장시간 안정성, EXE 실행"을
 # 한 번에 확인하는 검증 스크립트입니다. 하나라도 실패하면 배포하면 안 된다는 뜻입니다.
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run local release verification for Network Path Diagnostics.")
+    parser = argparse.ArgumentParser(description="Run local release verification for MultiPingCheck.")
     parser.add_argument("--live", action="store_true", help="Run live public IPv4 checks.")
     parser.add_argument("--exe", action="store_true", help="Launch the packaged EXE if it exists.")
     parser.add_argument(
@@ -92,7 +95,8 @@ def run_release_policy_check() -> None:
     # 배포 정책 점검입니다. 테스트가 통과해도 여기서 걸리면 사용자가 실행하기 불편한 EXE가 될 수 있습니다.
     # 예: 관리자 권한 요구, 콘솔 창 노출, 불필요하게 큰 패키지 포함 여부를 확인합니다.
     build_script = (ROOT / "build_windows_exe.ps1").read_text(encoding="utf-8")
-    spec = (ROOT / "NetworkPathDiagnostics.spec").read_text(encoding="utf-8")
+    spec_path = ROOT / f"{APP_BINARY_NAME}.spec"
+    spec = spec_path.read_text(encoding="utf-8") if spec_path.exists() else ""
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
     forbidden_admin_markers = ("--uac-admin", "requireAdministrator", "highestAvailable")
@@ -101,7 +105,9 @@ def run_release_policy_check() -> None:
         if marker in combined_build_text:
             raise RuntimeError(f"Release packaging requests elevated privileges: {marker}")
 
-    if "--windowed" not in build_script or "console=False" not in spec:
+    if "--windowed" not in build_script:
+        raise RuntimeError("Release packaging is expected to use a windowed, console-free app.")
+    if spec and "console=False" not in spec:
         raise RuntimeError("Release packaging is expected to use a windowed, console-free app.")
 
     expected_excludes = ("numpy", "PIL", "lxml", "PySide6.QtQuick", "PySide6.QtPdf")
@@ -133,7 +139,7 @@ def run_qt_smoke() -> None:
         "from app.ui.main_window import MainWindow; "
         "app=QApplication(sys.argv); "
         "w=MainWindow(); "
-        "assert w.windowTitle() == '\\ub124\\ud2b8\\uc6cc\\ud06c \\uacbd\\ub85c \\uc9c4\\ub2e8'; "
+        f"assert w.windowTitle() == {APP_DISPLAY_NAME!r}; "
         "assert w.table.columnCount() == 13; "
         "assert w.session_state_label.text() == '대기'"
     )
@@ -291,7 +297,7 @@ def run_custom_target_smoke(target: str) -> None:
 def run_exe_smoke() -> None:
     # 빌드된 EXE를 실제 프로세스로 실행해봅니다.
     # 3초 안에 바로 종료되면 누락된 DLL이나 런타임 오류일 가능성이 높습니다.
-    exe = ROOT / "dist" / "NetworkPathDiagnostics" / "NetworkPathDiagnostics.exe"
+    exe = ROOT / "dist" / APP_BINARY_NAME / f"{APP_BINARY_NAME}.exe"
     if not exe.exists():
         raise RuntimeError(f"Packaged EXE not found: {exe}")
     run_packaged_size_check(exe.parent)

@@ -100,7 +100,7 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.stats_csv_button.clicked.connect(owner.save_statistics_csv)
     owner.stats_xlsx_button.clicked.connect(owner.save_statistics_xlsx)
 
-    owner.command_title_label = QLabel("네트워크 경로 진단")
+    owner.command_title_label = QLabel("멀티핑체크")
     owner.command_title_label.setObjectName("commandTitle")
     owner.command_title_label.setMinimumWidth(150)
     owner.command_title_label.setMaximumWidth(180)

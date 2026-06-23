@@ -1,5 +1,5 @@
 param(
-    [string]$Name = "NetworkPathDiagnostics"
+    [string]$Name = "MultiPingCheck"
 )
 
 $ErrorActionPreference = "Stop"

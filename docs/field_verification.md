@@ -23,7 +23,7 @@ python scripts\verify_release.py --live --exe --target <FIELD_TARGET>
 
 ## GUI 동작 검증
 
-1. `dist\NetworkPathDiagnostics\NetworkPathDiagnostics.exe`를 실행합니다.
+1. `dist\MultiPingCheck\MultiPingCheck.exe`를 실행합니다.
 2. 대상에 공인 IPv4 주소 또는 사내 게이트웨이 IPv4 주소를 입력합니다.
 3. 주기를 `1`, `2`, `5`초로 각각 바꿔 시작합니다.
 4. 시작 후 Hop 테이블이 채워지고 최종 대상 그래프가 움직이는지 확인합니다.

@@ -9,7 +9,7 @@ from app.ui.main_window import MainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Network Path Diagnostics")
+    app.setApplicationName("MultiPingCheck")
     window = MainWindow()
     window.show()
     return app.exec()
@@ -17,4 +17,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -189,7 +189,7 @@ def test_text_report_contains_analysis_and_hop_summary(tmp_path) -> None:
     write_text_report(path, "8.8.8.8", [_sample_snapshot()], ["대상 서버 구간 문제 가능성"])
 
     text = path.read_text(encoding="utf-8")
-    assert "Network Path Diagnostics Report" in text
+    assert "MultiPingCheck Report" in text
     assert "대상IP: 8.8.8.8" in text
     assert "\x80" not in text
     assert "대상 서버 구간 문제 가능성" in text

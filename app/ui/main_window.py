@@ -154,7 +154,7 @@ class MainWindow(QMainWindow):
     def __init__(self, worker_factory=None) -> None:
         super().__init__()
         _apply_default_font()
-        self.setWindowTitle("네트워크 경로 진단")
+        self.setWindowTitle("멀티핑체크")
         self.resize(1440, 900)
 
         self.worker: MeasurementWorker | None = None
@@ -261,7 +261,7 @@ class MainWindow(QMainWindow):
 
         title_group = QVBoxLayout()
         title_group.setSpacing(2)
-        title = QLabel("네트워크 경로 진단")
+        title = QLabel("멀티핑체크")
         title.setObjectName("title")
         subtitle = QLabel("IP 입력 후 현재 상태와 실시간 지연 그래프를 확인합니다.")
         subtitle.setObjectName("muted")
@@ -2435,7 +2435,7 @@ class MainWindow(QMainWindow):
         config = self._alert_email_config()
         if config is None:
             return False
-        subject = f"[NetworkPathDiagnostics] {event.severity.upper()} {event.title}"
+        subject = f"[MultiPingCheck] {event.severity.upper()} {event.title}"
         body = "\n".join(
             [
                 f"Target: {self.current_target or '-'}",

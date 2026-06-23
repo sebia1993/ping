@@ -179,7 +179,7 @@ def export_statistics_xlsx(
     workbook = Workbook()
     summary = workbook.active
     summary.title = "Summary"
-    summary["A1"] = "Network Path Diagnostics - Statistics"
+    summary["A1"] = "MultiPingCheck - Statistics"
     summary["A1"].font = Font(bold=True, size=14)
     summary["A3"] = "Target"
     summary["B3"] = target

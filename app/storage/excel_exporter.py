@@ -26,7 +26,7 @@ def export_xlsx(
 
     summary = workbook.active
     summary.title = "Summary"
-    summary["A1"] = "Network Path Diagnostics"
+    summary["A1"] = "MultiPingCheck"
     summary["A1"].font = Font(bold=True, size=14)
     summary["A3"] = "대상IP"
     summary["B3"] = target

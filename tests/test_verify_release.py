@@ -165,5 +165,5 @@ def _write_policy_tree(
     (root / "app").mkdir()
     (root / "app" / "main.py").write_text(app_source, encoding="utf-8")
     (root / "build_windows_exe.ps1").write_text(build_script, encoding="utf-8")
-    (root / "NetworkPathDiagnostics.spec").write_text(spec, encoding="utf-8")
+    (root / "MultiPingCheck.spec").write_text(spec, encoding="utf-8")
     (root / "requirements.txt").write_text(requirements, encoding="utf-8")

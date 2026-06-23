@@ -26,7 +26,7 @@ def write_text_report(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = [
-        "Network Path Diagnostics Report",
+        "MultiPingCheck Report",
         f"Target: {target}",
         f"대상IP: {target}",
     ]
@@ -83,7 +83,7 @@ def write_html_report(
         '<html lang="ko">',
         "<head>",
         '<meta charset="utf-8">',
-        "<title>Network Path Diagnostics Report</title>",
+        "<title>MultiPingCheck Report</title>",
         "<style>",
         "body{font-family:Segoe UI,Arial,sans-serif;margin:32px;color:#111827;line-height:1.45}",
         "h1{font-size:24px;margin:0 0 8px}",
@@ -99,7 +99,7 @@ def write_html_report(
         "</style>",
         "</head>",
         "<body>",
-        "<h1>Network Path Diagnostics Report</h1>",
+        "<h1>MultiPingCheck Report</h1>",
         f'<p class="meta"><strong>Target:</strong> {escape(target or "-")}</p>',
         f'<p class="meta"><strong>Range:</strong> {escape(_format_range(focus_range))}</p>',
         "<h2>Cause Evidence Summary</h2>",

@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Name = "NetworkPathDiagnostics",
+    [string]$Name = "MultiPingCheck",
     [string]$Tag = "",
     [string]$Title = "",
     [switch]$SkipBuild,
