@@ -4,10 +4,18 @@ import csv
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QMouseEvent, QPixmap
 from PySide6.QtWidgets import QPushButton
 
-from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation, MetricSnapshot
+from app.core.models import (
+    STATUS_ERROR,
+    STATUS_OK,
+    STATUS_PAUSED,
+    STATUS_TIMEOUT,
+    STATUS_UNREACHABLE,
+    HopObservation,
+    MetricSnapshot,
+)
 from app.ui.graph_detail_window import (
     GraphDetailWindow,
     VIEW_ALL_HOPS,
@@ -15,7 +23,7 @@ from app.ui.graph_detail_window import (
     VIEW_VISIBLE_HOPS,
     summarize_points,
 )
-from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries
+from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries, _is_failure_observation
 
 
 def test_latency_graph_supports_zoom_selection_and_annotations(qt_app) -> None:
@@ -67,6 +75,40 @@ def test_latency_graph_time_axis_labels_use_visible_sample_times(qt_app) -> None
     graph.set_series([TimelineSeries("target", "Target", points)])
 
     assert graph._time_axis_labels() == ("최근 12:00:00", "현재 12:01:59")
+
+
+def test_latency_graph_failure_marker_policy_only_marks_response_failures(qt_app) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    timeout = HopObservation(now, 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+    unreachable = HopObservation(now, 0, "198.51.100.10", "Target", False, None, STATUS_UNREACHABLE, True)
+    error = HopObservation(now, 0, "198.51.100.10", "Target", False, None, STATUS_ERROR, True)
+    paused = HopObservation(now, 0, "198.51.100.10", "Target", False, None, STATUS_PAUSED, True)
+    high_latency = HopObservation(now, 0, "198.51.100.10", "Target", True, 2000.0, STATUS_OK, True)
+
+    assert _is_failure_observation(timeout) is True
+    assert _is_failure_observation(unreachable) is True
+    assert _is_failure_observation(error) is True
+    assert _is_failure_observation(paused) is False
+    assert _is_failure_observation(high_latency) is False
+
+
+def test_latency_graph_renders_response_failures_without_crashing(qt_app) -> None:
+    graph = LatencyGraphWidget()
+    graph.resize(720, 260)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", True, 12.0, STATUS_OK, True),
+    ]
+
+    graph.set_points(points)
+    pixmap = QPixmap(graph.size())
+    pixmap.fill(Qt.GlobalColor.white)
+    graph.render(pixmap)
+
+    assert pixmap.isNull() is False
+    assert graph._last_plot_rect.height() > 100
 
 
 def test_latency_graph_main_mode_forwards_normal_wheel_and_emits_shift_pan(qt_app) -> None:
