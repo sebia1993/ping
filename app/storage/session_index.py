@@ -51,6 +51,7 @@ class SessionStorageSummary:
     target_count: int
     bucket_count: int
     segment_count: int
+    sample_count: int
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,8 @@ class SessionStorageBucket:
     month: str
     session_count: int
     segment_count: int
+    sample_count: int
+    state_counts: tuple[tuple[str, int], ...]
     latest_seen: datetime
 
 
@@ -626,6 +629,7 @@ def session_storage_summary(sessions: list[TraceSessionRecord]) -> SessionStorag
         target_count=len(targets),
         bucket_count=len(session_storage_buckets(sessions)),
         segment_count=sum(len(_session_storage_segment_paths(session)) for session in sessions),
+        sample_count=sum(max(session.samples, 0) for session in sessions),
     )
 
 
@@ -648,17 +652,39 @@ def session_storage_buckets(sessions: list[TraceSessionRecord]) -> list[SessionS
 
     buckets: list[SessionStorageBucket] = []
     for (target, month), session_map in bucket_sessions.items():
-        latest_seen = max(_session_last_seen(session) for session in session_map.values())
+        bucket_records = list(session_map.values())
+        latest_seen = max(_session_last_seen(session) for session in bucket_records)
         buckets.append(
             SessionStorageBucket(
                 target=target,
                 month=month,
                 session_count=len(session_map),
                 segment_count=len(bucket_segments.get((target, month), set())),
+                sample_count=sum(max(session.samples, 0) for session in bucket_records),
+                state_counts=_session_state_counts(bucket_records),
                 latest_seen=latest_seen,
             )
         )
     return sorted(buckets, key=lambda bucket: (bucket.latest_seen, bucket.target, bucket.month), reverse=True)
+
+
+def _session_state_counts(sessions: list[TraceSessionRecord]) -> tuple[tuple[str, int], ...]:
+    counts: dict[str, int] = {}
+    for session in sessions:
+        state = session.state or "Unknown"
+        counts[state] = counts.get(state, 0) + 1
+    order = {
+        SESSION_STATE_ACTIVE: 0,
+        SESSION_STATE_PAUSED: 1,
+        SESSION_STATE_ARCHIVED: 2,
+        SESSION_STATE_WILL_DELETE: 3,
+    }
+    return tuple(
+        sorted(
+            counts.items(),
+            key=lambda item: (order.get(item[0], 99), item[0]),
+        )
+    )
 
 
 def _session_storage_months(session: TraceSessionRecord, segments: tuple[Path, ...]) -> set[str]:

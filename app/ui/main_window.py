@@ -88,6 +88,7 @@ from app.storage.export_annotations import ExportAnnotation, annotations_in_rang
 from app.storage.route_log import route_changes_in_range, route_log_path_for_session
 from app.storage.session_index import (
     SessionIndexStore,
+    SessionStorageBucket,
     TraceSessionRecord,
     session_data_paths,
     session_index_root_for_sample_path,
@@ -3449,18 +3450,25 @@ def _session_storage_summary(sessions: list[TraceSessionRecord]) -> str:
     summary = session_storage_summary(sessions)
     line = (
         f"Storage: targets {summary.target_count} | "
-        f"target-month buckets {summary.bucket_count} | segments {summary.segment_count}"
+        f"target-month buckets {summary.bucket_count} | segments {summary.segment_count} | "
+        f"indexed samples {summary.sample_count}"
     )
     buckets = session_storage_buckets(sessions)
     if not buckets:
         return line
-    bucket_parts = [
-        f"{bucket.target}/{bucket.month} sessions {bucket.session_count} segments {bucket.segment_count}"
-        for bucket in buckets[:3]
-    ]
+    bucket_parts = [_session_storage_bucket_summary(bucket) for bucket in buckets[:3]]
     if len(buckets) > 3:
         bucket_parts.append(f"+{len(buckets) - 3} more")
     return f"{line}\nRecent buckets: {', '.join(bucket_parts)}"
+
+
+def _session_storage_bucket_summary(bucket: SessionStorageBucket) -> str:
+    states = "; ".join(f"{state} {count}" for state, count in bucket.state_counts)
+    state_suffix = f" states {states}" if states else ""
+    return (
+        f"{bucket.target}/{bucket.month} sessions {bucket.session_count} "
+        f"segments {bucket.segment_count} indexed samples {bucket.sample_count}{state_suffix}"
+    )
 
 
 ALERT_RULE_ENABLED_KEYS = (

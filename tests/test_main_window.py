@@ -255,9 +255,10 @@ def test_main_window_session_manager_reports_storage_buckets(qt_app, tmp_path) -
 
         text = window.sessions_box.toPlainText()
         assert "Storage: targets 2 | target-month buckets 3 | segments 3" in text
+        assert "indexed samples 14" in text
         assert "Recent buckets:" in text
-        assert "203.0.113.10/2026-02 sessions 1 segments 1" in text
-        assert "198.51.100.10/2026-02 sessions 1 segments 1" in text
+        assert "203.0.113.10/2026-02 sessions 1 segments 1 indexed samples 4 states Archived 1" in text
+        assert "198.51.100.10/2026-02 sessions 1 segments 1 indexed samples 10 states Archived 1" in text
     finally:
         window.close()
 

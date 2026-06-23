@@ -648,10 +648,14 @@ def test_session_index_summarizes_target_month_storage_buckets(tmp_path) -> None
     assert summary.target_count == 2
     assert summary.bucket_count == 3
     assert summary.segment_count == 3
-    assert [(bucket.target, bucket.month, bucket.session_count, bucket.segment_count) for bucket in buckets] == [
-        ("203.0.113.20", "2026-02", 1, 1),
-        ("198.51.100.10", "2026-02", 1, 1),
-        ("198.51.100.10", "2026-01", 1, 1),
+    assert summary.sample_count == 13
+    assert [
+        (bucket.target, bucket.month, bucket.session_count, bucket.segment_count, bucket.sample_count, bucket.state_counts)
+        for bucket in buckets
+    ] == [
+        ("203.0.113.20", "2026-02", 1, 1, 3, ((SESSION_STATE_ARCHIVED, 1),)),
+        ("198.51.100.10", "2026-02", 1, 1, 10, ((SESSION_STATE_ARCHIVED, 1),)),
+        ("198.51.100.10", "2026-01", 1, 1, 10, ((SESSION_STATE_ARCHIVED, 1),)),
     ]
     assert [(bucket.target, bucket.month) for bucket in store.storage_buckets()] == [
         ("203.0.113.20", "2026-02"),
