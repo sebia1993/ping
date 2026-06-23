@@ -123,7 +123,7 @@ def run_qt_smoke() -> None:
         "from app.ui.main_window import MainWindow; "
         "app=QApplication(sys.argv); "
         "w=MainWindow(); "
-        "assert w.windowTitle() == 'Network Path Diagnostics'; "
+        "assert w.windowTitle() == '\\ub124\\ud2b8\\uc6cc\\ud06c \\uacbd\\ub85c \\uc9c4\\ub2e8'; "
         "assert w.table.columnCount() == 13; "
         "assert w.session_state_label.text() == '대기'"
     )

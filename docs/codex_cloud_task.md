@@ -5,6 +5,7 @@ Continue improving this Windows-focused PingPlotter-like network diagnostics too
 ## Current State
 
 - Python/PySide6 desktop app.
+- The default main window is simplified for operators: IP address input, start/stop, IP current status, and a real-time graph are shown first; advanced controls remain available from the Korean View menu.
 - Multi-target measurement is implemented.
 - Session logs, session index, open/export/delete, and segmented CSV storage are implemented.
 - Session segment metadata is written through atomic temp-file replace with transient PermissionError retries, matching the session index hardening style.

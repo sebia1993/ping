@@ -11,30 +11,30 @@ SESSION_ID_ROLE = Qt.UserRole + 1
 
 TABLE_HEADERS = [
     "Hop",
-    "Address",
-    "Hostname",
-    "Status",
-    "Current",
-    "Avg",
-    "Min",
-    "Max",
-    "Loss %",
-    "Recent Loss %",
-    "Timeout",
-    "Jitter",
-    "Samples",
-]
-
-TARGET_HEADERS = [
-    "대상IP",
+    "주소",
+    "호스트명",
     "상태",
     "현재",
     "평균",
     "최소",
     "최대",
-    "손실률",
-    "송신",
-    "수신",
+    "손실률 %",
+    "최근 손실률 %",
+    "Timeout",
+    "지터",
+    "샘플",
+]
+
+TARGET_HEADERS = [
+    "IP 주소",
+    "상태",
+    "현재 지연",
+    "평균",
+    "최소",
+    "최대",
+    "손실률 %",
+    "샘플",
+    "응답",
     "실패",
 ]
 
@@ -45,28 +45,28 @@ TARGET_INTERVAL_SOURCE_COLUMN = TARGET_HEADERS.index("Interval Source")
 TARGET_SCORE_COLUMN = len(TARGET_HEADERS) - 1
 
 SESSION_HEADERS = [
-    "State",
-    "Target",
-    "Start",
-    "End",
-    "Samples",
-    "Interval",
-    "Mode",
-    "Engine",
-    "Port",
-    "Targets",
-    "Segments",
+    "상태",
+    "대상",
+    "시작",
+    "종료",
+    "샘플",
+    "주기",
+    "모드",
+    "엔진",
+    "포트",
+    "대상 수",
+    "세그먼트",
 ]
 
 ALERT_HEADERS = [
-    "Time",
-    "Severity",
-    "Title",
-    "Start",
-    "End",
-    "Series",
-    "Actions",
-    "Message",
+    "시간",
+    "심각도",
+    "제목",
+    "시작",
+    "종료",
+    "대상",
+    "동작",
+    "메시지",
 ]
 
 

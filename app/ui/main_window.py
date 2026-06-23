@@ -16,7 +16,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QDateTime, Qt, QTime
-from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPixmap
+from PySide6.QtGui import QAction, QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -146,12 +146,13 @@ class MainWindow(QMainWindow):
     def __init__(self, worker_factory=None) -> None:
         super().__init__()
         _apply_default_font()
-        self.setWindowTitle("Network Path Diagnostics")
+        self.setWindowTitle("네트워크 경로 진단")
         self.resize(1440, 900)
 
         self.worker: MeasurementWorker | None = None
         self.export_worker: ExportWorker | None = None
         self.graph_detail_window: GraphDetailWindow | None = None
+        self.advanced_features_visible = False
         self.worker_factory = worker_factory or MeasurementWorker
         self.session_index_store = SessionIndexStore.create()
 
@@ -203,7 +204,9 @@ class MainWindow(QMainWindow):
         self._syncing_session_selection = False
 
         self._build_ui()
+        self._build_menu_bar()
         self._set_running(False)
+        self.set_advanced_features_visible(False)
         self._set_state_chip("대기", "neutral")
         self._update_target_summary(None)
         self._sync_sessions_box()
@@ -220,9 +223,21 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_header())
         root.addWidget(self._build_controls())
         root.addWidget(self._build_main_area(), 1)
-        root.addWidget(self._build_footer())
+        self.footer_panel = self._build_footer()
+        root.addWidget(self.footer_panel)
 
         self.setCentralWidget(central)
+
+    def _build_menu_bar(self) -> None:
+        view_menu = self.menuBar().addMenu("보기")
+        self.advanced_features_action = QAction("고급 기능 표시", self)
+        self.advanced_features_action.setCheckable(True)
+        self.advanced_features_action.toggled.connect(self.set_advanced_features_visible)
+        view_menu.addAction(self.advanced_features_action)
+
+        self.open_graph_detail_action = QAction("그래프 확대", self)
+        self.open_graph_detail_action.triggered.connect(self.open_graph_detail)
+        view_menu.addAction(self.open_graph_detail_action)
 
     def _build_header(self) -> QFrame:
         header = _panel("header")
@@ -232,9 +247,9 @@ class MainWindow(QMainWindow):
 
         title_group = QVBoxLayout()
         title_group.setSpacing(2)
-        title = QLabel("Network Path Diagnostics")
+        title = QLabel("네트워크 경로 진단")
         title.setObjectName("title")
-        subtitle = QLabel("Windows 일반 권한 기반 IPv4 경로 품질 측정 - tracert + ping fallback")
+        subtitle = QLabel("IP 입력 후 현재 상태와 실시간 지연 그래프를 확인합니다.")
         subtitle.setObjectName("muted")
         title_group.addWidget(title)
         title_group.addWidget(subtitle)
@@ -255,8 +270,10 @@ class MainWindow(QMainWindow):
     def _build_main_area(self) -> QSplitter:
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
+        self.main_splitter = splitter
         splitter.addWidget(self._build_left_work_area())
-        splitter.addWidget(self._build_right_panel())
+        self.right_panel = self._build_right_panel()
+        splitter.addWidget(self.right_panel)
         splitter.setSizes([960, 420])
         return splitter
 
@@ -266,15 +283,16 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        layout.addWidget(self._build_metrics_strip())
+        self.metrics_strip_panel = self._build_metrics_strip()
+        layout.addWidget(self.metrics_strip_panel)
         layout.addWidget(self._build_target_table_panel())
 
         self.table = create_hop_table()
         self.table.itemSelectionChanged.connect(self.on_hop_selection_changed)
         self.table.cellDoubleClicked.connect(self.on_hop_double_clicked)
 
-        table_panel = _panel("tablePanel")
-        table_layout = QVBoxLayout(table_panel)
+        self.hop_table_panel = _panel("tablePanel")
+        table_layout = QVBoxLayout(self.hop_table_panel)
         table_layout.setContentsMargins(12, 10, 12, 12)
         table_layout.setSpacing(8)
         table_header = QHBoxLayout()
@@ -287,16 +305,16 @@ class MainWindow(QMainWindow):
         table_header.addWidget(hint)
         table_layout.addLayout(table_header)
         table_layout.addWidget(self.table, 1)
-        layout.addWidget(table_panel, 2)
+        layout.addWidget(self.hop_table_panel, 2)
 
         graph_panel = _panel("graphPanel")
         graph_layout = QVBoxLayout(graph_panel)
         graph_layout.setContentsMargins(12, 10, 12, 12)
         graph_layout.setSpacing(8)
         graph_header = QHBoxLayout()
-        graph_title = QLabel("Target Latency Timeline")
+        graph_title = QLabel("실시간 그래프")
         graph_title.setObjectName("panelTitle")
-        graph_hint = QLabel("최종 대상 응답 기준 - timeout은 붉은 막대로 표시")
+        graph_hint = QLabel("선택한 IP의 지연 시간과 timeout을 실시간으로 표시합니다.")
         graph_hint.setObjectName("muted")
         self.focus_label = _chip("Live", "neutral")
         self.timeline_label = _chip("Timeline: Live", "neutral")
@@ -312,27 +330,32 @@ class MainWindow(QMainWindow):
         ]:
             self.timeline_range_combo.addItem(label, seconds)
         self.timeline_range_combo.setCurrentIndex(self.timeline_range_combo.findData(600))
-        self.load_timeline_button = QPushButton("Load range")
-        self.load_timeline_button.setToolTip("Show the selected time range on the main timeline")
+        self.load_timeline_button = QPushButton("범위 불러오기")
+        self.load_timeline_button.setToolTip("선택한 시간 범위를 메인 그래프에 표시합니다.")
         self.load_timeline_button.clicked.connect(self.load_selected_timeline_range)
-        self.reset_current_button = QPushButton("Current")
-        self.reset_current_button.setToolTip("Reset focus and timeline to the latest samples")
+        self.reset_current_button = QPushButton("현재")
+        self.reset_current_button.setToolTip("포커스와 그래프 범위를 최신 측정으로 되돌립니다.")
         self.reset_current_button.clicked.connect(self.reset_focus_to_current)
-        self.clear_focus_button = QPushButton("Clear focus")
+        self.clear_focus_button = QPushButton("포커스 해제")
         self.clear_focus_button.setEnabled(False)
         self.clear_focus_button.clicked.connect(self.clear_focus_range)
         self.graph_detail_button = QPushButton("그래프 확대")
         self.graph_detail_button.clicked.connect(self.open_graph_detail)
+        self.graph_advanced_controls = QWidget()
+        graph_advanced_layout = QHBoxLayout(self.graph_advanced_controls)
+        graph_advanced_layout.setContentsMargins(0, 0, 0, 0)
+        graph_advanced_layout.setSpacing(6)
+        graph_advanced_layout.addWidget(graph_hint)
+        graph_advanced_layout.addWidget(self.focus_label)
+        graph_advanced_layout.addWidget(self.timeline_label)
+        graph_advanced_layout.addWidget(self.timeline_range_combo)
+        graph_advanced_layout.addWidget(self.load_timeline_button)
+        graph_advanced_layout.addWidget(self.reset_current_button)
+        graph_advanced_layout.addWidget(self.clear_focus_button)
+        graph_advanced_layout.addWidget(self.graph_detail_button)
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
-        graph_header.addWidget(graph_hint)
-        graph_header.addWidget(self.focus_label)
-        graph_header.addWidget(self.timeline_label)
-        graph_header.addWidget(self.timeline_range_combo)
-        graph_header.addWidget(self.load_timeline_button)
-        graph_header.addWidget(self.reset_current_button)
-        graph_header.addWidget(self.clear_focus_button)
-        graph_header.addWidget(self.graph_detail_button)
+        graph_header.addWidget(self.graph_advanced_controls)
         self.graph = LatencyGraphWidget()
         graph_layout.addLayout(graph_header)
         graph_layout.addWidget(self.graph, 1)
@@ -350,58 +373,57 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 10, 12, 12)
         layout.setSpacing(8)
         header = QHBoxLayout()
-        heading = QLabel("IPv4 Target Monitor")
+        heading = QLabel("IP 현재현황")
         heading.setObjectName("panelTitle")
-        hint = QLabel("중복 IPv4는 자동 제외, Tracert는 선택된 IPv4 1개만 수행")
+        hint = QLabel("IP별 상태, 현재 지연, 손실률을 한눈에 확인합니다.")
         hint.setObjectName("muted")
-        self.target_summary_status_label = QLabel("Targets: 0")
+        self.target_summary_status_label = QLabel("IP: 0")
         self.target_summary_status_label.setObjectName("muted")
         self.target_filter_edit = QLineEdit()
-        self.target_filter_edit.setPlaceholderText("Filter targets")
+        self.target_filter_edit.setPlaceholderText("IP 필터")
         self.target_filter_edit.setClearButtonEnabled(True)
         self.target_filter_edit.setMinimumWidth(160)
         self.target_filter_edit.textChanged.connect(lambda *_args: self._sync_target_filter())
         self.target_status_filter_combo = QComboBox()
-        self.target_status_filter_combo.addItem("All states", "")
-        self.target_status_filter_combo.addItem("Problem", "problem")
-        self.target_status_filter_combo.addItem("Critical", "CRITICAL")
-        self.target_status_filter_combo.addItem("Warning", "WARNING")
+        self.target_status_filter_combo.addItem("전체 상태", "")
+        self.target_status_filter_combo.addItem("문제", "problem")
+        self.target_status_filter_combo.addItem("장애", "CRITICAL")
+        self.target_status_filter_combo.addItem("주의", "WARNING")
         self.target_status_filter_combo.addItem("OK", "OK")
-        self.target_status_filter_combo.addItem("Paused", "PAUSED")
+        self.target_status_filter_combo.addItem("중지", "PAUSED")
         self.target_status_filter_combo.currentIndexChanged.connect(lambda *_args: self._sync_target_filter())
-        self.pause_selected_targets_button = QPushButton("Pause selected")
+        self.pause_selected_targets_button = QPushButton("선택 중지")
         self.pause_selected_targets_button.clicked.connect(self.pause_selected_targets)
-        self.resume_selected_targets_button = QPushButton("Resume selected")
+        self.resume_selected_targets_button = QPushButton("선택 재개")
         self.resume_selected_targets_button.clicked.connect(self.resume_selected_targets)
-        self.pause_visible_targets_button = QPushButton("Pause visible")
+        self.pause_visible_targets_button = QPushButton("표시 중지")
         self.pause_visible_targets_button.clicked.connect(self.pause_visible_targets)
-        self.resume_visible_targets_button = QPushButton("Resume visible")
+        self.resume_visible_targets_button = QPushButton("표시 재개")
         self.resume_visible_targets_button.clicked.connect(self.resume_visible_targets)
-        self.pause_problem_targets_button = QPushButton("Pause problems")
+        self.pause_problem_targets_button = QPushButton("문제 중지")
         self.pause_problem_targets_button.clicked.connect(self.pause_problem_targets)
-        self.resume_problem_targets_button = QPushButton("Resume problems")
+        self.resume_problem_targets_button = QPushButton("문제 재개")
         self.resume_problem_targets_button.clicked.connect(self.resume_problem_targets)
-        self.pause_all_targets_button = QPushButton("Pause all")
+        self.pause_all_targets_button = QPushButton("전체 중지")
         self.pause_all_targets_button.clicked.connect(self.pause_all_targets)
-        self.resume_all_targets_button = QPushButton("Resume all")
+        self.resume_all_targets_button = QPushButton("전체 재개")
         self.resume_all_targets_button.clicked.connect(self.resume_all_targets)
-        self.apply_interval_button = QPushButton("Apply interval")
+        self.apply_interval_button = QPushButton("주기 적용")
         self.apply_interval_button.clicked.connect(self.apply_runtime_interval)
-        self.apply_visible_interval_button = QPushButton("Apply visible")
+        self.apply_visible_interval_button = QPushButton("표시 적용")
         self.apply_visible_interval_button.clicked.connect(self.apply_visible_interval)
-        self.apply_problem_interval_button = QPushButton("Apply problems")
+        self.apply_problem_interval_button = QPushButton("문제 적용")
         self.apply_problem_interval_button.clicked.connect(self.apply_problem_interval)
-        self.export_target_summary_button = QPushButton("Export summary")
+        self.export_target_summary_button = QPushButton("현황 내보내기")
         self.export_target_summary_button.clicked.connect(self.save_target_summary_csv)
-        self.problem_sort_check = QCheckBox("Problem first")
+        self.problem_sort_check = QCheckBox("문제 우선")
         self.problem_sort_check.toggled.connect(self._on_problem_sort_toggled)
         header.addWidget(heading)
+        header.addWidget(hint)
         header.addStretch(1)
         header.addWidget(self.target_summary_status_label)
-        header.addWidget(hint)
-        header.addWidget(self.problem_sort_check)
-        header.addWidget(self.export_target_summary_button)
         controls = QHBoxLayout()
+        controls.setSpacing(6)
         controls.addWidget(self.target_filter_edit)
         controls.addWidget(self.target_status_filter_combo)
         controls.addStretch(1)
@@ -416,10 +438,31 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.apply_interval_button)
         controls.addWidget(self.apply_visible_interval_button)
         controls.addWidget(self.apply_problem_interval_button)
+        controls.addWidget(self.problem_sort_check)
+        controls.addWidget(self.export_target_summary_button)
+        self.target_advanced_controls_panel = QWidget()
+        self.target_advanced_controls_panel.setLayout(controls)
         layout.addLayout(header)
-        layout.addLayout(controls)
+        layout.addWidget(self.target_advanced_controls_panel)
         layout.addWidget(self.target_table)
+        self._apply_simple_target_columns()
         return panel
+
+    def _apply_simple_target_columns(self) -> None:
+        if not hasattr(self, "target_table"):
+            return
+        visible_columns = {0, 1, 2, 6, 7}
+        for column in range(self.target_table.columnCount()):
+            self.target_table.setColumnHidden(column, column not in visible_columns)
+
+    def _sync_target_columns_for_mode(self) -> None:
+        if not hasattr(self, "target_table"):
+            return
+        if self.advanced_features_visible:
+            for column in range(self.target_table.columnCount()):
+                self.target_table.setColumnHidden(column, column == TARGET_SCORE_COLUMN)
+        else:
+            self._apply_simple_target_columns()
 
     def _build_metrics_strip(self) -> QFrame:
         strip = _panel("metrics")
@@ -428,11 +471,11 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         for key, label in [
-            ("current", "Target Current"),
-            ("avg", "Avg Latency"),
-            ("loss", "Packet Loss"),
-            ("jitter", "Jitter"),
-            ("samples", "Samples"),
+            ("current", "현재 지연"),
+            ("avg", "평균 지연"),
+            ("loss", "손실률"),
+            ("jitter", "지터"),
+            ("samples", "샘플"),
         ]:
             box = _panel("metricBox")
             box_layout = QVBoxLayout(box)
@@ -455,14 +498,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(12)
 
-        analysis_title = QLabel("Analysis Summary")
+        analysis_title = QLabel("분석 요약")
         analysis_title.setObjectName("panelTitle")
         self.analysis_box = QTextEdit()
         self.analysis_box.setReadOnly(True)
         self.analysis_box.setMinimumHeight(180)
         self.analysis_box.setObjectName("analysisBox")
 
-        states_title = QLabel("Operational States")
+        states_title = QLabel("상태 기준")
         states_title.setObjectName("panelTitle")
         self.states_box = QTextEdit()
         self.states_box.setReadOnly(True)
@@ -474,7 +517,7 @@ class MainWindow(QMainWindow):
             "Critical: 손실률 20% 이상 또는 연속 timeout"
         )
 
-        diagnostics_title = QLabel("Engine Diagnostics")
+        diagnostics_title = QLabel("측정 엔진 상태")
         diagnostics_title.setObjectName("panelTitle")
         self.diagnostics_box = QTextEdit()
         self.diagnostics_box.setReadOnly(True)
@@ -482,11 +525,11 @@ class MainWindow(QMainWindow):
         self.diagnostics_box.setObjectName("statesBox")
         self.diagnostics_box.setPlainText("측정 시작 후 엔진 상태가 표시됩니다.")
 
-        alerts_title = QLabel("Alert Events")
+        alerts_title = QLabel("알림 이벤트")
         alerts_title.setObjectName("panelTitle")
         alert_rule_row = QHBoxLayout()
         alert_rule_row.setSpacing(6)
-        self.loss_alert_check = QCheckBox("Loss")
+        self.loss_alert_check = QCheckBox("손실")
         self.loss_alert_check.setChecked(True)
         self.loss_threshold_spin = QSpinBox()
         self.loss_threshold_spin.setRange(1, 100)
@@ -496,13 +539,13 @@ class MainWindow(QMainWindow):
         self.loss_window_spin.setRange(1, 60)
         self.loss_window_spin.setValue(3)
         self.loss_window_spin.setSuffix("m")
-        self.latency_alert_check = QCheckBox("Latency")
+        self.latency_alert_check = QCheckBox("지연")
         self.latency_alert_check.setChecked(True)
         self.latency_threshold_spin = QSpinBox()
         self.latency_threshold_spin.setRange(1, 5000)
         self.latency_threshold_spin.setValue(100)
         self.latency_threshold_spin.setSuffix("ms")
-        self.jitter_alert_check = QCheckBox("Jitter")
+        self.jitter_alert_check = QCheckBox("지터")
         self.jitter_alert_check.setChecked(True)
         self.jitter_threshold_spin = QSpinBox()
         self.jitter_threshold_spin.setRange(1, 1000)
@@ -519,46 +562,46 @@ class MainWindow(QMainWindow):
         self.mos_window_spin.setRange(1, 240)
         self.mos_window_spin.setValue(5)
         self.mos_window_spin.setSuffix("m")
-        self.route_ip_alert_check = QCheckBox("Route IP")
+        self.route_ip_alert_check = QCheckBox("경로 IP")
         self.route_ip_alert_check.setToolTip("Alert when the watched IPv4 address appears in the current route")
         self.route_ip_alert_edit = QLineEdit()
         self.route_ip_alert_edit.setPlaceholderText("192.0.2.1")
         self.route_ip_alert_edit.setMinimumWidth(105)
-        self.sample_alert_check = QCheckBox("Sample")
+        self.sample_alert_check = QCheckBox("샘플")
         self.sample_alert_check.setChecked(True)
         self.sample_window_spin = QSpinBox()
         self.sample_window_spin.setRange(1, 100)
         self.sample_window_spin.setValue(10)
-        self.sample_window_spin.setSuffix(" samples")
+        self.sample_window_spin.setSuffix("개 샘플")
         self.sample_bad_spin = QSpinBox()
         self.sample_bad_spin.setRange(1, 100)
         self.sample_bad_spin.setValue(10)
-        self.sample_bad_spin.setSuffix(" bad")
-        self.timer_alert_check = QCheckBox("Timer")
+        self.sample_bad_spin.setSuffix("개 불량")
+        self.timer_alert_check = QCheckBox("지속시간")
         self.timer_alert_check.setChecked(True)
         self.timer_window_spin = QSpinBox()
         self.timer_window_spin.setRange(1, 240)
         self.timer_window_spin.setValue(5)
         self.timer_window_spin.setSuffix("m")
-        self.alert_start_action_check = QCheckBox("Start")
+        self.alert_start_action_check = QCheckBox("시작")
         self.alert_start_action_check.setChecked(True)
         self.alert_start_action_check.setToolTip("Run selected actions when a new alert starts")
-        self.alert_end_action_check = QCheckBox("End")
+        self.alert_end_action_check = QCheckBox("종료")
         self.alert_end_action_check.setChecked(True)
         self.alert_end_action_check.setToolTip("Run selected actions when an active alert recovers")
-        self.alert_route_adjust_action_check = QCheckBox("Route adjust")
-        self.alert_route_adjust_action_check.setChecked(True)
+        self.alert_route_adjust_action_check = QCheckBox("경로 조정")
+        self.alert_route_adjust_action_check.setChecked(False)
         self.alert_route_adjust_action_check.setToolTip(
             "When Final Hop Only is active, switch to Full Route on matching target alerts"
         )
-        self.alert_timeline_action_check = QCheckBox("Timeline")
+        self.alert_timeline_action_check = QCheckBox("타임라인")
         self.alert_timeline_action_check.setChecked(True)
-        self.alert_comment_action_check = QCheckBox("Comment")
+        self.alert_comment_action_check = QCheckBox("코멘트")
         self.alert_comment_action_check.setChecked(True)
-        self.alert_log_action_check = QCheckBox("Log")
-        self.alert_beep_action_check = QCheckBox("Beep")
-        self.alert_image_action_check = QCheckBox("Image")
-        self.alert_email_action_check = QCheckBox("Email")
+        self.alert_log_action_check = QCheckBox("로그")
+        self.alert_beep_action_check = QCheckBox("소리")
+        self.alert_image_action_check = QCheckBox("이미지")
+        self.alert_email_action_check = QCheckBox("이메일")
         self.alert_email_server_edit = QLineEdit()
         self.alert_email_server_edit.setPlaceholderText("smtp.example:25")
         self.alert_email_server_edit.setMinimumWidth(130)
@@ -573,22 +616,22 @@ class MainWindow(QMainWindow):
         self.alert_email_security_combo.addItem("STARTTLS", ALERT_EMAIL_SECURITY_STARTTLS)
         self.alert_email_security_combo.addItem("SSL", ALERT_EMAIL_SECURITY_SSL)
         self.alert_email_user_edit = QLineEdit()
-        self.alert_email_user_edit.setPlaceholderText("SMTP user")
+        self.alert_email_user_edit.setPlaceholderText("SMTP 사용자")
         self.alert_email_user_edit.setMinimumWidth(100)
         self.alert_email_password_env_edit = QLineEdit()
-        self.alert_email_password_env_edit.setPlaceholderText("password env")
+        self.alert_email_password_env_edit.setPlaceholderText("비밀번호 환경변수")
         self.alert_email_password_env_edit.setMinimumWidth(105)
         self.alert_rest_action_check = QCheckBox("REST")
         self.alert_rest_url_edit = QLineEdit()
         self.alert_rest_url_edit.setPlaceholderText("https://example/api/alert")
         self.alert_rest_url_edit.setMinimumWidth(170)
-        self.alert_executable_action_check = QCheckBox("Run")
+        self.alert_executable_action_check = QCheckBox("실행")
         self.alert_executable_path_edit = QLineEdit()
         self.alert_executable_path_edit.setPlaceholderText("C:\\path\\action.exe")
         self.alert_executable_path_edit.setMinimumWidth(165)
-        self.save_alert_preset_button = QPushButton("Save preset")
+        self.save_alert_preset_button = QPushButton("프리셋 저장")
         self.save_alert_preset_button.clicked.connect(self.save_alert_rule_preset)
-        self.load_alert_preset_button = QPushButton("Load preset")
+        self.load_alert_preset_button = QPushButton("프리셋 불러오기")
         self.load_alert_preset_button.clicked.connect(self.load_alert_rule_preset)
         for checkbox, fields in [
             (self.loss_alert_check, [self.loss_threshold_spin, self.loss_window_spin]),
@@ -607,7 +650,7 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.mos_window_spin)
         alert_rule_row.addWidget(self.route_ip_alert_check)
         alert_rule_row.addWidget(self.route_ip_alert_edit)
-        alert_rule_row.addWidget(QLabel("Actions"))
+        alert_rule_row.addWidget(QLabel("동작"))
         alert_rule_row.addWidget(self.alert_start_action_check)
         alert_rule_row.addWidget(self.alert_end_action_check)
         alert_rule_row.addWidget(self.alert_route_adjust_action_check)
@@ -637,41 +680,41 @@ class MainWindow(QMainWindow):
         self.alerts_box.setObjectName("statesBox")
         self.alerts_box.setPlainText("No alert events.")
 
-        route_title = QLabel("Route Changes")
+        route_title = QLabel("경로 변경")
         route_title.setObjectName("panelTitle")
         self.route_changes_box = QTextEdit()
         self.route_changes_box.setReadOnly(True)
         self.route_changes_box.setMaximumHeight(130)
         self.route_changes_box.setObjectName("statesBox")
-        self.route_changes_box.setPlainText("No route changes detected.")
+        self.route_changes_box.setPlainText("감지된 경로 변경이 없습니다.")
 
-        sessions_title = QLabel("Sessions")
+        sessions_title = QLabel("저장된 세션")
         sessions_title.setObjectName("panelTitle")
         sessions_header = QHBoxLayout()
         self.session_combo = QComboBox()
         self.session_combo.setMinimumWidth(170)
         self.session_filter_edit = QLineEdit()
-        self.session_filter_edit.setPlaceholderText("Filter sessions, e.g. month:2026-01")
+        self.session_filter_edit.setPlaceholderText("세션 필터 예: month:2026-01")
         self.session_filter_edit.setClearButtonEnabled(True)
         self.session_filter_edit.setMinimumWidth(160)
         self.session_filter_edit.textChanged.connect(lambda *_args: self._sync_sessions_box())
-        self.open_session_button = QPushButton("Open")
+        self.open_session_button = QPushButton("열기")
         self.open_session_button.clicked.connect(self.open_selected_session)
-        self.resume_session_button = QPushButton("Resume")
+        self.resume_session_button = QPushButton("재개")
         self.resume_session_button.clicked.connect(self.resume_selected_session)
-        self.export_session_button = QPushButton("Export")
+        self.export_session_button = QPushButton("내보내기")
         self.export_session_button.clicked.connect(self.export_selected_session)
-        self.export_visible_sessions_button = QPushButton("Export visible")
+        self.export_visible_sessions_button = QPushButton("표시 세션 내보내기")
         self.export_visible_sessions_button.clicked.connect(self.export_visible_sessions)
-        self.delete_session_button = QPushButton("Delete")
+        self.delete_session_button = QPushButton("삭제")
         self.delete_session_button.clicked.connect(self.delete_selected_session)
-        self.refresh_sessions_button = QPushButton("Refresh")
+        self.refresh_sessions_button = QPushButton("새로고침")
         self.refresh_sessions_button.clicked.connect(self.refresh_saved_sessions)
         self.session_retention_days_spin = QSpinBox()
         self.session_retention_days_spin.setRange(1, 3650)
         self.session_retention_days_spin.setValue(90)
         self.session_retention_days_spin.setSuffix("d")
-        self.prune_sessions_button = QPushButton("Prune old")
+        self.prune_sessions_button = QPushButton("오래된 세션 정리")
         self.prune_sessions_button.clicked.connect(self.prune_old_sessions)
         sessions_header.addWidget(sessions_title)
         sessions_header.addWidget(self.session_filter_edit)
@@ -683,7 +726,7 @@ class MainWindow(QMainWindow):
         sessions_header.addWidget(self.export_visible_sessions_button)
         sessions_header.addWidget(self.delete_session_button)
         sessions_header.addWidget(self.refresh_sessions_button)
-        sessions_header.addWidget(QLabel("Keep"))
+        sessions_header.addWidget(QLabel("보관"))
         sessions_header.addWidget(self.session_retention_days_spin)
         sessions_header.addWidget(self.prune_sessions_button)
         self.session_combo.currentIndexChanged.connect(lambda *_args: self._select_session_table_row())
@@ -694,19 +737,19 @@ class MainWindow(QMainWindow):
         self.sessions_box.setReadOnly(True)
         self.sessions_box.setMaximumHeight(118)
         self.sessions_box.setObjectName("statesBox")
-        self.sessions_box.setPlainText("No saved sessions.")
+        self.sessions_box.setPlainText("저장된 세션이 없습니다.")
 
-        export_title = QLabel("Export")
+        export_title = QLabel("내보내기")
         export_title.setObjectName("panelTitle")
         export_row = QHBoxLayout()
         export_row.setSpacing(8)
         for button in (self.csv_button, self.xlsx_button, self.report_button):
             export_row.addWidget(button)
         self.graph_png_scope_combo = QComboBox()
-        self.graph_png_scope_combo.addItem("Timeline graph", GRAPH_PNG_SCOPE_TIMELINE)
-        self.graph_png_scope_combo.addItem("Trace table", GRAPH_PNG_SCOPE_TRACE)
-        self.graph_png_scope_combo.addItem("Both", GRAPH_PNG_SCOPE_BOTH)
-        export_row.addWidget(QLabel("PNG scope"))
+        self.graph_png_scope_combo.addItem("실시간 그래프", GRAPH_PNG_SCOPE_TIMELINE)
+        self.graph_png_scope_combo.addItem("경로 표", GRAPH_PNG_SCOPE_TRACE)
+        self.graph_png_scope_combo.addItem("둘 다", GRAPH_PNG_SCOPE_BOTH)
+        export_row.addWidget(QLabel("PNG 범위"))
         export_row.addWidget(self.graph_png_scope_combo)
         export_row.addWidget(self.graph_png_button)
         export_row.addStretch(1)
@@ -717,13 +760,13 @@ class MainWindow(QMainWindow):
         self.statistics_group_combo.addItem("1d", 86400)
         self.statistics_group_combo.addItem("1w", 604800)
         self.statistics_timezone_combo = QComboBox()
-        self.statistics_timezone_combo.addItem("Local", TIMEZONE_LOCAL)
+        self.statistics_timezone_combo.addItem("로컬", TIMEZONE_LOCAL)
         self.statistics_timezone_combo.addItem("UTC", TIMEZONE_UTC)
         self.statistics_scope_combo = QComboBox()
-        self.statistics_scope_combo.addItem("All time", STATISTICS_SCOPE_ALL)
-        self.statistics_scope_combo.addItem("Visible timeline", STATISTICS_SCOPE_VISIBLE)
-        self.statistics_scope_combo.addItem("Focus period", STATISTICS_SCOPE_FOCUS)
-        self.statistics_scope_combo.addItem("Custom range", STATISTICS_SCOPE_CUSTOM)
+        self.statistics_scope_combo.addItem("전체 기간", STATISTICS_SCOPE_ALL)
+        self.statistics_scope_combo.addItem("보이는 그래프", STATISTICS_SCOPE_VISIBLE)
+        self.statistics_scope_combo.addItem("포커스 기간", STATISTICS_SCOPE_FOCUS)
+        self.statistics_scope_combo.addItem("직접 지정", STATISTICS_SCOPE_CUSTOM)
         self.statistics_scope_combo.currentIndexChanged.connect(self._sync_statistics_range_controls)
         self.statistics_start_edit = QDateTimeEdit()
         self.statistics_start_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
@@ -734,15 +777,15 @@ class MainWindow(QMainWindow):
         self._set_statistics_custom_range(datetime.now() - timedelta(hours=1), datetime.now())
         statistics_export_row = QHBoxLayout()
         statistics_export_row.setSpacing(8)
-        statistics_export_row.addWidget(QLabel("Stats scope"))
+        statistics_export_row.addWidget(QLabel("통계 범위"))
         statistics_export_row.addWidget(self.statistics_scope_combo)
-        statistics_export_row.addWidget(QLabel("Start"))
+        statistics_export_row.addWidget(QLabel("시작"))
         statistics_export_row.addWidget(self.statistics_start_edit)
-        statistics_export_row.addWidget(QLabel("End"))
+        statistics_export_row.addWidget(QLabel("종료"))
         statistics_export_row.addWidget(self.statistics_end_edit)
-        statistics_export_row.addWidget(QLabel("Stats group"))
+        statistics_export_row.addWidget(QLabel("통계 묶음"))
         statistics_export_row.addWidget(self.statistics_group_combo)
-        statistics_export_row.addWidget(QLabel("Timezone"))
+        statistics_export_row.addWidget(QLabel("시간대"))
         statistics_export_row.addWidget(self.statistics_timezone_combo)
         statistics_export_row.addWidget(self.stats_csv_button)
         statistics_export_row.addWidget(self.stats_xlsx_button)
@@ -782,14 +825,36 @@ class MainWindow(QMainWindow):
         footer = _panel("footer")
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(14, 7, 14, 7)
-        runtime = QLabel("Worker thread active only during measurement. subprocess console hidden on Windows.")
+        runtime = QLabel("측정 작업은 시작 후에만 실행되며 Windows 콘솔 창은 숨김 처리됩니다.")
         runtime.setObjectName("muted")
-        safety = QLabel("No raw sensitive output is exported unless explicitly requested.")
+        safety = QLabel("명시적으로 요청하지 않는 한 민감한 원본 출력은 내보내지 않습니다.")
         safety.setObjectName("mutedStrong")
         layout.addWidget(runtime)
         layout.addStretch(1)
         layout.addWidget(safety)
         return footer
+
+    def set_advanced_features_visible(self, visible: bool) -> None:
+        self.advanced_features_visible = bool(visible)
+        for name in (
+            "advanced_controls_panel",
+            "target_advanced_controls_panel",
+            "metrics_strip_panel",
+            "hop_table_panel",
+            "right_panel",
+            "graph_advanced_controls",
+            "footer_panel",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setVisible(self.advanced_features_visible)
+        if hasattr(self, "advanced_features_action"):
+            self.advanced_features_action.blockSignals(True)
+            self.advanced_features_action.setChecked(self.advanced_features_visible)
+            self.advanced_features_action.blockSignals(False)
+        if hasattr(self, "main_splitter"):
+            self.main_splitter.setSizes([960, 420] if self.advanced_features_visible else [1, 0])
+        self._sync_target_columns_for_mode()
 
     def save_target_group_preset(self) -> None:
         targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
@@ -1395,11 +1460,11 @@ class MainWindow(QMainWindow):
         summary = _all_targets_summary_line(snapshots, total_count=total_count)
         selected_count = len(self._selected_target_addresses()) if hasattr(self, "target_table") else 0
         if selected_count:
-            summary = f"{summary} | Selected {selected_count}"
+            summary = f"{summary} | 선택 {selected_count}"
         visible_targets = {snapshot.address for snapshot in snapshots if snapshot.address}
         override_count = len([target for target in self.target_interval_overrides if target in visible_targets])
         if override_count:
-            summary = f"{summary} | Interval overrides {override_count}"
+            summary = f"{summary} | 개별 주기 {override_count}"
         self.target_summary_status_label.setText(summary)
 
     def _refresh_target_summary_selection(self) -> None:
@@ -3311,7 +3376,7 @@ def _format_duration(seconds: int) -> str:
 
 def _all_targets_summary_line(snapshots: list[MetricSnapshot], *, total_count: int | None = None) -> str:
     total = len(snapshots) if total_count is None else total_count
-    label = f"Targets: {len(snapshots)}/{total}" if total != len(snapshots) else f"Targets: {len(snapshots)}"
+    label = f"IP: {len(snapshots)}/{total}" if total != len(snapshots) else f"IP: {len(snapshots)}"
     if not snapshots:
         return label
     statuses = [display_status(snapshot) for snapshot in snapshots]
@@ -3322,20 +3387,20 @@ def _all_targets_summary_line(snapshots: list[MetricSnapshot], *, total_count: i
     other = len(snapshots) - critical - warning - paused - ok
     parts = [
         label,
-        f"OK {ok}",
-        f"Warning {warning}",
-        f"Critical {critical}",
-        f"Paused {paused}",
+        f"정상 {ok}",
+        f"주의 {warning}",
+        f"장애 {critical}",
+        f"중지 {paused}",
     ]
     if other:
-        parts.append(f"Other {other}")
+        parts.append(f"기타 {other}")
     worst_loss = max(snapshot.loss_percent for snapshot in snapshots)
     max_latency = max(
         (snapshot.current_latency_ms for snapshot in snapshots if snapshot.current_latency_ms is not None),
         default=None,
     )
     max_latency_text = f"{fmt_ms(max_latency)} ms" if max_latency is not None else "-"
-    parts.extend([f"worst loss {worst_loss:.1f}%", f"max latency {max_latency_text}"])
+    parts.extend([f"최대 손실 {worst_loss:.1f}%", f"최대 지연 {max_latency_text}"])
     return " | ".join(parts)
 
 

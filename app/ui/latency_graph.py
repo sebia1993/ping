@@ -188,7 +188,7 @@ class LatencyGraphWidget(QWidget):
 
         if not self._series:
             painter.setPen(QColor("#6b7280"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Target latency graph")
+            painter.drawText(self.rect(), Qt.AlignCenter, "실시간 그래프")
             return
 
         self._draw_grid(painter, plot_rect)
@@ -203,8 +203,8 @@ class LatencyGraphWidget(QWidget):
         self._draw_overview(painter, plot_rect)
 
         painter.setPen(QColor("#374151"))
-        painter.drawText(plot_rect.left(), self.rect().bottom() - 8, "Recent")
-        painter.drawText(plot_rect.right() - 28, self.rect().bottom() - 8, "Now")
+        painter.drawText(plot_rect.left(), self.rect().bottom() - 8, "최근")
+        painter.drawText(plot_rect.right() - 28, self.rect().bottom() - 8, "현재")
 
     def _plot_rect(self) -> QRect:
         left = 64 if len(self._series) > 1 else 42

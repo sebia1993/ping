@@ -55,7 +55,7 @@ class GraphDetailWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         _apply_detail_font()
-        self.setWindowTitle("Target Latency Graph")
+        self.setWindowTitle("실시간 그래프 확대")
         self.resize(1120, 700)
         self.metric_value_labels: dict[str, QLabel] = {}
         self._target = ""
@@ -77,7 +77,7 @@ class GraphDetailWindow(QMainWindow):
         layout.setSpacing(10)
 
         title_row = QHBoxLayout()
-        self.title_label = QLabel("Target Latency Timeline")
+        self.title_label = QLabel("실시간 그래프")
         self.title_label.setObjectName("title")
         self.target_label = QLabel("대상: -")
         self.target_label.setObjectName("muted")
@@ -99,7 +99,7 @@ class GraphDetailWindow(QMainWindow):
         graph_layout.addWidget(self.graph, 1)
         layout.addWidget(graph_frame, 1)
 
-        self.range_summary_label = QLabel("No range selected")
+        self.range_summary_label = QLabel("선택한 범위 없음")
         self.range_summary_label.setObjectName("rangeSummary")
         layout.addWidget(self.range_summary_label)
 
@@ -179,47 +179,47 @@ class GraphDetailWindow(QMainWindow):
         self.view_combo.addItem("최종 대상", VIEW_TARGET)
         self.view_combo.addItem("전체 Hop", VIEW_ALL_HOPS)
         self.view_combo.addItem("선택 Hop", VIEW_SELECTED_HOP)
-        self.view_combo.addItem("Shown Hops", VIEW_VISIBLE_HOPS)
+        self.view_combo.addItem("표시 중인 Hop", VIEW_VISIBLE_HOPS)
         self.view_combo.currentIndexChanged.connect(self._refresh_graph)
 
         self.hop_combo = QComboBox()
         self.hop_combo.currentIndexChanged.connect(self._on_hop_combo_changed)
 
-        pan_left_button = QPushButton("Prev")
-        pan_left_button.setToolTip("Move timeline earlier")
+        pan_left_button = QPushButton("이전")
+        pan_left_button.setToolTip("그래프 시간을 이전으로 이동")
         pan_left_button.clicked.connect(self.graph.pan_left)
-        pan_right_button = QPushButton("Next")
-        pan_right_button.setToolTip("Move timeline later")
+        pan_right_button = QPushButton("다음")
+        pan_right_button.setToolTip("그래프 시간을 다음으로 이동")
         pan_right_button.clicked.connect(self.graph.pan_right)
-        current_button = QPushButton("Current")
-        current_button.setToolTip("Return timeline to latest samples")
+        current_button = QPushButton("현재")
+        current_button.setToolTip("최신 측정 구간으로 이동")
         current_button.clicked.connect(self.graph.reset_to_current)
         zoom_in_button = QPushButton("+")
-        zoom_in_button.setToolTip("Zoom in")
+        zoom_in_button.setToolTip("확대")
         zoom_in_button.clicked.connect(self.graph.zoom_in)
         zoom_out_button = QPushButton("-")
-        zoom_out_button.setToolTip("Zoom out")
+        zoom_out_button.setToolTip("축소")
         zoom_out_button.clicked.connect(self.graph.zoom_out)
-        reset_button = QPushButton("Reset")
+        reset_button = QPushButton("초기화")
         reset_button.clicked.connect(self.graph.reset_zoom)
 
         self.annotation_input = QLineEdit()
         self.annotation_input.setPlaceholderText("메모")
-        annotate_button = QPushButton("Add note")
+        annotate_button = QPushButton("메모 추가")
         annotate_button.clicked.connect(self.add_annotation_from_selection)
-        save_png_button = QPushButton("Save PNG")
+        save_png_button = QPushButton("PNG 저장")
         save_png_button.clicked.connect(lambda: self.save_png())
-        save_csv_button = QPushButton("Save CSV")
-        save_csv_button.setToolTip("Save visible timeline samples as CSV")
+        save_csv_button = QPushButton("CSV 저장")
+        save_csv_button.setToolTip("현재 보이는 그래프 샘플을 CSV로 저장")
         save_csv_button.clicked.connect(lambda: self.save_visible_csv())
-        clear_button = QPushButton("Clear range")
+        clear_button = QPushButton("범위 해제")
         clear_button.clicked.connect(self.graph.clear_selection)
-        apply_focus_button = QPushButton("Apply focus")
+        apply_focus_button = QPushButton("포커스 적용")
         apply_focus_button.clicked.connect(self.apply_focus_from_selection)
-        clear_focus_button = QPushButton("Clear focus")
+        clear_focus_button = QPushButton("포커스 해제")
         clear_focus_button.clicked.connect(lambda: self.focus_cleared.emit())
 
-        top_row.addWidget(QLabel("View"))
+        top_row.addWidget(QLabel("보기"))
         top_row.addWidget(self.view_combo)
         top_row.addWidget(QLabel("Hop"))
         top_row.addWidget(self.hop_combo, 1)
@@ -237,9 +237,9 @@ class GraphDetailWindow(QMainWindow):
         top_row.addWidget(clear_button)
         top_row.addWidget(clear_focus_button)
 
-        self.timeline_status_label = QLabel("Timeline source: live buffer")
+        self.timeline_status_label = QLabel("그래프 기준: 실시간 버퍼")
         self.timeline_status_label.setObjectName("timelineStatus")
-        preset_row.addWidget(QLabel("Scale"))
+        preset_row.addWidget(QLabel("범위"))
         for label, seconds in [
             ("60s", 60),
             ("10m", 600),
@@ -251,7 +251,7 @@ class GraphDetailWindow(QMainWindow):
             button = QPushButton(label)
             button.clicked.connect(lambda _checked=False, seconds=seconds: self.timeline_range_requested.emit(seconds))
             preset_row.addWidget(button)
-        live_button = QPushButton("Live")
+        live_button = QPushButton("실시간")
         live_button.clicked.connect(lambda: self.timeline_live_requested.emit())
         preset_row.addWidget(live_button)
         preset_row.addWidget(self.timeline_status_label, 1)
@@ -284,11 +284,11 @@ class GraphDetailWindow(QMainWindow):
         layout.setSpacing(10)
 
         for key, label in [
-            ("current", "Target Current"),
-            ("avg", "Avg Latency"),
-            ("loss", "Packet Loss"),
-            ("jitter", "Jitter"),
-            ("samples", "Samples"),
+            ("current", "현재 지연"),
+            ("avg", "평균 지연"),
+            ("loss", "손실률"),
+            ("jitter", "지터"),
+            ("samples", "샘플"),
         ]:
             box = QFrame()
             box.setObjectName("metricBox")
@@ -410,7 +410,7 @@ class GraphDetailWindow(QMainWindow):
         self._clear_layout(self.hop_toggle_layout)
         self._hop_checkboxes = {}
         if not self._hop_snapshots:
-            empty = QLabel("No route hops")
+            empty = QLabel("경로 Hop 없음")
             empty.setObjectName("muted")
             self.hop_toggle_layout.addWidget(empty)
             self.hop_toggle_layout.addStretch(1)
@@ -511,14 +511,14 @@ class GraphDetailWindow(QMainWindow):
         selected_path.parent.mkdir(parents=True, exist_ok=True)
         pixmap = self.centralWidget().grab()
         if not pixmap.save(str(selected_path), "PNG"):
-            raise RuntimeError(f"PNG save failed: {selected_path}")
-        self.timeline_status_label.setText(f"PNG saved: {selected_path}")
+            raise RuntimeError(f"PNG 저장 실패: {selected_path}")
+        self.timeline_status_label.setText(f"PNG 저장 완료: {selected_path}")
         return selected_path
 
     def save_visible_csv(self, path: Path | None = None) -> Path | None:
         rows = self._visible_csv_rows()
         if not rows:
-            self.timeline_status_label.setText("No visible graph samples to export")
+            self.timeline_status_label.setText("내보낼 그래프 샘플이 없습니다")
             return None
         selected_path = path or self._select_csv_path()
         if selected_path is None:
@@ -531,19 +531,19 @@ class GraphDetailWindow(QMainWindow):
             writer.writerow(["series_key", "series_label", *OBSERVATION_HEADERS])
             for series, observation in rows:
                 writer.writerow([series.key, series.label, *observation_to_row(observation)])
-        self.timeline_status_label.setText(f"CSV saved: {selected_path} ({len(rows)} samples)")
+        self.timeline_status_label.setText(f"CSV 저장 완료: {selected_path} ({len(rows)}개 샘플)")
         return selected_path
 
     def _select_png_path(self) -> Path | None:
         default = default_export_path(self._target or "target", "png", Path.cwd() / "exports")
         default.parent.mkdir(parents=True, exist_ok=True)
-        selected, _ = QFileDialog.getSaveFileName(self, "Save PNG", str(default), "PNG Files (*.png)")
+        selected, _ = QFileDialog.getSaveFileName(self, "PNG 저장", str(default), "PNG Files (*.png)")
         return Path(selected) if selected else None
 
     def _select_csv_path(self) -> Path | None:
         default = default_export_path(self._target or "target", "csv", Path.cwd() / "exports")
         default.parent.mkdir(parents=True, exist_ok=True)
-        selected, _ = QFileDialog.getSaveFileName(self, "Save CSV", str(default), "CSV Files (*.csv)")
+        selected, _ = QFileDialog.getSaveFileName(self, "CSV 저장", str(default), "CSV Files (*.csv)")
         return Path(selected) if selected else None
 
     def _visible_csv_rows(self) -> list[tuple[TimelineSeries, HopObservation]]:
@@ -569,11 +569,11 @@ class GraphDetailWindow(QMainWindow):
 
     def _update_range_summary(self, selection: object) -> None:
         if not selection:
-            self.range_summary_label.setText("No range selected")
+            self.range_summary_label.setText("선택한 범위 없음")
             return
         start, end = selection
         if not isinstance(start, datetime) or not isinstance(end, datetime):
-            self.range_summary_label.setText("No range selected")
+            self.range_summary_label.setText("선택한 범위 없음")
             return
         points = [
             point
@@ -584,9 +584,9 @@ class GraphDetailWindow(QMainWindow):
         summary = summarize_points(points)
         self.range_summary_label.setText(
             f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')} | "
-            f"samples {summary.samples} | loss {summary.loss_percent:.1f}% | "
-            f"timeouts {summary.timeout_count} | avg {fmt_ms(summary.avg_latency_ms) or '-'} ms | "
-            f"max {fmt_ms(summary.max_latency_ms) or '-'} ms"
+            f"샘플 {summary.samples} | 손실 {summary.loss_percent:.1f}% | "
+            f"타임아웃 {summary.timeout_count} | 평균 {fmt_ms(summary.avg_latency_ms) or '-'} ms | "
+            f"최대 {fmt_ms(summary.max_latency_ms) or '-'} ms"
         )
 
     def _update_metrics(self, target_snapshot: MetricSnapshot | None) -> None:

@@ -191,7 +191,7 @@ def test_graph_detail_switches_between_target_all_hops_and_selected_hop(qt_app) 
         detail.add_annotation_from_selection()
 
         assert len(detail._annotations) == 1
-        assert "loss 50.0%" in detail.range_summary_label.text()
+        assert "손실 50.0%" in detail.range_summary_label.text()
     finally:
         detail.close()
 
@@ -274,7 +274,7 @@ def test_graph_detail_saves_selected_range_png(qt_app, tmp_path) -> None:
         assert saved == path
         assert path.exists()
         assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-        assert "PNG saved:" in detail.timeline_status_label.text()
+        assert "PNG 저장 완료:" in detail.timeline_status_label.text()
     finally:
         detail.close()
 
@@ -322,7 +322,7 @@ def test_graph_detail_saves_visible_csv_samples(qt_app, tmp_path) -> None:
             point.timestamp.isoformat(timespec="seconds") for point in history[3:]
         ]
         assert {row[0] for row in rows[1:]} == {"target"}
-        assert "CSV saved:" in detail.timeline_status_label.text()
+        assert "CSV 저장 완료:" in detail.timeline_status_label.text()
     finally:
         detail.close()
 
@@ -358,13 +358,13 @@ def test_graph_detail_timeline_navigation_buttons_move_visible_window(qt_app) ->
         assert current_range is not None
 
         buttons = {button.text(): button for button in detail.findChildren(QPushButton)}
-        buttons["Prev"].click()
+        buttons["이전"].click()
         previous_range = detail.graph.visible_datetime_range()
 
         assert previous_range is not None
         assert previous_range[1] < current_range[1]
 
-        buttons["Current"].click()
+        buttons["현재"].click()
         latest_range = detail.graph.visible_datetime_range()
 
         assert latest_range is not None

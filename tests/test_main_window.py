@@ -62,13 +62,25 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.session_table.columnCount() == len(SESSION_HEADERS)
         assert window.alert_table.columnCount() == len(ALERT_HEADERS)
         assert window.alert_table.rowCount() == 0
+        assert window.windowTitle() == "네트워크 경로 진단"
         assert window.timeline_label.text() == "Timeline: Live"
-        assert window.target_summary_status_label.text() == "Targets: 0"
+        assert window.target_summary_status_label.text() == "IP: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
-        assert window.save_target_group_button.text() == "Save group"
-        assert window.save_selected_target_group_button.text() == "Save selected"
-        assert window.load_target_group_button.text() == "Load group"
+        assert window.advanced_features_visible is False
+        assert window.advanced_controls_panel.isHidden() is True
+        assert window.target_advanced_controls_panel.isHidden() is True
+        assert window.hop_table_panel.isHidden() is True
+        assert window.right_panel.isHidden() is True
+        assert window.graph_advanced_controls.isHidden() is True
+        assert window.footer_panel.isHidden() is True
+        assert window.target_table.isColumnHidden(TARGET_HEADERS.index("평균")) is True
+        assert window.target_table.isColumnHidden(TARGET_HEADERS.index("샘플")) is False
+        assert window.start_button.text() == "시작"
+        assert window.stop_button.text() == "중지"
+        assert window.save_target_group_button.text() == "그룹 저장"
+        assert window.save_selected_target_group_button.text() == "선택 저장"
+        assert window.load_target_group_button.text() == "그룹 불러오기"
         assert window.csv_button.isEnabled() is False
         assert window.xlsx_button.isEnabled() is False
         assert window.report_button.isEnabled() is False
@@ -87,7 +99,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.timer_alert_check.isChecked() is True
         assert window.alert_start_action_check.isChecked() is True
         assert window.alert_end_action_check.isChecked() is True
-        assert window.alert_route_adjust_action_check.isChecked() is True
+        assert window.alert_route_adjust_action_check.isChecked() is False
         assert window.alert_timeline_action_check.isChecked() is True
         assert window.alert_comment_action_check.isChecked() is True
         assert window.alert_log_action_check.isChecked() is False
@@ -104,8 +116,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_rest_url_edit.text() == ""
         assert window.alert_executable_action_check.isChecked() is False
         assert window.alert_executable_path_edit.text() == ""
-        assert window.save_alert_preset_button.text() == "Save preset"
-        assert window.load_alert_preset_button.text() == "Load preset"
+        assert window.save_alert_preset_button.text() == "프리셋 저장"
+        assert window.load_alert_preset_button.text() == "프리셋 불러오기"
         assert window.jitter_threshold_spin.value() == 30
         assert window.mos_alert_check.isChecked() is False
         assert window.mos_threshold_spin.value() == 3.5
@@ -119,6 +131,10 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.statistics_end_edit.isEnabled() is False
         assert window.export_session_button.isEnabled() == (window.session_combo.count() > 0)
         assert window.graph_detail_button.text() == "그래프 확대"
+        window.set_advanced_features_visible(True)
+        assert window.advanced_features_visible is True
+        assert window.right_panel.isHidden() is False
+        assert window.target_table.isColumnHidden(TARGET_HEADERS.index("평균")) is False
         assert window.sessions_box.toPlainText()
     finally:
         window.close()
@@ -1030,7 +1046,7 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert created_workers[0].targets == ["8.8.8.8", "192.168.0.1"]
         assert created_workers[0].interval_seconds == 2
         assert created_workers[0].max_cycles == 3
-        assert created_workers[0].measurement_mode == MEASUREMENT_MODE_FULL_ROUTE
+        assert created_workers[0].measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
         assert created_workers[0].probe_engine == PROBE_ENGINE_TCP_CONNECT
         assert created_workers[0].tcp_port == 8443
         assert created_workers[0].started is True
@@ -1067,6 +1083,7 @@ def test_main_window_passes_route_adjustment_options_to_worker(qt_app) -> None:
         window.target_input.setText("198.51.100.10")
         window.refresh_trace_targets()
         window.latency_threshold_spin.setValue(250)
+        window.alert_route_adjust_action_check.setChecked(True)
         mode_index = window.measurement_mode_combo.findData(MEASUREMENT_MODE_FINAL_HOP_ONLY)
         assert mode_index >= 0
         window.measurement_mode_combo.setCurrentIndex(mode_index)
@@ -1440,7 +1457,7 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         )
 
         window.target_table.selectRow(1)
-        assert "Selected 1" in window.target_summary_status_label.text()
+        assert "선택 1" in window.target_summary_status_label.text()
         window.pause_selected_targets()
         window.resume_selected_targets()
         window.pause_all_targets()
@@ -1449,7 +1466,7 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         window.apply_runtime_interval()
         interval_column = TARGET_HEADERS.index("Interval")
         interval_source_column = TARGET_HEADERS.index("Interval Source")
-        assert "Interval overrides 1" in window.target_summary_status_label.text()
+        assert "개별 주기 1" in window.target_summary_status_label.text()
         assert window.target_table.item(1, interval_column).text() == "5s"
         assert window.target_table.item(1, interval_source_column).text() == "target"
         window.target_table.clearSelection()
@@ -1460,8 +1477,8 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         assert worker.resumed_calls == [["203.0.113.10"], ["198.51.100.10", "203.0.113.10"]]
         assert worker.target_interval_updates == [(["203.0.113.10"], 5)]
         assert worker.interval_updates == [2]
-        assert "Interval overrides" not in window.target_summary_status_label.text()
-        assert "Selected" not in window.target_summary_status_label.text()
+        assert "개별 주기" not in window.target_summary_status_label.text()
+        assert "선택" not in window.target_summary_status_label.text()
         assert window.target_table.item(0, interval_column).text() == "2s"
         assert window.target_table.item(1, interval_column).text() == "2s"
         assert window.apply_interval_button.isEnabled() is True
@@ -1532,9 +1549,9 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         window.target_status_filter_combo.setCurrentIndex(problem_index)
 
         assert window.target_table.rowCount() == 2
-        assert window.target_summary_status_label.text().startswith("Targets: 2/3")
-        assert "Warning 1" in window.target_summary_status_label.text()
-        assert "Critical 1" in window.target_summary_status_label.text()
+        assert window.target_summary_status_label.text().startswith("IP: 2/3")
+        assert "주의 1" in window.target_summary_status_label.text()
+        assert "장애 1" in window.target_summary_status_label.text()
 
         window.pause_visible_targets()
         window.resume_visible_targets()
@@ -1544,7 +1561,7 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         assert worker.paused_calls == [["203.0.113.10", "203.0.113.20"]]
         assert worker.resumed_calls == [["203.0.113.10", "203.0.113.20"]]
         assert worker.target_interval_updates == [(["203.0.113.10", "203.0.113.20"], 5)]
-        assert "Interval overrides 2" in window.target_summary_status_label.text()
+        assert "개별 주기 2" in window.target_summary_status_label.text()
 
         window.target_filter_edit.setText("203.0.113.20")
 
@@ -1557,7 +1574,7 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         window.target_filter_edit.setText("no-match")
 
         assert window.target_table.rowCount() == 0
-        assert window.target_summary_status_label.text() == "Targets: 0/3"
+        assert window.target_summary_status_label.text() == "IP: 0/3"
         assert window.export_target_summary_button.isEnabled() is False
     finally:
         window.close()
@@ -1634,7 +1651,7 @@ def test_main_window_problem_target_batch_controls(qt_app) -> None:
             "203.0.113.20": 5,
         }
         assert "Runtime interval applied to problem 2 target(s): 5s" in window.status_label.text()
-        assert "Interval overrides 2" in window.target_summary_status_label.text()
+        assert "개별 주기 2" in window.target_summary_status_label.text()
     finally:
         window.close()
 
@@ -1784,10 +1801,10 @@ def test_main_window_renders_trace_metrics_and_exports(qt_app) -> None:
         assert window.target_table.rowCount() == 2
         assert window.target_table.item(1, 0).text() == "192.168.0.1"
         summary = window.target_summary_status_label.text()
-        assert "Targets: 2" in summary
-        assert "OK 1" in summary
-        assert "Critical 1" in summary
-        assert "worst loss 25.0%" in summary
+        assert "IP: 2" in summary
+        assert "정상 1" in summary
+        assert "장애 1" in summary
+        assert "최대 손실 25.0%" in summary
         assert window.metric_value_labels["loss"].text() == "25.0%"
         assert window.metric_value_labels["samples"].text() == "1"
         assert "가능성" in window.analysis_box.toPlainText()
@@ -2819,6 +2836,7 @@ def test_main_window_records_route_adjustment_action_for_final_hop_alert(qt_app,
         window.alert_action_log_path = tmp_path / "session.alerts.csv"
         window.loss_threshold_spin.setValue(100)
         window.latency_threshold_spin.setValue(80)
+        window.alert_route_adjust_action_check.setChecked(True)
         window.alert_timeline_action_check.setChecked(False)
         window.alert_comment_action_check.setChecked(False)
         mode_index = window.measurement_mode_combo.findData(MEASUREMENT_MODE_FINAL_HOP_ONLY)
