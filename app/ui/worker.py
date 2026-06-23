@@ -644,6 +644,8 @@ class MeasurementWorker(QThread):
         capacity = max(min(len(self.targets), MAX_TARGET_PING_WORKERS) - len(active_targets), 0)
         if capacity == 0:
             return scheduled
+        # 여러 IP를 한 번에 전부 실행하면 timeout이 많은 환경에서 스레드가 급격히 늘 수 있습니다.
+        # capacity만큼만 새 ping을 예약해서 프로그램 반응성과 시스템 부하를 같이 지킵니다.
         for target in self.targets:
             if self._is_target_paused(target):
                 continue
@@ -716,6 +718,8 @@ class MeasurementWorker(QThread):
             self._sleep_for(timeout)
             return
 
+        # Future는 "백그라운드에서 실행 중인 ping 작업표"라고 보면 됩니다.
+        # 완료된 Future만 꺼내 처리하고, 아직 끝나지 않은 ping은 다음 루프에서 다시 확인합니다.
         ready = {future for future in all_futures if future.done()}
         if not ready and timeout > 0:
             done, _pending = wait(all_futures, timeout=timeout, return_when=FIRST_COMPLETED)

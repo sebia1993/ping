@@ -1345,6 +1345,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Worker가 보낸 최신 측정 결과를 화면 상태로 저장하고 다시 그립니다."""
 
+        # Worker는 백그라운드 스레드에서 측정만 담당하고, 화면 위젯은 메인 스레드에서만 바꿉니다.
+        # 그래서 여기서 Worker 결과를 MainWindow 상태 변수로 복사한 뒤 표와 그래프를 다시 그립니다.
         self.snapshots = list(snapshots)
         self.target_snapshots = list(target_snapshots)
         self.target_snapshot = self._target_snapshot_for_address(self.current_target) or target_snapshot
@@ -1361,6 +1363,8 @@ class MainWindow(QMainWindow):
     def _render_current_view(self) -> None:
         """현재 모드(전체/포커스)에 맞춰 표, 그래프, 분석 문구를 한 번에 갱신합니다."""
 
+        # 화면에는 전체 데이터가 아니라 현재 사용자가 보고 있는 데이터만 표시합니다.
+        # 예를 들어 필터가 걸려 있거나 포커스 구간이 있으면 아래 값들이 그 조건에 맞게 줄어듭니다.
         snapshots = self._display_snapshots()
         target_snapshots = self._visible_target_snapshots()
         target_snapshot = self._display_target_snapshot()
@@ -1458,6 +1462,8 @@ class MainWindow(QMainWindow):
             return
         total_count = len(self._display_target_snapshots())
         summary = _all_targets_summary_line(snapshots, total_count=total_count)
+        # 요약 문구는 필터 적용 후 남은 IP 기준입니다.
+        # 선택 개수와 개별 주기 설정 개수를 덧붙여 현재 화면 상태를 바로 알 수 있게 합니다.
         selected_count = len(self._selected_target_addresses()) if hasattr(self, "target_table") else 0
         if selected_count:
             summary = f"{summary} | 선택 {selected_count}"

@@ -23,6 +23,8 @@ from app.storage.session_log import iter_observations, session_log_segment_index
 from app.ui.worker import TRACE_REFRESH_SECONDS, MeasurementWorker
 
 
+# soak test는 "오래 돌려도 멈추지 않는지" 보는 안정성 테스트입니다.
+# 실제 IP를 때리지 않고 가짜 ping 응답을 만들어, timeout이 많은 환경을 안전하게 재현합니다.
 SOAK_PROFILES: dict[str, dict[str, object]] = {
     "default": {
         "duration_seconds": 1800.0,
@@ -89,6 +91,8 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
 
 def main() -> int:
     args = parse_args()
+    # 결과 파일은 나중에 원인을 볼 수 있도록 JSON 요약과 CSV 두 종류로 남깁니다.
+    # diagnostics는 측정 엔진 상태, health는 프로세스 메모리와 이벤트 루프 상태입니다.
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.session_log_root is None:
         args.session_log_root = args.output_dir / "session_logs"
@@ -98,6 +102,8 @@ def main() -> int:
     health_csv_path = args.output_dir / f"soak_{args.targets}_targets_{timestamp}.health.csv"
     json_path = args.output_dir / f"soak_{args.targets}_targets_{timestamp}.json"
 
+    # with_ui=False면 실제 창 없이 QCoreApplication만 돌립니다.
+    # with_ui=True면 offscreen 창까지 연결해 UI 갱신 경로도 같이 확인합니다.
     app, window = create_application(with_ui=args.with_ui)
     targets = [f"198.51.100.{index}" for index in range(1, args.targets + 1)]
     updates: list[float] = []
@@ -108,6 +114,8 @@ def main() -> int:
     session_log_paths: list[str] = []
     ping_calls: dict[str, int] = {}
     ping_results: dict[str, int] = {}
+    # 앞쪽 일부 IP는 정상 응답, 뒤쪽 IP는 timeout으로 만듭니다.
+    # 예를 들어 targets=50, timeout_ratio=0.8이면 대략 40개가 timeout입니다.
     timeout_start_index = max(1, int(args.targets * (1 - args.timeout_ratio)) + 1)
     traceroute_probe = StableTracerouteProbe()
 
@@ -120,6 +128,8 @@ def main() -> int:
             results=ping_results,
         )
 
+    # 실제 앱과 같은 MeasurementWorker를 사용하되, ping/tracert 실행기만 가짜로 바꿉니다.
+    # 그래서 네트워크 환경에 영향받지 않고 다중 타깃 병목과 저장 큐 상태를 확인할 수 있습니다.
     worker = MeasurementWorker(
         targets[0],
         interval_seconds=args.interval_seconds,
@@ -139,6 +149,8 @@ def main() -> int:
     worker.session_log_ready.connect(session_log_paths.append)
     connect_window(window, worker)
 
+    # tracemalloc은 Python 메모리 증가량을 보기 위한 표준 도구입니다.
+    # 테스트 중 메모리가 계속 늘면 장시간 사용 시 문제가 될 수 있습니다.
     tracemalloc.start()
     process_started_at = time.process_time()
     started_at = time.monotonic()
@@ -147,6 +159,8 @@ def main() -> int:
     worker.start()
     stopped_cleanly = False
     try:
+        # 이 루프가 실제 장시간 실행 구간입니다.
+        # Qt 이벤트 처리, Worker 결과 수집, 메모리/스레드 샘플링을 일정 간격으로 반복합니다.
         while time.monotonic() - started_at < args.duration_seconds and not errors:
             before_events = time.monotonic()
             app.processEvents()
@@ -188,6 +202,8 @@ def main() -> int:
         }
     )
 
+    # 수집한 값을 한 번에 요약한 뒤 기준치를 넘는 항목이 있는지 평가합니다.
+    # failures가 비어 있으면 soak test는 성공입니다.
     summary = build_summary(
         args=args,
         elapsed=elapsed,
@@ -219,6 +235,8 @@ def main() -> int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    # profile은 사람이 자주 쓰는 기준값 묶음입니다.
+    # release는 빠른 릴리즈 검증, long은 장시간 안정성 확인에 맞춰져 있습니다.
     argv = list(sys.argv[1:] if argv is None else argv)
     profile_parser = argparse.ArgumentParser(add_help=False)
     profile_parser.add_argument("--profile", choices=sorted(SOAK_PROFILES), default="default")
@@ -271,6 +289,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def create_application(*, with_ui: bool):
+    # GUI까지 시험할 때도 실제 모니터에 창을 띄우지 않도록 offscreen 플랫폼을 사용합니다.
+    # 자동 검증 환경에서 창이 떠서 작업을 방해하지 않게 하기 위함입니다.
     if with_ui:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication
@@ -289,6 +309,8 @@ def create_application(*, with_ui: bool):
 
 
 def connect_window(window: object | None, worker: MeasurementWorker) -> None:
+    # UI soak에서는 Worker의 신호를 MainWindow 슬롯에 직접 연결합니다.
+    # 실제 사용자가 앱을 켰을 때와 같은 화면 갱신 경로를 통과시키기 위한 연결입니다.
     if window is None:
         return
     worker.trace_completed.connect(window.on_trace_completed)
@@ -299,6 +321,8 @@ def connect_window(window: object | None, worker: MeasurementWorker) -> None:
 
 
 class StableTracerouteProbe:
+    # tracert는 느리고 네트워크 환경마다 결과가 달라집니다.
+    # soak test에서는 다중 ping 안정성이 핵심이라, tracert는 빠르게 끝나는 가짜 객체로 대체합니다.
     def __init__(self) -> None:
         self.calls = 0
 
@@ -309,6 +333,8 @@ class StableTracerouteProbe:
 
 
 class SimulatedPingRunner:
+    # 실제 ping 명령 대신 성공/timeout 결과를 예측 가능하게 돌려주는 테스트용 실행기입니다.
+    # timeout이 많은 현장을 흉내 내면서도 외부 네트워크나 관리자 권한이 필요 없습니다.
     def __init__(
         self,
         *,
@@ -370,6 +396,8 @@ def build_summary(
     health_csv_path: Path,
     stopped_cleanly: bool,
 ) -> dict[str, Any]:
+    # raw 샘플을 그대로 읽기 어렵기 때문에, 실패 판단에 필요한 최댓값과 평균값만 요약합니다.
+    # 이 summary는 콘솔 출력과 JSON 파일에 같이 기록됩니다.
     session_stats = collect_session_log_stats(session_log_paths)
     update_gaps = [later - earlier for earlier, later in zip(updates, updates[1:])]
     event_gaps = [later - earlier for earlier, later in zip(event_loop_ticks, event_loop_ticks[1:])]
@@ -428,6 +456,8 @@ def build_summary(
 
 
 def evaluate_summary(summary: dict[str, Any], args: argparse.Namespace) -> list[str]:
+    # 여기서 성공/실패 기준을 한곳에 모아 판정합니다.
+    # 기준을 조정해야 할 때는 Worker 코드가 아니라 이 함수의 threshold를 먼저 확인하면 됩니다.
     failures: list[str] = []
     max_update_gap_seconds = args.max_update_gap_seconds or max(
         args.interval_seconds * 4,

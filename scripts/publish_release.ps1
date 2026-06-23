@@ -100,6 +100,8 @@ if ($Status -and -not $AllowDirty) {
 }
 
 if (-not $Tag) {
+    # 태그를 직접 지정하지 않으면 현재 시각으로 새 버전명을 만듭니다.
+    # 같은 날 여러 번 배포해도 겹치지 않도록 시분초까지 포함합니다.
     $Tag = "v$(Get-Date -Format 'yyyy.MM.dd-HHmmss')"
 }
 if (-not $Title) {
@@ -116,6 +118,8 @@ if ($LASTEXITCODE -ne 0) {
     $PreviousTag = ""
 }
 $ChangeRange = if ($PreviousTag) { "$PreviousTag..HEAD" } else { "HEAD" }
+# 릴리즈 노트의 변경사항은 직전 태그 이후 commit 제목으로 자동 작성합니다.
+# 사용자가 GitHub Release에서 어떤 작업이 들어갔는지 바로 볼 수 있게 하기 위한 단계입니다.
 $ChangeLines = @(& git log --pretty=format:"- %s (%h)" --no-merges $ChangeRange)
 if ($LASTEXITCODE -ne 0 -or -not $ChangeLines) {
     $ChangeLines = @("- 변경 커밋을 자동으로 찾지 못했습니다. GitHub의 커밋 목록을 확인하세요.")
@@ -172,6 +176,8 @@ if ($SkipUpload) {
 }
 
 # 여기부터는 GitHub Release에 ZIP 파일을 첨부하는 단계입니다.
+# Git tag는 "이 ZIP이 어떤 소스 커밋에서 나왔는지" 표시하는 기준점입니다.
+# 나중에 문제가 생기면 태그를 보고 같은 소스 상태를 다시 찾을 수 있습니다.
 & git rev-parse -q --verify "refs/tags/$Tag" *> $null
 if ($LASTEXITCODE -eq 0) {
     throw "Git tag already exists: $Tag"

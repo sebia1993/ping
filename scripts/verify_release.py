@@ -23,6 +23,8 @@ from app.ui.worker import MeasurementWorker
 from app.utils.validators import validate_target
 
 
+# 릴리즈를 올리기 전에 "소스 테스트, GUI 기본 실행, 저장 파일 생성, 장시간 안정성, EXE 실행"을
+# 한 번에 확인하는 검증 스크립트입니다. 하나라도 실패하면 배포하면 안 된다는 뜻입니다.
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run local release verification for Network Path Diagnostics.")
     parser.add_argument("--live", action="store_true", help="Run live public IPv4 checks.")
@@ -35,6 +37,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # 기본 검증은 외부 네트워크 없이도 반복 가능해야 합니다.
+    # 실제 인터넷 ping은 환경에 따라 막힐 수 있으므로 --live를 줄 때만 실행합니다.
     checks = [
         ("unit tests", run_pytest),
         ("compileall", run_compileall),
@@ -59,6 +63,8 @@ def main() -> int:
 
 
 def run_command(command: list[str], *, env: dict[str, str] | None = None, timeout: int = 120) -> None:
+    # 모든 하위 명령은 프로젝트 루트에서 실행합니다.
+    # 이렇게 해야 어느 폴더에서 스크립트를 실행하든 import 경로와 상대 경로가 흔들리지 않습니다.
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
@@ -83,6 +89,8 @@ def run_compileall() -> None:
 
 
 def run_release_policy_check() -> None:
+    # 배포 정책 점검입니다. 테스트가 통과해도 여기서 걸리면 사용자가 실행하기 불편한 EXE가 될 수 있습니다.
+    # 예: 관리자 권한 요구, 콘솔 창 노출, 불필요하게 큰 패키지 포함 여부를 확인합니다.
     build_script = (ROOT / "build_windows_exe.ps1").read_text(encoding="utf-8")
     spec = (ROOT / "NetworkPathDiagnostics.spec").read_text(encoding="utf-8")
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -117,6 +125,8 @@ def run_release_policy_check() -> None:
 
 
 def run_qt_smoke() -> None:
+    # Qt smoke는 GUI를 화면에 띄우지 않고 생성만 해보는 빠른 확인입니다.
+    # 위젯 생성 단계에서 깨지는 import, 폰트, 기본 컬럼 수 문제를 여기서 잡습니다.
     code = (
         "import sys; "
         "from PySide6.QtWidgets import QApplication; "
@@ -131,6 +141,8 @@ def run_qt_smoke() -> None:
 
 
 def run_export_smoke() -> None:
+    # 내보내기 smoke는 실제 측정 없이 가짜 샘플 하나로 CSV/XLSX/TXT가 만들어지는지만 봅니다.
+    # 저장 기능은 현장 장애 분석에 중요하므로, 빈 파일이 만들어져도 실패로 처리합니다.
     snapshot = MetricSnapshot(
         hop_index=1,
         address="127.0.0.1",
@@ -169,6 +181,8 @@ def run_export_smoke() -> None:
 
 
 def run_soak_smoke() -> None:
+    # soak smoke는 50개 대상 중 대부분이 timeout인 상황을 짧게 시뮬레이션합니다.
+    # 다중 IP 측정이 느린 대상 때문에 멈추지 않는지 확인하는 용도입니다.
     with tempfile.TemporaryDirectory(prefix="npd_soak_") as tmp:
         base = Path(tmp)
         run_command(
@@ -187,6 +201,8 @@ def run_soak_smoke() -> None:
 
 
 def run_live_smoke() -> None:
+    # --live를 줄 때만 실행되는 실제 네트워크 확인입니다.
+    # 회사망, VPN, 방화벽 상태에 따라 실패할 수 있으므로 기본 릴리즈 검증에는 포함하지 않습니다.
     public_ping = CommandPingRunner(1000).ping("8.8.8.8")
     if not public_ping.success:
         raise RuntimeError(f"8.8.8.8 ping did not succeed: {public_ping.status}")
@@ -207,6 +223,8 @@ def run_live_smoke() -> None:
 
 
 def run_live_worker_smoke(target: str) -> None:
+    # Worker를 직접 한 바퀴 실행해 신호가 나오는지 확인합니다.
+    # GUI 버튼을 누르지 않아도 측정 엔진 자체가 살아 있는지 볼 수 있습니다.
     from PySide6.QtCore import QCoreApplication
 
     app = QCoreApplication.instance() or QCoreApplication([])
@@ -271,6 +289,8 @@ def run_custom_target_smoke(target: str) -> None:
 
 
 def run_exe_smoke() -> None:
+    # 빌드된 EXE를 실제 프로세스로 실행해봅니다.
+    # 3초 안에 바로 종료되면 누락된 DLL이나 런타임 오류일 가능성이 높습니다.
     exe = ROOT / "dist" / "NetworkPathDiagnostics" / "NetworkPathDiagnostics.exe"
     if not exe.exists():
         raise RuntimeError(f"Packaged EXE not found: {exe}")
@@ -290,6 +310,8 @@ def run_exe_smoke() -> None:
 
 
 def run_packaged_size_check(package_dir: Path) -> None:
+    # 빌드 스크립트에서 제외하기로 한 큰 파일이 다시 들어오지 않았는지 확인합니다.
+    # 새 의존성을 추가할 때 ZIP 크기가 갑자기 커지는 문제를 막기 위한 검사입니다.
     internal = package_dir / "_internal"
     forbidden_paths = [
         internal / "numpy",
