@@ -7,6 +7,7 @@ import json
 import os
 import smtplib
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QDateTime, Qt, QTime
+from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimer
 from PySide6.QtGui import QAction, QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -124,6 +125,8 @@ GRAPH_PNG_SCOPE_TRACE = "trace"
 GRAPH_PNG_SCOPE_BOTH = "both"
 TARGET_GROUP_PRESET_VERSION = 2
 ALERT_RULE_PRESET_VERSION = 2
+GRAPH_RENDER_THROTTLE_TARGET_COUNT = 5
+GRAPH_RENDER_THROTTLE_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,12 @@ class MainWindow(QMainWindow):
         self.target_graph_widgets: dict[str, LatencyGraphWidget] = {}
         self.target_graph_title_labels: dict[str, QLabel] = {}
         self.target_graph_metric_labels: dict[str, QLabel] = {}
+        self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
+        self._last_graph_render_monotonic = 0.0
+        self._pending_graph_render = False
+        self._graph_render_timer = QTimer(self)
+        self._graph_render_timer.setSingleShot(True)
+        self._graph_render_timer.timeout.connect(self._render_pending_graph)
         self._syncing_session_selection = False
 
         self._build_ui()
@@ -1060,7 +1069,7 @@ class MainWindow(QMainWindow):
         update_target_table(self.target_table, [])
         self.analysis_box.clear()
         self.graph.set_points([])
-        self._sync_target_graph_rows([])
+        self._request_graph_render(force=True)
         self._update_graph_detail()
         self._update_target_summary(None)
         self._set_state_chip("탐색", "active")
@@ -1280,7 +1289,7 @@ class MainWindow(QMainWindow):
         if self.focus_range is not None:
             self._rebuild_focus_view(show_status=True)
         else:
-            self._render_current_view()
+            self._render_current_view(force_graph=True)
         self.status_label.setText(f"Summary target selected: {target}")
 
     def _target_snapshot_for_address(self, target: str) -> MetricSnapshot | None:
@@ -1297,7 +1306,7 @@ class MainWindow(QMainWindow):
 
     def _sync_target_filter(self) -> None:
         if hasattr(self, "target_table"):
-            self._render_current_view()
+            self._render_current_view(force_graph=True)
 
     def on_status_message(self, message: str) -> None:
         self.status_label.setText(message)
@@ -1318,7 +1327,7 @@ class MainWindow(QMainWindow):
             return
         self._merge_route_changes([change])
         self._sync_route_changes_box()
-        self.graph.set_annotations(self._timeline_annotations())
+        self._request_graph_render(force=True)
         self._update_graph_detail()
         self._save_pending_alert_images()
 
@@ -1381,7 +1390,7 @@ class MainWindow(QMainWindow):
         else:
             self._render_current_view()
 
-    def _render_current_view(self) -> None:
+    def _render_current_view(self, *, force_graph: bool = False) -> None:
         """현재 모드(전체/포커스)에 맞춰 표, 그래프, 분석 문구를 한 번에 갱신합니다."""
 
         # 화면에는 전체 데이터가 아니라 현재 사용자가 보고 있는 데이터만 표시합니다.
@@ -1403,8 +1412,7 @@ class MainWindow(QMainWindow):
             self._apply_target_problem_sort()
         self._update_all_targets_summary(target_snapshots)
         self._update_target_summary(target_snapshot)
-        self._sync_target_graph_rows(target_snapshots)
-        self._update_graph_detail()
+        self._request_graph_render(force=force_graph or bool(self.pending_alert_image_keys))
         self._save_pending_alert_images()
         self.analysis_box.setPlainText("\n".join(f"- {line}" for line in analysis))
         self._set_export_enabled(self._has_export_data())
@@ -1542,6 +1550,7 @@ class MainWindow(QMainWindow):
             else:
                 self._set_state_chip("대기", "neutral")
         self.worker = None
+        self._request_graph_render(force=True)
         self._sync_sessions_box()
 
     def _update_target_summary(self, target_snapshot: MetricSnapshot | None) -> None:
@@ -1587,7 +1596,7 @@ class MainWindow(QMainWindow):
             f"{len(observations)} samples"
         )
         self._sync_timeline_controls()
-        self._render_current_view()
+        self._render_current_view(force_graph=True)
         self.status_label.setText(self.timeline_status)
 
     def load_selected_timeline_range(self) -> None:
@@ -1597,7 +1606,7 @@ class MainWindow(QMainWindow):
     def clear_timeline_range(self) -> None:
         self._clear_timeline_state()
         self._reset_target_graphs_to_current()
-        self._render_current_view()
+        self._render_current_view(force_graph=True)
         self.status_label.setText("Timeline restored to live buffer")
 
     def reset_focus_to_current(self) -> None:
@@ -1608,7 +1617,7 @@ class MainWindow(QMainWindow):
             self.graph_detail_window.graph.reset_to_current()
         self._sync_focus_controls()
         self._sync_timeline_controls()
-        self._render_current_view()
+        self._render_current_view(force_graph=True)
         self.status_label.setText("Focus and timeline reset to current")
 
     def _timeline_end_time(self) -> datetime | None:
@@ -1665,6 +1674,39 @@ class MainWindow(QMainWindow):
                 histories[address] = current_history
         return histories
 
+    def _request_graph_render(self, *, force: bool = False) -> None:
+        if not hasattr(self, "target_graph_layout"):
+            return
+        target_count = len(self._visible_target_snapshots())
+        if force or target_count < GRAPH_RENDER_THROTTLE_TARGET_COUNT or not self.target_graph_rows:
+            self._render_graph_now()
+            return
+
+        elapsed = time.monotonic() - self._last_graph_render_monotonic
+        if elapsed >= GRAPH_RENDER_THROTTLE_SECONDS:
+            self._render_graph_now()
+            return
+
+        self._pending_graph_render = True
+        remaining_ms = max(int((GRAPH_RENDER_THROTTLE_SECONDS - elapsed) * 1000), 1)
+        remaining_timer_ms = self._graph_render_timer.remainingTime()
+        if not self._graph_render_timer.isActive() or remaining_timer_ms < 0 or remaining_timer_ms > remaining_ms:
+            self._graph_render_timer.start(remaining_ms)
+
+    def _render_pending_graph(self) -> None:
+        if self._pending_graph_render:
+            self._render_graph_now()
+
+    def _render_graph_now(self) -> None:
+        if not hasattr(self, "target_graph_layout"):
+            return
+        if self._graph_render_timer.isActive():
+            self._graph_render_timer.stop()
+        self._pending_graph_render = False
+        self._sync_target_graph_rows(self._visible_target_snapshots())
+        self._update_graph_detail()
+        self._last_graph_render_monotonic = time.monotonic()
+
     def _sync_target_graph_rows(self, target_snapshots: list[MetricSnapshot]) -> None:
         if not hasattr(self, "target_graph_layout"):
             return
@@ -1677,6 +1719,7 @@ class MainWindow(QMainWindow):
             self.graph.set_points([])
             self.graph.set_annotations([])
             self.target_graph_empty_label.setVisible(True)
+            self.target_graph_render_keys.clear()
             return
 
         primary_address = self.current_target if self.current_target in addresses else addresses[0]
@@ -1699,16 +1742,36 @@ class MainWindow(QMainWindow):
         for address in addresses:
             history = histories.get(address, [])
             graph = self.target_graph_widgets[address]
-            graph.set_points(history)
+            render_key = self._target_graph_render_key(snapshot_by_address.get(address), history)
+            if self.target_graph_render_keys.get(address) != render_key:
+                graph.set_points(history)
+                self.target_graph_title_labels[address].setText(address)
+                self.target_graph_metric_labels[address].setText(
+                    self._target_graph_metric_text(snapshot_by_address.get(address), history)
+                )
+                self.target_graph_render_keys[address] = render_key
             if graph is not self.graph:
                 graph.set_annotations([])
-            self.target_graph_title_labels[address].setText(address)
-            self.target_graph_metric_labels[address].setText(
-                self._target_graph_metric_text(snapshot_by_address.get(address), history)
-            )
 
         self.graph.set_annotations(self._timeline_annotations())
         self.target_graph_empty_label.setVisible(False)
+
+    def _target_graph_render_key(
+        self,
+        snapshot: MetricSnapshot | None,
+        history: list[HopObservation],
+    ) -> tuple[object, ...]:
+        latest = history[-1] if history else None
+        return (
+            len(history),
+            latest.timestamp.isoformat(timespec="milliseconds") if latest is not None else "",
+            latest.status if latest is not None else "",
+            latest.latency_ms if latest is not None else None,
+            display_status(snapshot) if snapshot is not None else "",
+            snapshot.samples if snapshot is not None else 0,
+            snapshot.current_latency_ms if snapshot is not None else None,
+            snapshot.loss_percent if snapshot is not None else 0.0,
+        )
 
     def _create_target_graph_row(self, address: str, *, use_primary_graph: bool) -> None:
         row = QFrame()
@@ -1745,6 +1808,7 @@ class MainWindow(QMainWindow):
         graph = self.target_graph_widgets.pop(address, None)
         self.target_graph_title_labels.pop(address, None)
         self.target_graph_metric_labels.pop(address, None)
+        self.target_graph_render_keys.pop(address, None)
         if graph is self.graph:
             self.graph.setParent(None)
         if row is not None:
@@ -1755,6 +1819,7 @@ class MainWindow(QMainWindow):
         for address in list(self.target_graph_rows):
             self._remove_target_graph_row(address)
         self.primary_graph_address = None
+        self.target_graph_render_keys.clear()
 
     def _target_graph_metric_text(
         self,
@@ -1798,7 +1863,7 @@ class MainWindow(QMainWindow):
         self._clear_focus_state()
         self._sync_focus_controls()
         if render:
-            self._render_current_view()
+            self._render_current_view(force_graph=True)
             self.status_label.setText("Live view restored")
 
     def _rebuild_focus_view(self, *, show_status: bool) -> None:
@@ -1812,7 +1877,7 @@ class MainWindow(QMainWindow):
         self.focus_target_snapshot = focus_set.target_snapshot
         self.focus_analysis = analyze_path(self.focus_snapshots, self.focus_target_snapshot)
         self._sync_focus_controls()
-        self._render_current_view()
+        self._render_current_view(force_graph=show_status)
         if show_status:
             self.status_label.setText(
                 f"Focus period applied: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
@@ -2859,7 +2924,7 @@ class MainWindow(QMainWindow):
         self._sync_alerts_box()
         self._sync_route_changes_box()
         self._sync_focus_controls()
-        self._render_current_view()
+        self._render_current_view(force_graph=True)
         self._set_state_chip("Loaded", "active")
         self.status_label.setText(f"Loaded session: {record.target}, samples {len(observations)}")
         self._sync_sessions_box()
@@ -3515,6 +3580,8 @@ class MainWindow(QMainWindow):
         self.trace_target_combo.blockSignals(False)
 
     def closeEvent(self, event) -> None:
+        if self._graph_render_timer.isActive():
+            self._graph_render_timer.stop()
         if self.worker and self.worker.isRunning():
             self.worker.request_stop()
             self.worker.wait(3000)

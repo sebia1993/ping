@@ -1636,6 +1636,80 @@ def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
         window.close()
 
 
+def test_main_window_throttles_many_target_graph_rows_but_updates_table(qt_app) -> None:
+    window = MainWindow()
+    now = datetime.now()
+    targets = [f"10.0.0.{index}" for index in range(1, 7)]
+    first_snapshots = [
+        _snapshot(0, target, None, latency=float(index), is_target=True)
+        for index, target in enumerate(targets, start=1)
+    ]
+    second_snapshots = [
+        _snapshot(0, target, None, latency=float(index + 100), is_target=True)
+        for index, target in enumerate(targets, start=1)
+    ]
+    first_observations = [
+        HopObservation(now, 0, target, "Target", True, float(index), STATUS_OK, True)
+        for index, target in enumerate(targets, start=1)
+    ]
+    second_observations = [
+        HopObservation(now + timedelta(seconds=1), 0, target, "Target", True, float(index + 100), STATUS_OK, True)
+        for index, target in enumerate(targets, start=1)
+    ]
+
+    try:
+        window.current_target = targets[0]
+        window.on_measurement_updated([], first_snapshots[0], first_snapshots, ["live"], first_observations, [])
+
+        assert window.graph._points == [first_observations[0]]
+
+        window.on_measurement_updated([], second_snapshots[0], second_snapshots, ["live"], second_observations, [])
+
+        current_column = TARGET_HEADERS.index("현재 지연")
+        assert window._pending_graph_render is True
+        assert window.graph._points == [first_observations[0]]
+        assert window.target_table.item(0, current_column).text() == "101.0"
+
+        window._render_pending_graph()
+
+        assert window._pending_graph_render is False
+        assert window.graph._points == [second_observations[0]]
+    finally:
+        window.close()
+
+
+def test_main_window_keeps_small_target_graph_rows_immediate(qt_app) -> None:
+    window = MainWindow()
+    now = datetime.now()
+    targets = [f"10.0.1.{index}" for index in range(1, 5)]
+    first_snapshots = [
+        _snapshot(0, target, None, latency=float(index), is_target=True)
+        for index, target in enumerate(targets, start=1)
+    ]
+    second_snapshots = [
+        _snapshot(0, target, None, latency=float(index + 50), is_target=True)
+        for index, target in enumerate(targets, start=1)
+    ]
+    first_observations = [
+        HopObservation(now, 0, target, "Target", True, float(index), STATUS_OK, True)
+        for index, target in enumerate(targets, start=1)
+    ]
+    second_observations = [
+        HopObservation(now + timedelta(seconds=1), 0, target, "Target", True, float(index + 50), STATUS_OK, True)
+        for index, target in enumerate(targets, start=1)
+    ]
+
+    try:
+        window.current_target = targets[0]
+        window.on_measurement_updated([], first_snapshots[0], first_snapshots, ["live"], first_observations, [])
+        window.on_measurement_updated([], second_snapshots[0], second_snapshots, ["live"], second_observations, [])
+
+        assert window._pending_graph_render is False
+        assert window.graph._points == [second_observations[0]]
+    finally:
+        window.close()
+
+
 def test_main_window_problem_target_batch_controls(qt_app) -> None:
     created_workers: list[_FakeWorker] = []
 
