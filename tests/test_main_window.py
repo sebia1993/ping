@@ -1580,6 +1580,47 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         window.close()
 
 
+def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
+    window = MainWindow()
+    now = datetime.now()
+    first = _snapshot(0, "198.51.100.10", None, latency=10.0, is_target=True)
+    selected = _snapshot(0, "203.0.113.10", None, latency=18.0, is_target=True)
+    timeout = _snapshot(
+        0,
+        "203.0.113.20",
+        None,
+        loss=35.0,
+        latency=None,
+        received=0,
+        timeout_count=1,
+        status=STATUS_TIMEOUT,
+        is_target=True,
+    )
+    observations = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now, 0, "203.0.113.10", "Target", True, 18.0, STATUS_OK, True),
+        HopObservation(now, 0, "203.0.113.20", "Target", False, None, STATUS_TIMEOUT, True),
+    ]
+
+    try:
+        window.current_target = "203.0.113.10"
+        window.on_measurement_updated([], selected, [first, selected, timeout], ["live"], observations, [])
+
+        assert set(window.target_graph_rows) == {
+            "198.51.100.10",
+            "203.0.113.10",
+            "203.0.113.20",
+        }
+        assert window.target_graph_widgets["203.0.113.10"] is window.graph
+        assert window.graph._points == [observations[1]]
+        assert window.target_graph_widgets["198.51.100.10"]._points == [observations[0]]
+        assert window.target_graph_widgets["203.0.113.20"]._points == [observations[2]]
+        assert "현재 18.0 ms" in window.target_graph_metric_labels["203.0.113.10"].text()
+        assert "손실 35.0%" in window.target_graph_metric_labels["203.0.113.20"].text()
+    finally:
+        window.close()
+
+
 def test_main_window_problem_target_batch_controls(qt_app) -> None:
     created_workers: list[_FakeWorker] = []
 

@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTextEdit,
@@ -201,6 +202,11 @@ class MainWindow(QMainWindow):
         self.pending_alert_image_keys: set[str] = set()
         self.active_alert_keys: set[str] = set()
         self.metric_value_labels: dict[str, QLabel] = {}
+        self.primary_graph_address: str | None = None
+        self.target_graph_rows: dict[str, QFrame] = {}
+        self.target_graph_widgets: dict[str, LatencyGraphWidget] = {}
+        self.target_graph_title_labels: dict[str, QLabel] = {}
+        self.target_graph_metric_labels: dict[str, QLabel] = {}
         self._syncing_session_selection = False
 
         self._build_ui()
@@ -314,7 +320,7 @@ class MainWindow(QMainWindow):
         graph_header = QHBoxLayout()
         graph_title = QLabel("실시간 그래프")
         graph_title.setObjectName("panelTitle")
-        graph_hint = QLabel("선택한 IP의 지연 시간과 timeout을 실시간으로 표시합니다.")
+        graph_hint = QLabel("측정 중인 모든 IP를 대상별 그래프 행으로 표시합니다.")
         graph_hint.setObjectName("muted")
         self.focus_label = _chip("Live", "neutral")
         self.timeline_label = _chip("Timeline: Live", "neutral")
@@ -357,8 +363,22 @@ class MainWindow(QMainWindow):
         graph_header.addStretch(1)
         graph_header.addWidget(self.graph_advanced_controls)
         self.graph = LatencyGraphWidget()
+        self.graph.setMinimumHeight(96)
+        self.target_graph_scroll = QScrollArea()
+        self.target_graph_scroll.setWidgetResizable(True)
+        self.target_graph_scroll.setFrameShape(QFrame.NoFrame)
+        self.target_graph_container = QWidget()
+        self.target_graph_container.setObjectName("targetGraphContainer")
+        self.target_graph_layout = QVBoxLayout(self.target_graph_container)
+        self.target_graph_layout.setContentsMargins(0, 0, 0, 0)
+        self.target_graph_layout.setSpacing(8)
+        self.target_graph_empty_label = QLabel("측정을 시작하면 IP별 그래프가 여기에 표시됩니다.")
+        self.target_graph_empty_label.setObjectName("targetGraphEmpty")
+        self.target_graph_empty_label.setAlignment(Qt.AlignCenter)
+        self.target_graph_layout.addWidget(self.target_graph_empty_label, 1)
+        self.target_graph_scroll.setWidget(self.target_graph_container)
         graph_layout.addLayout(graph_header)
-        graph_layout.addWidget(self.graph, 1)
+        graph_layout.addWidget(self.target_graph_scroll, 1)
         layout.addWidget(graph_panel, 1)
 
         return container
@@ -1040,6 +1060,7 @@ class MainWindow(QMainWindow):
         update_target_table(self.target_table, [])
         self.analysis_box.clear()
         self.graph.set_points([])
+        self._sync_target_graph_rows([])
         self._update_graph_detail()
         self._update_target_summary(None)
         self._set_state_chip("탐색", "active")
@@ -1382,8 +1403,7 @@ class MainWindow(QMainWindow):
             self._apply_target_problem_sort()
         self._update_all_targets_summary(target_snapshots)
         self._update_target_summary(target_snapshot)
-        self.graph.set_points(self._graph_target_history())
-        self.graph.set_annotations(self._timeline_annotations())
+        self._sync_target_graph_rows(target_snapshots)
         self._update_graph_detail()
         self._save_pending_alert_images()
         self.analysis_box.setPlainText("\n".join(f"- {line}" for line in analysis))
@@ -1576,14 +1596,14 @@ class MainWindow(QMainWindow):
 
     def clear_timeline_range(self) -> None:
         self._clear_timeline_state()
-        self.graph.reset_to_current()
+        self._reset_target_graphs_to_current()
         self._render_current_view()
         self.status_label.setText("Timeline restored to live buffer")
 
     def reset_focus_to_current(self) -> None:
         self._clear_focus_state()
         self._clear_timeline_state()
-        self.graph.reset_to_current()
+        self._reset_target_graphs_to_current()
         if self.graph_detail_window is not None:
             self.graph_detail_window.graph.reset_to_current()
         self._sync_focus_controls()
@@ -1623,6 +1643,145 @@ class MainWindow(QMainWindow):
         if self.timeline_range is not None:
             return self.timeline_target_history
         return self.target_history
+
+    def _graph_observations_for_rows(self) -> list[HopObservation]:
+        if self.timeline_range is not None:
+            return self.timeline_observations
+        if self.focus_range is not None:
+            return self.focus_observations
+        return self.observations
+
+    def _target_histories_by_address(self, observations: list[HopObservation]) -> dict[str, list[HopObservation]]:
+        histories: dict[str, list[HopObservation]] = {}
+        for observation in observations:
+            if not observation.address:
+                continue
+            if observation.hop_index == 0 or observation.is_target:
+                histories.setdefault(observation.address, []).append(observation)
+        if not histories:
+            current_history = self._graph_target_history()
+            if current_history:
+                address = self.current_target or current_history[-1].address
+                histories[address] = current_history
+        return histories
+
+    def _sync_target_graph_rows(self, target_snapshots: list[MetricSnapshot]) -> None:
+        if not hasattr(self, "target_graph_layout"):
+            return
+        histories = self._target_histories_by_address(self._graph_observations_for_rows())
+        addresses = _unique_addresses(snapshot.address for snapshot in target_snapshots)
+        if not addresses:
+            addresses = _unique_addresses(histories.keys())
+        if not addresses:
+            self._clear_target_graph_rows()
+            self.graph.set_points([])
+            self.graph.set_annotations([])
+            self.target_graph_empty_label.setVisible(True)
+            return
+
+        primary_address = self.current_target if self.current_target in addresses else addresses[0]
+        if self.primary_graph_address != primary_address:
+            self._clear_target_graph_rows()
+            self.primary_graph_address = primary_address
+
+        for address in list(self.target_graph_rows):
+            if address not in addresses:
+                self._remove_target_graph_row(address)
+
+        for address in addresses:
+            if address not in self.target_graph_rows:
+                self._create_target_graph_row(address, use_primary_graph=address == primary_address)
+
+        for address in addresses:
+            self.target_graph_layout.addWidget(self.target_graph_rows[address])
+
+        snapshot_by_address = {snapshot.address: snapshot for snapshot in target_snapshots if snapshot.address}
+        for address in addresses:
+            history = histories.get(address, [])
+            graph = self.target_graph_widgets[address]
+            graph.set_points(history)
+            if graph is not self.graph:
+                graph.set_annotations([])
+            self.target_graph_title_labels[address].setText(address)
+            self.target_graph_metric_labels[address].setText(
+                self._target_graph_metric_text(snapshot_by_address.get(address), history)
+            )
+
+        self.graph.set_annotations(self._timeline_annotations())
+        self.target_graph_empty_label.setVisible(False)
+
+    def _create_target_graph_row(self, address: str, *, use_primary_graph: bool) -> None:
+        row = QFrame()
+        row.setObjectName("targetGraphRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(10)
+
+        info = QVBoxLayout()
+        info.setContentsMargins(0, 8, 0, 8)
+        info.setSpacing(4)
+        title = QLabel(address)
+        title.setObjectName("targetGraphTitle")
+        title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        metric = QLabel("대기")
+        metric.setObjectName("targetGraphMeta")
+        metric.setWordWrap(True)
+        info.addWidget(title)
+        info.addWidget(metric)
+        info.addStretch(1)
+
+        graph = self.graph if use_primary_graph else LatencyGraphWidget()
+        graph.setMinimumHeight(96)
+        row_layout.addLayout(info, 0)
+        row_layout.addWidget(graph, 1)
+
+        self.target_graph_rows[address] = row
+        self.target_graph_widgets[address] = graph
+        self.target_graph_title_labels[address] = title
+        self.target_graph_metric_labels[address] = metric
+
+    def _remove_target_graph_row(self, address: str) -> None:
+        row = self.target_graph_rows.pop(address, None)
+        graph = self.target_graph_widgets.pop(address, None)
+        self.target_graph_title_labels.pop(address, None)
+        self.target_graph_metric_labels.pop(address, None)
+        if graph is self.graph:
+            self.graph.setParent(None)
+        if row is not None:
+            row.setParent(None)
+            row.deleteLater()
+
+    def _clear_target_graph_rows(self) -> None:
+        for address in list(self.target_graph_rows):
+            self._remove_target_graph_row(address)
+        self.primary_graph_address = None
+
+    def _target_graph_metric_text(
+        self,
+        snapshot: MetricSnapshot | None,
+        history: list[HopObservation],
+    ) -> str:
+        if snapshot is not None and snapshot.sent:
+            current = f"{fmt_ms(snapshot.current_latency_ms)} ms" if snapshot.current_latency_ms is not None else "-"
+            return (
+                f"{display_status(snapshot)} | 현재 {current} | "
+                f"손실 {snapshot.loss_percent:.1f}% | 샘플 {snapshot.samples}"
+            )
+        if history:
+            latest = history[-1]
+            current = f"{fmt_ms(latest.latency_ms)} ms" if latest.latency_ms is not None else "-"
+            status = latest.status if latest.status else ("OK" if latest.success else "TIMEOUT")
+            return f"{status} | 최근 {current} | 샘플 {len(history)}"
+        return "대기 | 샘플 0"
+
+    def _reset_target_graphs_to_current(self) -> None:
+        seen: set[int] = set()
+        for graph in [self.graph, *self.target_graph_widgets.values()]:
+            graph_id = id(graph)
+            if graph_id in seen:
+                continue
+            seen.add(graph_id)
+            graph.reset_to_current()
 
     def apply_focus_range(self, selection: object) -> None:
         if not selection:
@@ -2940,7 +3099,12 @@ class MainWindow(QMainWindow):
         if scope == GRAPH_PNG_SCOPE_TRACE:
             return self.table.grab()
         if scope == GRAPH_PNG_SCOPE_BOTH:
-            return _combine_pixmaps([self.table.grab(), self.graph.grab()])
+            return _combine_pixmaps([self.table.grab(), self._timeline_graph_png_pixmap()])
+        return self._timeline_graph_png_pixmap()
+
+    def _timeline_graph_png_pixmap(self) -> QPixmap:
+        if getattr(self, "target_graph_widgets", None) and len(self.target_graph_widgets) > 1:
+            return self.target_graph_scroll.grab()
         return self.graph.grab()
 
     def save_target_summary_csv(self) -> None:
@@ -3378,6 +3542,18 @@ def _format_duration(seconds: int) -> str:
     if seconds <= 172800:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
+
+
+def _unique_addresses(values: object) -> list[str]:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        address = str(value or "").strip()
+        if not address or address in seen:
+            continue
+        addresses.append(address)
+        seen.add(address)
+    return addresses
 
 
 def _all_targets_summary_line(snapshots: list[MetricSnapshot], *, total_count: int | None = None) -> str:
@@ -3954,6 +4130,21 @@ QLabel#statusText {
 QLabel#mutedStrong {
     color: #4b5563;
     font-weight: 600;
+}
+QLabel#targetGraphEmpty {
+    color: #6b7280;
+    padding: 18px;
+}
+QLabel#targetGraphTitle {
+    color: #111827;
+    font-size: 12px;
+    font-weight: 700;
+    min-width: 132px;
+}
+QLabel#targetGraphMeta {
+    color: #6b7280;
+    font-size: 11px;
+    min-width: 132px;
 }
 QLabel#warningText {
     color: #92400e;
