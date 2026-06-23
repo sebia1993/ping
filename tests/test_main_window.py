@@ -78,11 +78,10 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.target_summary_status_label.text() == "IP: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
-        assert window.target_panel_expanded is False
+        assert hasattr(window, "toggle_target_panel_button") is False
         assert window.target_table_panel.isHidden() is True
         assert window.target_table.isHidden() is True
         assert window.target_table.maximumHeight() == 180
-        assert window.toggle_target_panel_button.text() == "IP 현황 보기"
         assert window.advanced_features_visible is False
         assert window.advanced_controls_panel.isHidden() is True
         assert window.target_advanced_controls_panel.isHidden() is True
@@ -152,12 +151,6 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.right_panel.isHidden() is True
         assert window.target_table.isHidden() is True
         assert window.target_advanced_controls_panel.isHidden() is True
-        window.toggle_target_panel()
-        assert window.target_panel_expanded is True
-        assert window.target_table_panel.isHidden() is False
-        assert window.target_table.isHidden() is False
-        assert window.target_advanced_controls_panel.isHidden() is True
-        assert window.toggle_target_panel_button.text() == "IP 현황 접기"
         assert window.target_table.isColumnHidden(TARGET_HEADERS.index("평균")) is True
         assert window.sessions_box.toPlainText()
     finally:
@@ -1502,7 +1495,6 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         )
 
         window.target_table.selectRow(1)
-        assert "선택 1" in window.target_summary_status_label.text()
         window.pause_selected_targets()
         window.resume_selected_targets()
         window.pause_all_targets()
@@ -1511,7 +1503,6 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         window.apply_runtime_interval()
         interval_column = TARGET_HEADERS.index("Interval")
         interval_source_column = TARGET_HEADERS.index("Interval Source")
-        assert "개별 주기 1" in window.target_summary_status_label.text()
         assert window.target_table.item(1, interval_column).text() == "5s"
         assert window.target_table.item(1, interval_source_column).text() == "target"
         window.target_table.clearSelection()
@@ -1606,7 +1597,6 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         assert worker.paused_calls == [["203.0.113.10", "203.0.113.20"]]
         assert worker.resumed_calls == [["203.0.113.10", "203.0.113.20"]]
         assert worker.target_interval_updates == [(["203.0.113.10", "203.0.113.20"], 5)]
-        assert "개별 주기 2" in window.target_summary_status_label.text()
 
         window.target_filter_edit.setText("203.0.113.20")
 
@@ -1813,7 +1803,6 @@ def test_main_window_problem_target_batch_controls(qt_app) -> None:
             "203.0.113.20": 5,
         }
         assert "Runtime interval applied to problem 2 target(s): 5s" in window.status_label.text()
-        assert "개별 주기 2" in window.target_summary_status_label.text()
     finally:
         window.close()
 

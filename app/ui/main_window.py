@@ -159,7 +159,6 @@ class MainWindow(QMainWindow):
         self.export_worker: ExportWorker | None = None
         self.graph_detail_window: GraphDetailWindow | None = None
         self.advanced_features_visible = False
-        self.target_panel_expanded = False
         self.worker_factory = worker_factory or MeasurementWorker
         self.session_index_store = SessionIndexStore.create()
 
@@ -292,7 +291,7 @@ class MainWindow(QMainWindow):
 
         self.metrics_strip_panel = self._build_metrics_strip()
         layout.addWidget(self.metrics_strip_panel)
-        target_table_panel = self._build_target_table_panel()
+        self._build_target_table_panel()
 
         self.table = create_hop_table()
         self.table.itemSelectionChanged.connect(self.on_hop_selection_changed)
@@ -360,7 +359,6 @@ class MainWindow(QMainWindow):
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
         graph_header.addWidget(self.target_summary_status_label)
-        graph_header.addWidget(self.toggle_target_panel_button)
         graph_header.addWidget(self.graph_advanced_controls)
         self.graph = LatencyGraphWidget()
         self.graph.setMinimumHeight(112)
@@ -378,7 +376,6 @@ class MainWindow(QMainWindow):
         self.target_graph_layout.addWidget(self.target_graph_empty_label, 1)
         self.target_graph_scroll.setWidget(self.target_graph_container)
         graph_layout.addLayout(graph_header)
-        graph_layout.addWidget(target_table_panel)
         graph_layout.addWidget(self.target_graph_scroll, 1)
         layout.addWidget(graph_panel, 8)
 
@@ -389,7 +386,7 @@ class MainWindow(QMainWindow):
         self.target_table.cellDoubleClicked.connect(self.on_target_double_clicked)
         self.target_table.itemSelectionChanged.connect(self._refresh_target_summary_selection)
 
-        panel = QFrame()
+        panel = QFrame(self)
         panel.setObjectName("targetPanelInline")
         self.target_table_panel = panel
         layout = QVBoxLayout(panel)
@@ -397,9 +394,6 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
         self.target_summary_status_label = QLabel("IP: 0")
         self.target_summary_status_label.setObjectName("muted")
-        self.toggle_target_panel_button = QPushButton("IP 현황 보기")
-        self.toggle_target_panel_button.setObjectName("targetPanelToggle")
-        self.toggle_target_panel_button.clicked.connect(self.toggle_target_panel)
         self.target_filter_edit = QLineEdit()
         self.target_filter_edit.setPlaceholderText("IP 필터")
         self.target_filter_edit.setClearButtonEnabled(True)
@@ -463,25 +457,10 @@ class MainWindow(QMainWindow):
         self.target_table.setMaximumHeight(180)
         layout.addWidget(self.target_table)
         self._apply_simple_target_columns()
-        self._sync_target_panel_visibility()
+        self.target_advanced_controls_panel.setVisible(False)
+        self.target_table.setVisible(False)
+        self.target_table_panel.setVisible(False)
         return panel
-
-    def toggle_target_panel(self) -> None:
-        self.target_panel_expanded = not self.target_panel_expanded
-        self._sync_target_panel_visibility()
-        if self.target_panel_expanded:
-            self._render_current_view(force_graph=True)
-
-    def _sync_target_panel_visibility(self) -> None:
-        if not hasattr(self, "target_table"):
-            return
-        if hasattr(self, "target_table_panel"):
-            self.target_table_panel.setVisible(self.target_panel_expanded)
-        self.target_table.setVisible(self.target_panel_expanded)
-        if hasattr(self, "target_advanced_controls_panel"):
-            self.target_advanced_controls_panel.setVisible(False)
-        if hasattr(self, "toggle_target_panel_button"):
-            self.toggle_target_panel_button.setText("IP 현황 접기" if self.target_panel_expanded else "IP 현황 보기")
 
     def _apply_simple_target_columns(self) -> None:
         if not hasattr(self, "target_table"):
@@ -882,7 +861,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "main_splitter"):
             self.main_splitter.setSizes([1, 0])
         self._sync_target_columns_for_mode()
-        self._sync_target_panel_visibility()
+        if hasattr(self, "target_table_panel"):
+            self.target_table_panel.setVisible(False)
+        if hasattr(self, "target_table"):
+            self.target_table.setVisible(False)
+        if hasattr(self, "target_advanced_controls_panel"):
+            self.target_advanced_controls_panel.setVisible(False)
 
     def save_target_group_preset(self) -> None:
         targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
@@ -1490,15 +1474,6 @@ class MainWindow(QMainWindow):
             return
         total_count = len(self._display_target_snapshots())
         summary = _all_targets_summary_line(snapshots, total_count=total_count)
-        # 요약 문구는 필터 적용 후 남은 IP 기준입니다.
-        # 선택 개수와 개별 주기 설정 개수를 덧붙여 현재 화면 상태를 바로 알 수 있게 합니다.
-        selected_count = len(self._selected_target_addresses()) if hasattr(self, "target_table") else 0
-        if selected_count:
-            summary = f"{summary} | 선택 {selected_count}"
-        visible_targets = {snapshot.address for snapshot in snapshots if snapshot.address}
-        override_count = len([target for target in self.target_interval_overrides if target in visible_targets])
-        if override_count:
-            summary = f"{summary} | 개별 주기 {override_count}"
         self.target_summary_status_label.setText(summary)
 
     def _refresh_target_summary_selection(self) -> None:

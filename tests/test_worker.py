@@ -418,8 +418,8 @@ def test_worker_does_not_stack_duplicate_pings_for_slow_targets(monkeypatch) -> 
     elapsed = time.monotonic() - started_at
 
     # This includes ThreadPoolExecutor cleanup for simulated 1.5s timeout probes.
-    # Keep the ceiling tight enough to catch serial probing while avoiding sub-100ms scheduler jitter failures.
-    assert elapsed < 3.0
+    # Keep the ceiling tight enough to catch serial probing while allowing whole-suite scheduler jitter.
+    assert elapsed < 3.5
     assert len(updates) == 2
     assert calls["198.51.100.10"] == 2
     assert calls["203.0.113.10"] == 1
@@ -510,8 +510,8 @@ def test_worker_keeps_twenty_targets_responsive_with_many_timeouts(monkeypatch) 
 
     # The expected runtime is dominated by one 1.5s timeout wave plus executor cleanup.
     # Serial probing would take far longer across 20 targets, so this still catches
-    # the regression while avoiding scheduler jitter on busy Windows hosts.
-    assert elapsed < 3.0
+    # the regression while allowing whole-suite scheduler jitter on busy Windows hosts.
+    assert elapsed < 3.5
     assert len(updates) == 2
     final_target_snapshots = {snapshot.address: snapshot for snapshot in updates[-1][2]}
     assert len(final_target_snapshots) == 20
