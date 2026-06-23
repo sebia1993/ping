@@ -32,6 +32,7 @@ class TimelineAnnotation:
 
 class LatencyGraphWidget(QWidget):
     selection_changed = Signal(object)
+    time_pan_requested = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -41,6 +42,8 @@ class LatencyGraphWidget(QWidget):
         self._selection: tuple[float, float] | None = None
         self._zoom_fraction = 1.0
         self._view_end_timestamp: float | None = None
+        self._external_visible_range: tuple[float, float] | None = None
+        self._main_graph_mode = False
         self._drag_started_at: float | None = None
         self._pan_drag_anchor_x: float | None = None
         self._pan_drag_anchor_view_end: float | None = None
@@ -49,8 +52,20 @@ class LatencyGraphWidget(QWidget):
         self.setMouseTracking(True)
 
     def set_points(self, points: list[HopObservation]) -> None:
-        self._points = points[-240:]
+        self._points = list(points)
         self.set_series([TimelineSeries("target", "Target", self._points)])
+
+    def set_main_graph_mode(self, enabled: bool) -> None:
+        self._main_graph_mode = enabled
+
+    def set_visible_time_range(self, start: datetime | None, end: datetime | None) -> None:
+        if start is None or end is None:
+            self._external_visible_range = None
+        else:
+            start_value = start.timestamp()
+            end_value = end.timestamp()
+            self._external_visible_range = (min(start_value, end_value), max(start_value, end_value))
+        self.update()
 
     def set_series(
         self,
@@ -122,6 +137,13 @@ class LatencyGraphWidget(QWidget):
         delta = event.angleDelta().y()
         if delta == 0:
             return
+        if self._main_graph_mode:
+            if event.modifiers() & Qt.ShiftModifier:
+                self.time_pan_requested.emit(0.5 if delta > 0 else -0.5)
+                event.accept()
+            else:
+                event.ignore()
+            return
         if event.modifiers() & Qt.ShiftModifier:
             self._pan(0.5 if delta > 0 else -0.5)
         else:
@@ -129,6 +151,9 @@ class LatencyGraphWidget(QWidget):
         event.accept()
 
     def mousePressEvent(self, event) -> None:
+        if self._main_graph_mode:
+            event.ignore()
+            return
         if self._is_pan_drag_event(event):
             self._start_pan_drag(event.position().x())
             event.accept()
@@ -324,8 +349,8 @@ class LatencyGraphWidget(QWidget):
         painter.drawRect(overview_rect)
 
         span = full_end - full_start
-        start_ratio = (visible_start - full_start) / span
-        end_ratio = (visible_end - full_start) / span
+        start_ratio = min(max((visible_start - full_start) / span, 0.0), 1.0)
+        end_ratio = min(max((visible_end - full_start) / span, 0.0), 1.0)
         left = overview_rect.left() + overview_rect.width() * start_ratio
         right = overview_rect.left() + overview_rect.width() * end_ratio
         viewport = QRect(
@@ -347,6 +372,10 @@ class LatencyGraphWidget(QWidget):
         visible_start, visible_end = self._visible_range()
         if visible_start is None or visible_end is None:
             return "최근", "현재"
+        if self._external_visible_range is not None:
+            start = datetime.fromtimestamp(visible_start)
+            end = datetime.fromtimestamp(visible_end)
+            return f"최근 {start.strftime('%H:%M:%S')}", f"현재 {end.strftime('%H:%M:%S')}"
         visible_timestamps = [
             point.timestamp
             for series in self._series
@@ -371,6 +400,8 @@ class LatencyGraphWidget(QWidget):
         ]
 
     def _visible_range(self) -> tuple[float | None, float | None]:
+        if self._external_visible_range is not None:
+            return self._external_visible_range
         full_start, full_end = self._full_time_range()
         if full_start is None or full_end is None:
             return None, None

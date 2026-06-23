@@ -69,6 +69,34 @@ def test_latency_graph_time_axis_labels_use_visible_sample_times(qt_app) -> None
     assert graph._time_axis_labels() == ("최근 12:00:00", "현재 12:01:59")
 
 
+def test_latency_graph_main_mode_forwards_normal_wheel_and_emits_shift_pan(qt_app) -> None:
+    graph = LatencyGraphWidget()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 1.0, STATUS_OK, True)
+        for index in range(120)
+    ]
+    requests: list[float] = []
+
+    graph.set_series([TimelineSeries("target", "Target", points)])
+    graph.set_main_graph_mode(True)
+    graph.time_pan_requested.connect(requests.append)
+    before_range = graph.visible_datetime_range()
+
+    normal_wheel = _WheelEvent(120, Qt.KeyboardModifier.NoModifier)
+    graph.wheelEvent(normal_wheel)
+
+    assert normal_wheel.ignored is True
+    assert graph.visible_datetime_range() == before_range
+    assert requests == []
+
+    shift_wheel = _WheelEvent(-120, Qt.KeyboardModifier.ShiftModifier)
+    graph.wheelEvent(shift_wheel)
+
+    assert shift_wheel.accepted is True
+    assert requests == [-0.5]
+
+
 def test_latency_graph_pans_visible_range_and_resets_current(qt_app) -> None:
     graph = LatencyGraphWidget()
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -427,3 +455,34 @@ def _snapshot(
         status=STATUS_OK,
         is_target=is_target,
     )
+
+
+class _WheelDelta:
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def y(self) -> int:
+        return self._value
+
+
+class _WheelEvent:
+    def __init__(self, delta: int, modifiers: Qt.KeyboardModifier) -> None:
+        self._delta = _WheelDelta(delta)
+        self._modifiers = modifiers
+        self.accepted = False
+        self.ignored = False
+
+    def angleDelta(self) -> _WheelDelta:
+        return self._delta
+
+    def modifiers(self) -> Qt.KeyboardModifier:
+        return self._modifiers
+
+    def position(self) -> QPointF:
+        return QPointF(10, 10)
+
+    def accept(self) -> None:
+        self.accepted = True
+
+    def ignore(self) -> None:
+        self.ignored = True

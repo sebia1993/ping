@@ -1659,6 +1659,48 @@ def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
         window.close()
 
 
+def test_main_window_syncs_time_range_across_target_graph_rows(qt_app) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    targets = ["198.51.100.10", "203.0.113.10"]
+    snapshots = [
+        _snapshot(0, targets[0], None, latency=10.0, is_target=True),
+        _snapshot(0, targets[1], None, latency=20.0, is_target=True),
+    ]
+    observations = [
+        HopObservation(now + timedelta(minutes=minute), 0, target, "Target", True, 10.0 + minute, STATUS_OK, True)
+        for minute in range(21)
+        for target in targets
+    ]
+
+    try:
+        window.current_target = targets[0]
+        window.on_measurement_updated([], snapshots[0], snapshots, ["live"], observations, [])
+
+        expected_current_range = (now + timedelta(minutes=10), now + timedelta(minutes=20))
+        assert window.graph.visible_datetime_range() == expected_current_range
+        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_current_range
+        assert len(window.graph._points) == 21
+        assert window.graph_time_previous_button.isEnabled() is True
+        assert window.graph_time_current_button.isEnabled() is False
+        assert window.graph_time_next_button.isEnabled() is False
+
+        window.graph_time_previous_button.click()
+
+        expected_previous_range = (now + timedelta(minutes=5), now + timedelta(minutes=15))
+        assert window.graph.visible_datetime_range() == expected_previous_range
+        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_previous_range
+        assert window.graph_time_current_button.isEnabled() is True
+        assert window.graph_time_next_button.isEnabled() is True
+
+        window.graph_time_current_button.click()
+
+        assert window.graph.visible_datetime_range() == expected_current_range
+        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_current_range
+    finally:
+        window.close()
+
+
 def test_main_window_throttles_many_target_graph_rows_but_updates_table(qt_app) -> None:
     window = MainWindow()
     now = datetime.now()
