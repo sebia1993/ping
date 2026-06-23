@@ -238,7 +238,6 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
-        root.addWidget(self._build_header())
         root.addWidget(self._build_controls())
         root.addWidget(self._build_main_area(), 1)
         self.footer_panel = self._build_footer()
@@ -294,7 +293,7 @@ class MainWindow(QMainWindow):
 
         self.metrics_strip_panel = self._build_metrics_strip()
         layout.addWidget(self.metrics_strip_panel)
-        layout.addWidget(self._build_target_table_panel())
+        target_table_panel = self._build_target_table_panel()
 
         self.table = create_hop_table()
         self.table.itemSelectionChanged.connect(self.on_hop_selection_changed)
@@ -364,9 +363,11 @@ class MainWindow(QMainWindow):
         graph_advanced_layout.addWidget(self.graph_detail_button)
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
+        graph_header.addWidget(self.target_summary_status_label)
+        graph_header.addWidget(self.toggle_target_panel_button)
         graph_header.addWidget(self.graph_advanced_controls)
         self.graph = LatencyGraphWidget()
-        self.graph.setMinimumHeight(96)
+        self.graph.setMinimumHeight(112)
         self.target_graph_scroll = QScrollArea()
         self.target_graph_scroll.setWidgetResizable(True)
         self.target_graph_scroll.setFrameShape(QFrame.NoFrame)
@@ -381,6 +382,7 @@ class MainWindow(QMainWindow):
         self.target_graph_layout.addWidget(self.target_graph_empty_label, 1)
         self.target_graph_scroll.setWidget(self.target_graph_container)
         graph_layout.addLayout(graph_header)
+        graph_layout.addWidget(target_table_panel)
         graph_layout.addWidget(self.target_graph_scroll, 1)
         layout.addWidget(graph_panel, 8)
 
@@ -391,15 +393,12 @@ class MainWindow(QMainWindow):
         self.target_table.cellDoubleClicked.connect(self.on_target_double_clicked)
         self.target_table.itemSelectionChanged.connect(self._refresh_target_summary_selection)
 
-        panel = _panel("targetPanel")
+        panel = QFrame()
+        panel.setObjectName("targetPanelInline")
+        self.target_table_panel = panel
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(8)
-        header = QHBoxLayout()
-        heading = QLabel("IP 현재현황")
-        heading.setObjectName("panelTitle")
-        hint = QLabel("IP별 상태, 현재 지연, 손실률을 한눈에 확인합니다.")
-        hint.setObjectName("muted")
+        layout.setContentsMargins(0, 0, 0, 8)
+        layout.setSpacing(6)
         self.target_summary_status_label = QLabel("IP: 0")
         self.target_summary_status_label.setObjectName("muted")
         self.toggle_target_panel_button = QPushButton("IP 현황 보기")
@@ -444,11 +443,6 @@ class MainWindow(QMainWindow):
         self.export_target_summary_button.clicked.connect(self.save_target_summary_csv)
         self.problem_sort_check = QCheckBox("문제 우선")
         self.problem_sort_check.toggled.connect(self._on_problem_sort_toggled)
-        header.addWidget(heading)
-        header.addWidget(hint)
-        header.addStretch(1)
-        header.addWidget(self.target_summary_status_label)
-        header.addWidget(self.toggle_target_panel_button)
         controls = QHBoxLayout()
         controls.setSpacing(6)
         controls.addWidget(self.target_filter_edit)
@@ -469,8 +463,8 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.export_target_summary_button)
         self.target_advanced_controls_panel = QWidget()
         self.target_advanced_controls_panel.setLayout(controls)
-        layout.addLayout(header)
         layout.addWidget(self.target_advanced_controls_panel)
+        self.target_table.setMaximumHeight(180)
         layout.addWidget(self.target_table)
         self._apply_simple_target_columns()
         self._sync_target_panel_visibility()
@@ -485,6 +479,8 @@ class MainWindow(QMainWindow):
     def _sync_target_panel_visibility(self) -> None:
         if not hasattr(self, "target_table"):
             return
+        if hasattr(self, "target_table_panel"):
+            self.target_table_panel.setVisible(self.target_panel_expanded)
         self.target_table.setVisible(self.target_panel_expanded)
         if hasattr(self, "target_advanced_controls_panel"):
             self.target_advanced_controls_panel.setVisible(False)
@@ -1784,6 +1780,7 @@ class MainWindow(QMainWindow):
     def _create_target_graph_row(self, address: str, *, use_primary_graph: bool) -> None:
         row = QFrame()
         row.setObjectName("targetGraphRow")
+        row.setMinimumHeight(112)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(10)
@@ -1802,7 +1799,7 @@ class MainWindow(QMainWindow):
         info.addStretch(1)
 
         graph = self.graph if use_primary_graph else LatencyGraphWidget()
-        graph.setMinimumHeight(96)
+        graph.setMinimumHeight(112)
         row_layout.addLayout(info, 0)
         row_layout.addWidget(graph, 1)
 
@@ -4221,6 +4218,17 @@ QLabel#title {
     font-weight: 700;
     color: #111827;
 }
+QLabel#commandTitle {
+    font-size: 15px;
+    font-weight: 700;
+    color: #111827;
+    background: transparent;
+}
+QLabel#commandSubtitle {
+    color: #6b7280;
+    font-size: 11px;
+    background: transparent;
+}
 QLabel#panelTitle {
     font-size: 15px;
     font-weight: 700;
@@ -4229,6 +4237,7 @@ QLabel#panelTitle {
 QLabel#muted,
 QLabel#statusText {
     color: #6b7280;
+    background: transparent;
 }
 QLabel#mutedStrong {
     color: #4b5563;
@@ -4240,7 +4249,11 @@ QLabel#runningTargetSummary {
     border-radius: 6px;
     color: #1f2937;
     font-weight: 700;
-    padding: 8px 10px;
+    padding: 7px 10px;
+}
+QFrame#targetPanelInline {
+    background: transparent;
+    border: 0;
 }
 QLabel#targetGraphEmpty {
     color: #6b7280;
@@ -4263,6 +4276,7 @@ QLabel#warningText {
 QLabel#fieldLabel,
 QLabel#metricLabel {
     color: #6b7280;
+    background: transparent;
     font-size: 11px;
     font-weight: 600;
 }
@@ -4276,6 +4290,7 @@ QLabel#chip {
     padding: 5px 10px;
     font-weight: 700;
     min-width: 64px;
+    max-height: 24px;
 }
 QLabel#chip[tone="neutral"] {
     background: #f3f4f6;
@@ -4305,7 +4320,7 @@ QTextEdit {
     background: #ffffff;
     border: 1px solid #d1d5db;
     border-radius: 6px;
-    padding: 6px 8px;
+    padding: 5px 8px;
 }
 QTextEdit#analysisBox,
 QTextEdit#statesBox {

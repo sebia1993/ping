@@ -72,12 +72,16 @@ def test_main_window_initial_state(qt_app) -> None:
         ]
         assert "고급 기능 표시" not in view_actions
         assert "그래프 확대" in view_actions
+        assert window.command_title_label.text() == "네트워크 경로 진단"
+        assert window.target_input.maximumHeight() == 52
         assert window.timeline_label.text() == "Timeline: Live"
         assert window.target_summary_status_label.text() == "IP: 0"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
         assert window.target_panel_expanded is False
+        assert window.target_table_panel.isHidden() is True
         assert window.target_table.isHidden() is True
+        assert window.target_table.maximumHeight() == 180
         assert window.toggle_target_panel_button.text() == "IP 현황 보기"
         assert window.advanced_features_visible is False
         assert window.advanced_controls_panel.isHidden() is True
@@ -150,6 +154,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.target_advanced_controls_panel.isHidden() is True
         window.toggle_target_panel()
         assert window.target_panel_expanded is True
+        assert window.target_table_panel.isHidden() is False
         assert window.target_table.isHidden() is False
         assert window.target_advanced_controls_panel.isHidden() is True
         assert window.toggle_target_panel_button.text() == "IP 현황 접기"
@@ -1652,6 +1657,8 @@ def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
             "203.0.113.20",
         }
         assert window.target_graph_widgets["203.0.113.10"] is window.graph
+        assert window.target_graph_rows["203.0.113.10"].minimumHeight() >= 112
+        assert window.target_graph_widgets["203.0.113.10"].minimumHeight() >= 112
         assert window.graph._points == [observations[1]]
         assert window.target_graph_widgets["198.51.100.10"]._points == [observations[0]]
         assert window.target_graph_widgets["203.0.113.20"]._points == [observations[2]]
