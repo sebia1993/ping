@@ -306,6 +306,8 @@ class MeasurementWorker(QThread):
         self._control_lock = threading.Lock()
         self._paused_targets: set[str] = set()
         self._target_interval_overrides: dict[str, int] = {}
+        self._pending_add_targets: list[str] = []
+        self._pending_remove_targets: set[str] = set()
         self._ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._hop_ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._route_history = RouteHistory()
@@ -323,6 +325,33 @@ class MeasurementWorker(QThread):
         with self._control_lock:
             for target in targets:
                 self._paused_targets.discard(target)
+
+    def add_targets(self, targets: list[str]) -> list[str]:
+        normalized, _invalid = parse_ipv4_targets("\n".join(targets))
+        if not normalized:
+            return []
+        with self._control_lock:
+            existing = set(self.targets).union(self._pending_add_targets)
+            available = max(MAX_IPV4_TARGETS - len(existing), 0)
+            additions = [target for target in normalized if target not in existing][:available]
+            self._pending_add_targets.extend(additions)
+            return additions
+
+    def remove_targets(self, targets: list[str]) -> list[str]:
+        normalized, _invalid = parse_ipv4_targets("\n".join(targets))
+        if not normalized:
+            return []
+        with self._control_lock:
+            remove_set = set(normalized)
+            self._pending_add_targets = [
+                target for target in self._pending_add_targets if target not in remove_set
+            ]
+            removals = [target for target in self.targets if target in remove_set]
+            self._pending_remove_targets.update(removals)
+            self._paused_targets.difference_update(remove_set)
+            for target in remove_set:
+                self._target_interval_overrides.pop(target, None)
+            return removals
 
     def set_interval_seconds(self, interval_seconds: int) -> None:
         with self._control_lock:
@@ -380,7 +409,7 @@ class MeasurementWorker(QThread):
         # tracert, 최종 대상 ping, hop ping을 분리된 실행기로 돌립니다.
         # 이렇게 나누면 느린 tracert나 중간 hop 응답 지연이 전체 대상 ping을 막지 않습니다.
         trace_executor = ThreadPoolExecutor(max_workers=1)
-        target_executor = ThreadPoolExecutor(max_workers=min(max(len(self.targets), 1), MAX_TARGET_PING_WORKERS))
+        target_executor = ThreadPoolExecutor(max_workers=MAX_TARGET_PING_WORKERS)
         hop_executor = ThreadPoolExecutor(max_workers=MAX_HOP_PING_WORKERS)
         trace_future: Future[list[HopInfo]] | None = (
             self._start_trace_refresh(trace_executor) if self._uses_full_route() else None
@@ -443,6 +472,23 @@ class MeasurementWorker(QThread):
             # 아래 while 문이 실제 장시간 측정 루프입니다. 한 바퀴마다 새 ping을 예약하고,
             # 완료된 결과를 수집한 뒤 UI와 저장소에 반영합니다.
             while not self._stop_event.is_set():
+                primary_changed = self._apply_pending_target_changes(
+                    target_trackers,
+                    target_states,
+                    active_target_pings,
+                )
+                if not self.targets:
+                    self.status_message.emit("측정 대상이 없어 측정을 중지합니다.")
+                    break
+                if primary_changed:
+                    metrics = None
+                    hops = []
+                    if trace_future is not None:
+                        trace_future.cancel()
+                        trace_future = None
+                    if self._uses_full_route():
+                        trace_future = self._start_trace_refresh(trace_executor)
+                        next_trace_refresh_due = time.monotonic() + TRACE_REFRESH_SECONDS
                 round_started_at = time.monotonic()
                 is_final_round = self.max_cycles is not None and full_cycles + 1 >= self.max_cycles
                 scheduled_hop_targets: set[str] = set()
@@ -730,6 +776,8 @@ class MeasurementWorker(QThread):
             if future in target_futures:
                 target = target_futures.pop(future)
                 active_target_pings.discard(target)
+                if target not in target_states:
+                    continue
                 result = self._future_result(future, target)
                 target_states[target].record_result(
                     result,
@@ -834,6 +882,8 @@ class MeasurementWorker(QThread):
         """현재까지 쌓인 측정값을 UI가 바로 그릴 수 있는 형태로 묶어서 보냅니다."""
 
         snapshots = metrics.snapshots() if metrics is not None else []
+        if not self.targets or self.target not in target_trackers:
+            return
         paused_targets = self.paused_targets()
         target_snapshots = [
             self._paused_snapshot(target_trackers[target].snapshot())
@@ -873,6 +923,16 @@ class MeasurementWorker(QThread):
             return
         deadline = round_started_at + self.interval_seconds
         while not self._stop_event.is_set() and time.monotonic() < deadline:
+            primary_changed = self._apply_pending_target_changes(
+                target_trackers,
+                target_states,
+                active_target_pings,
+            )
+            _ = primary_changed
+            if not self.targets:
+                self.status_message.emit("측정 대상이 없어 측정을 중지합니다.")
+                self._stop_event.set()
+                return
             self._schedule_target_pings(
                 target_executor,
                 target_futures,
@@ -1022,6 +1082,52 @@ class MeasurementWorker(QThread):
     def _target_base_interval_seconds(self, target: str) -> int:
         with self._control_lock:
             return max(int(self._target_interval_overrides.get(target, self.interval_seconds)), 0)
+
+    def _drain_target_change_requests(self) -> tuple[list[str], list[str]]:
+        with self._control_lock:
+            removals = list(self._pending_remove_targets)
+            additions = list(self._pending_add_targets)
+            self._pending_remove_targets.clear()
+            self._pending_add_targets.clear()
+        return removals, additions
+
+    def _apply_pending_target_changes(
+        self,
+        target_trackers: dict[str, TargetMetricTracker],
+        target_states: dict[str, TargetProbeState],
+        active_target_pings: set[str],
+    ) -> bool:
+        removals, additions = self._drain_target_change_requests()
+        if not removals and not additions:
+            return False
+
+        previous_target = self.target
+        for target in removals:
+            if target in self.targets:
+                self.targets.remove(target)
+            target_trackers.pop(target, None)
+            target_states.pop(target, None)
+            active_target_pings.discard(target)
+
+        for target in additions:
+            if len(self.targets) >= MAX_IPV4_TARGETS or target in self.targets:
+                continue
+            self.targets.append(target)
+            target_trackers[target] = TargetMetricTracker(
+                target,
+                recent_observation_limit=RECENT_OBSERVATION_LIMIT,
+            )
+            target_states[target] = TargetProbeState(target)
+
+        if self.target not in self.targets:
+            self.target = self.targets[0] if self.targets else ""
+            self._route_history = RouteHistory()
+
+        if removals:
+            self.status_message.emit(f"{len(removals)}개 IP를 측정에서 삭제했습니다.")
+        if additions:
+            self.status_message.emit(f"{len(additions)}개 IP를 측정에 추가했습니다.")
+        return self.target != previous_target
 
     def _target_round_ready(
         self,

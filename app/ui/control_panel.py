@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -128,6 +129,15 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.running_target_summary_label.setWordWrap(True)
     owner.running_target_summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
     owner.running_target_summary_label.setVisible(False)
+    owner.runtime_target_input = QLineEdit()
+    owner.runtime_target_input.setPlaceholderText("추가 IP")
+    owner.runtime_target_input.setClearButtonEnabled(True)
+    owner.runtime_target_input.setMinimumWidth(150)
+    owner.runtime_target_input.setVisible(False)
+    owner.runtime_target_input.returnPressed.connect(owner.add_runtime_targets)
+    owner.add_runtime_target_button = QPushButton("추가")
+    owner.add_runtime_target_button.setVisible(False)
+    owner.add_runtime_target_button.clicked.connect(owner.add_runtime_targets)
 
     title_group = QVBoxLayout()
     title_group.setContentsMargins(0, 0, 0, 0)
@@ -139,6 +149,8 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     simple_row.addLayout(title_group, 0)
     simple_row.addWidget(owner.target_input, 1)
     simple_row.addWidget(owner.running_target_summary_label, 1)
+    simple_row.addWidget(owner.runtime_target_input, 1)
+    simple_row.addWidget(owner.add_runtime_target_button, 0)
     simple_row.addWidget(owner.status_label, 0)
     simple_row.addWidget(owner.session_state_label, 0)
     simple_row.addWidget(owner.start_button)

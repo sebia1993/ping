@@ -1615,6 +1615,110 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         window.close()
 
 
+def test_main_window_adds_targets_while_measurement_is_running(qt_app) -> None:
+    created_workers: list[_FakeWorker] = []
+
+    def worker_factory(
+        target: str,
+        interval_seconds: int,
+        max_cycles: int | None,
+        targets: list[str],
+        measurement_mode: str,
+        probe_engine: str = "icmp",
+        tcp_port: int = 443,
+    ) -> "_FakeWorker":
+        worker = _FakeWorker(
+            target=target,
+            interval_seconds=interval_seconds,
+            max_cycles=max_cycles,
+            targets=targets,
+            measurement_mode=measurement_mode,
+            probe_engine=probe_engine,
+            tcp_port=tcp_port,
+        )
+        created_workers.append(worker)
+        return worker
+
+    window = MainWindow(worker_factory=worker_factory)
+
+    try:
+        window.target_input.setText("198.51.100.10")
+        window.start_measurement()
+        worker = created_workers[0]
+
+        assert window.target_input.isHidden() is True
+        assert window.runtime_target_input.isHidden() is False
+        assert window.add_runtime_target_button.isHidden() is False
+
+        window.runtime_target_input.setText("203.0.113.10")
+        window.add_runtime_target_button.click()
+
+        assert worker.added_calls == [["203.0.113.10"]]
+        assert window.current_targets == ["198.51.100.10", "203.0.113.10"]
+        assert window.target_input.toPlainText().splitlines() == ["198.51.100.10", "203.0.113.10"]
+        assert window.runtime_target_input.text() == ""
+        assert "추가" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_removes_target_from_graph_row_while_running(qt_app) -> None:
+    created_workers: list[_FakeWorker] = []
+
+    def worker_factory(
+        target: str,
+        interval_seconds: int,
+        max_cycles: int | None,
+        targets: list[str],
+        measurement_mode: str,
+        probe_engine: str = "icmp",
+        tcp_port: int = 443,
+    ) -> "_FakeWorker":
+        worker = _FakeWorker(
+            target=target,
+            interval_seconds=interval_seconds,
+            max_cycles=max_cycles,
+            targets=targets,
+            measurement_mode=measurement_mode,
+            probe_engine=probe_engine,
+            tcp_port=tcp_port,
+        )
+        created_workers.append(worker)
+        return worker
+
+    window = MainWindow(worker_factory=worker_factory)
+    now = datetime.now()
+    first = _snapshot(0, "198.51.100.10", None, latency=10.0, is_target=True)
+    second = _snapshot(0, "203.0.113.10", None, latency=18.0, is_target=True)
+    observations = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now, 0, "203.0.113.10", "Target", True, 18.0, STATUS_OK, True),
+    ]
+
+    try:
+        window.target_input.setText("198.51.100.10\n203.0.113.10")
+        window.start_measurement()
+        worker = created_workers[0]
+        window.on_measurement_updated([], first, [first, second], ["live"], observations, observations[:1])
+
+        window.target_graph_remove_buttons["198.51.100.10"].click()
+
+        assert worker.removed_calls == [["198.51.100.10"]]
+        assert window.current_targets == ["203.0.113.10"]
+        assert window.current_target == "203.0.113.10"
+        assert "198.51.100.10" not in window.target_graph_rows
+        assert "203.0.113.10" in window.target_graph_rows
+        assert window.target_input.toPlainText().splitlines() == ["203.0.113.10"]
+
+        window.target_graph_remove_buttons["203.0.113.10"].click()
+
+        assert worker.removed_calls == [["198.51.100.10"], ["203.0.113.10"]]
+        assert worker.stopped is True
+        assert window.current_targets == []
+    finally:
+        window.close()
+
+
 def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
     window = MainWindow()
     now = datetime.now()
@@ -4038,7 +4142,7 @@ class _FakeWorker(QObject):
         self.target = target
         self.interval_seconds = interval_seconds
         self.max_cycles = max_cycles
-        self.targets = targets
+        self.targets = list(targets)
         self.measurement_mode = measurement_mode
         self.probe_engine = probe_engine
         self.tcp_port = tcp_port
@@ -4046,6 +4150,8 @@ class _FakeWorker(QObject):
         self.stopped = False
         self.paused_calls: list[list[str]] = []
         self.resumed_calls: list[list[str]] = []
+        self.added_calls: list[list[str]] = []
+        self.removed_calls: list[list[str]] = []
         self.interval_updates: list[int] = []
         self.target_interval_updates: list[tuple[list[str], int]] = []
 
@@ -4060,6 +4166,18 @@ class _FakeWorker(QObject):
 
     def resume_targets(self, targets: list[str]) -> None:
         self.resumed_calls.append(list(targets))
+
+    def add_targets(self, targets: list[str]) -> list[str]:
+        additions = [target for target in targets if target not in self.targets]
+        self.targets.extend(additions)
+        self.added_calls.append(list(additions))
+        return additions
+
+    def remove_targets(self, targets: list[str]) -> list[str]:
+        removals = [target for target in targets if target in self.targets]
+        self.targets = [target for target in self.targets if target not in removals]
+        self.removed_calls.append(list(removals))
+        return removals
 
     def set_interval_seconds(self, interval_seconds: int) -> None:
         self.interval_updates.append(interval_seconds)

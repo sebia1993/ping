@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 
 from app.core.alerts import AlertRuleConfig
+from app.core.metrics import TargetMetricTracker
 from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, PingResult
 from app.storage.route_log import RouteLogWriter, route_changes_in_range
 from app.storage.session_index import SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
@@ -724,6 +725,41 @@ def test_worker_thread_start_stop_repeats_without_lingering(monkeypatch) -> None
 
         assert worker.wait(1500) is True
         assert worker.isRunning() is False
+
+
+def test_worker_applies_runtime_add_and_remove_requests() -> None:
+    _app()
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=1,
+        max_cycles=None,
+        targets=["198.51.100.10"],
+    )
+    target_trackers = {
+        "198.51.100.10": TargetMetricTracker(
+            "198.51.100.10",
+            recent_observation_limit=RECENT_OBSERVATION_LIMIT,
+        )
+    }
+    target_states = {"198.51.100.10": TargetProbeState("198.51.100.10")}
+    active_target_pings = {"198.51.100.10"}
+
+    assert worker.add_targets(["203.0.113.10", "invalid.example", "198.51.100.10"]) == ["203.0.113.10"]
+    assert worker.add_targets(["203.0.113.10"]) == []
+    assert worker._apply_pending_target_changes(target_trackers, target_states, active_target_pings) is False
+
+    assert worker.targets == ["198.51.100.10", "203.0.113.10"]
+    assert set(target_trackers) == {"198.51.100.10", "203.0.113.10"}
+    assert set(target_states) == {"198.51.100.10", "203.0.113.10"}
+
+    assert worker.remove_targets(["198.51.100.10"]) == ["198.51.100.10"]
+    assert worker._apply_pending_target_changes(target_trackers, target_states, active_target_pings) is True
+
+    assert worker.target == "203.0.113.10"
+    assert worker.targets == ["203.0.113.10"]
+    assert set(target_trackers) == {"203.0.113.10"}
+    assert set(target_states) == {"203.0.113.10"}
+    assert active_target_pings == set()
 
 
 def test_worker_records_ping_exceptions_as_error_results(monkeypatch) -> None:

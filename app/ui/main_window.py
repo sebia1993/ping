@@ -214,6 +214,7 @@ class MainWindow(QMainWindow):
         self.target_graph_widgets: dict[str, LatencyGraphWidget] = {}
         self.target_graph_title_labels: dict[str, QLabel] = {}
         self.target_graph_metric_labels: dict[str, QLabel] = {}
+        self.target_graph_remove_buttons: dict[str, QPushButton] = {}
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
         self.main_graph_time_range: tuple[datetime, datetime] | None = None
         self._last_graph_render_monotonic = 0.0
@@ -1114,6 +1115,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.on_worker_finished)
         self._set_running(True)
         self.worker.start()
+        self._sync_runtime_target_add_controls()
 
     def _create_measurement_worker(self, **kwargs):
         try:
@@ -1130,6 +1132,102 @@ class MainWindow(QMainWindow):
             self.worker.request_stop()
             self.on_status_message("중지 요청 중...")
             self.stop_button.setEnabled(False)
+
+    def add_runtime_targets(self) -> None:
+        if not self.worker or not self.worker.isRunning() or not hasattr(self.worker, "add_targets"):
+            return
+        raw_text = self.runtime_target_input.text() if hasattr(self, "runtime_target_input") else ""
+        targets, invalid = parse_ipv4_targets(raw_text)
+        if invalid:
+            QMessageBox.warning(self, "입력 오류", f"{IPV4_ONLY_MESSAGE}\n\n제외된 입력: {', '.join(invalid[:8])}")
+            return
+        new_targets = [target for target in targets if target not in self.current_targets]
+        if not new_targets:
+            self.status_label.setText("추가할 새 IP가 없습니다.")
+            return
+        available = max(MAX_IPV4_TARGETS - len(self.current_targets), 0)
+        if available <= 0:
+            QMessageBox.warning(self, "대상 수 제한", f"IPv4 대상은 최대 {MAX_IPV4_TARGETS}개까지 측정합니다.")
+            return
+        requested_targets = new_targets[:available]
+        accepted_targets = list(self.worker.add_targets(requested_targets) or [])
+        if not accepted_targets:
+            self.status_label.setText("추가할 새 IP가 없습니다.")
+            return
+
+        self.current_targets.extend(accepted_targets)
+        if not self.current_target:
+            self.current_target = accepted_targets[0]
+        self._sync_runtime_target_inputs()
+        self.runtime_target_input.clear()
+        self._sync_running_target_summary()
+        self._sync_runtime_target_add_controls()
+        self._render_current_view(force_graph=True)
+        self.status_label.setText(f"IP {len(accepted_targets)}개를 측정에 추가했습니다.")
+
+    def remove_runtime_target(self, address: str) -> None:
+        if not address or address not in self.current_targets:
+            return
+        removed_targets = [address]
+        if self.worker and hasattr(self.worker, "remove_targets"):
+            removed_targets = list(self.worker.remove_targets([address]) or [])
+        if not removed_targets:
+            self.status_label.setText("삭제할 IP를 찾지 못했습니다.")
+            return
+
+        removed_set = set(removed_targets)
+        self.current_targets = [target for target in self.current_targets if target not in removed_set]
+        for target in removed_set:
+            self.target_interval_overrides.pop(target, None)
+        self.target_snapshots = [
+            snapshot for snapshot in self.target_snapshots if snapshot.address not in removed_set
+        ]
+        self.focus_target_snapshots = [
+            snapshot for snapshot in self.focus_target_snapshots if snapshot.address not in removed_set
+        ]
+        self.timeline_target_history = [
+            observation for observation in self.timeline_target_history if observation.address not in removed_set
+        ]
+
+        if self.current_target in removed_set:
+            self.current_target = self.current_targets[0] if self.current_targets else ""
+            self.target_snapshot = self._target_snapshot_for_address(self.current_target) if self.current_target else None
+            self.target_history = self._target_history_from_observations(self.observations) if self.current_target else []
+
+        self._sync_runtime_target_inputs()
+        for target in removed_targets:
+            self._remove_target_graph_row(target)
+        self._sync_running_target_summary()
+        self._sync_runtime_target_add_controls()
+
+        if not self.current_targets:
+            self.target_snapshots = []
+            self.target_snapshot = None
+            self.observations = []
+            self.target_history = []
+            self._clear_target_graph_rows()
+            self._request_graph_render(force=True)
+            self.stop_measurement()
+            self.status_label.setText("모든 IP가 삭제되어 측정을 중지합니다.")
+            return
+
+        self._render_current_view(force_graph=True)
+        self.status_label.setText(f"{address} 측정을 중단하고 그래프에서 삭제했습니다.")
+
+    def _sync_runtime_target_inputs(self) -> None:
+        if hasattr(self, "target_input"):
+            was_blocked = self.target_input.blockSignals(True)
+            self.target_input.setPlainText("\n".join(self.current_targets))
+            self.target_input.blockSignals(was_blocked)
+        self._apply_trace_targets(self.current_targets)
+
+    def _sync_runtime_target_add_controls(self) -> None:
+        if not hasattr(self, "runtime_target_input"):
+            return
+        running = bool(self.worker and (self.worker.isRunning() or self.stop_button.isEnabled()))
+        can_add = running and len(self.current_targets) < MAX_IPV4_TARGETS
+        self.runtime_target_input.setEnabled(can_add)
+        self.add_runtime_target_button.setEnabled(can_add)
 
     def pause_selected_targets(self) -> None:
         targets = self._selected_target_addresses()
@@ -1810,8 +1908,13 @@ class MainWindow(QMainWindow):
         metric = QLabel("대기")
         metric.setObjectName("targetGraphMeta")
         metric.setWordWrap(True)
+        remove_button = QPushButton("삭제")
+        remove_button.setObjectName("targetGraphRemoveButton")
+        remove_button.setToolTip("이 IP 측정을 중단하고 그래프 행을 삭제합니다.")
+        remove_button.clicked.connect(lambda _checked=False, target=address: self.remove_runtime_target(target))
         info.addWidget(title)
         info.addWidget(metric)
+        info.addWidget(remove_button)
         info.addStretch(1)
 
         graph = self.graph if use_primary_graph else LatencyGraphWidget()
@@ -1824,6 +1927,7 @@ class MainWindow(QMainWindow):
         self.target_graph_widgets[address] = graph
         self.target_graph_title_labels[address] = title
         self.target_graph_metric_labels[address] = metric
+        self.target_graph_remove_buttons[address] = remove_button
 
     def _configure_main_graph_widget(self, graph: LatencyGraphWidget) -> None:
         graph.set_main_graph_mode(True)
@@ -1929,6 +2033,7 @@ class MainWindow(QMainWindow):
         graph = self.target_graph_widgets.pop(address, None)
         self.target_graph_title_labels.pop(address, None)
         self.target_graph_metric_labels.pop(address, None)
+        self.target_graph_remove_buttons.pop(address, None)
         self.target_graph_render_keys.pop(address, None)
         if graph is self.graph:
             self.graph.setParent(None)
@@ -3553,6 +3658,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "running_target_summary_label"):
             self._sync_running_target_summary()
             self.running_target_summary_label.setVisible(running)
+        if hasattr(self, "runtime_target_input"):
+            self.runtime_target_input.setVisible(running)
+            self.add_runtime_target_button.setVisible(running)
+            self._sync_runtime_target_add_controls()
         self.trace_target_combo.setEnabled(not running)
         self.refresh_targets_button.setEnabled(not running)
         if hasattr(self, "save_target_group_button"):
