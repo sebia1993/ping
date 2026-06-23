@@ -3466,16 +3466,28 @@ class MainWindow(QMainWindow):
         self.session_state_label.style().unpolish(self.session_state_label)
         self.session_state_label.style().polish(self.session_state_label)
 
+    def on_target_input_changed(self) -> None:
+        self._sync_trace_targets_from_input(manual=False)
+
     def refresh_trace_targets(self) -> None:
+        self._sync_trace_targets_from_input(manual=True)
+
+    def _sync_trace_targets_from_input(self, *, manual: bool) -> None:
+        # 붙여넣기 직후 "목록 반영"을 누르지 않아도 측정 기준 IP 콤보가 최신 입력을 보게 합니다.
+        # 입력값 자체는 자르지 않고, 실제 측정 시작 시에만 최대 개수 제한을 다시 확인합니다.
         targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
         over_limit = len(targets) > MAX_IPV4_TARGETS
         self._apply_trace_targets(targets[:MAX_IPV4_TARGETS] if over_limit else targets)
-        if invalid:
-            self.status_label.setText(f"{IPV4_ONLY_MESSAGE} 제외: {', '.join(invalid[:5])}")
+        if not self.target_input.toPlainText().strip():
+            self.status_label.setText("대기 중")
+        elif invalid:
+            preview = f" 제외: {', '.join(invalid[:5])}" if manual else ""
+            self.status_label.setText(f"IPv4 {len(targets)}개 인식됨 | 확인 필요 {len(invalid)}개{preview}")
         elif over_limit:
-            self.status_label.setText(f"IPv4 {len(targets)}개 입력됨. 시작 시 최대 {MAX_IPV4_TARGETS}개 사용 여부를 확인합니다.")
+            self.status_label.setText(f"IPv4 {len(targets)}개 인식됨. 시작 시 최대 {MAX_IPV4_TARGETS}개 사용 여부를 확인합니다.")
         else:
-            self.status_label.setText(f"등록된 IPv4 {len(targets)}개")
+            prefix = "등록된" if manual else "인식된"
+            self.status_label.setText(f"{prefix} IPv4 {len(targets)}개")
 
     def _confirm_target_limit(self, targets: list[str]) -> list[str] | None:
         if len(targets) <= MAX_IPV4_TARGETS:
@@ -4189,6 +4201,7 @@ QLabel#chip[tone="danger"] {
 QLineEdit,
 QComboBox,
 QSpinBox,
+QPlainTextEdit,
 QTextEdit {
     background: #ffffff;
     border: 1px solid #d1d5db;

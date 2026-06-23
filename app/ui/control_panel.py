@@ -9,9 +9,9 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -24,15 +24,28 @@ from app.ui.worker import (
 )
 
 
+class TargetInputEdit(QPlainTextEdit):
+    """IP 목록을 붙여넣기 쉽게 만든 plain text 입력칸입니다.
+
+    기존 테스트와 내부 코드 일부가 QTextEdit의 setText() 이름을 쓰고 있어서,
+    초보자가 보기에도 의미가 분명한 setPlainText()로 연결해 호환성을 유지합니다.
+    """
+
+    def setText(self, text: str) -> None:
+        self.setPlainText(text)
+
+
 def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_label_factory: Callable[[str], QLabel]) -> QFrame:
     controls = panel_factory("controls")
     root = QVBoxLayout(controls)
     root.setContentsMargins(14, 12, 14, 12)
     root.setSpacing(8)
 
-    owner.target_input = QTextEdit()
+    owner.target_input = TargetInputEdit()
     owner.target_input.setPlaceholderText("IP 주소를 입력하세요. 여러 개는 줄바꿈 또는 공백으로 구분합니다.\n예: 8.8.8.8  192.168.0.1")
-    owner.target_input.setMaximumHeight(76)
+    owner.target_input.setMinimumHeight(168)
+    owner.target_input.setMaximumHeight(220)
+    owner.target_input.setLineWrapMode(QPlainTextEdit.NoWrap)
     owner.trace_target_combo = QComboBox()
     owner.refresh_targets_button = QPushButton("목록 반영")
     owner.measurement_mode_combo = QComboBox()
@@ -88,6 +101,7 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
 
     owner.status_label = QLabel("대기 중")
     owner.status_label.setObjectName("statusText")
+    owner.target_input.textChanged.connect(owner.on_target_input_changed)
     owner.warning_label = QLabel(
         "도메인과 IPv6은 등록하지 않습니다. 중간 Hop의 packet loss는 ICMP rate limit 또는 방화벽 정책일 수 있으므로 최종 대상 상태와 함께 판단하세요."
     )

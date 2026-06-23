@@ -1062,6 +1062,21 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         window.close()
 
 
+def test_main_window_pasted_ip_list_updates_trace_targets_without_cutting(qt_app) -> None:
+    window = MainWindow()
+    targets = [f"10.0.0.{index}" for index in range(1, 12)]
+
+    try:
+        window.target_input.setPlainText("\n".join(targets))
+
+        assert window.target_input.toPlainText().splitlines() == targets
+        assert window.trace_target_combo.count() == len(targets)
+        assert [window.trace_target_combo.itemText(index) for index in range(window.trace_target_combo.count())] == targets
+        assert window.status_label.text() == "인식된 IPv4 11개"
+    finally:
+        window.close()
+
+
 def test_main_window_passes_route_adjustment_options_to_worker(qt_app) -> None:
     captured_kwargs: dict[str, object] = {}
 
