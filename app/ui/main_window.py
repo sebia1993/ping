@@ -17,7 +17,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimer
-from PySide6.QtGui import QAction, QFont, QFontDatabase, QPainter, QPixmap
+from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -246,10 +246,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _build_menu_bar(self) -> None:
-        view_menu = self.menuBar().addMenu("보기")
-        self.open_graph_detail_action = QAction("그래프 확대", self)
-        self.open_graph_detail_action.triggered.connect(self.open_graph_detail)
-        view_menu.addAction(self.open_graph_detail_action)
+        # 현재 기본 화면은 IP 입력과 실시간 그래프만 노출합니다.
+        # GraphDetailWindow 코드는 내부 검증/export 경로에서 계속 쓰이지만, 사용자 메뉴 진입점은 만들지 않습니다.
+        return
 
     def _build_header(self) -> QFrame:
         header = _panel("header")
@@ -347,8 +346,6 @@ class MainWindow(QMainWindow):
         self.clear_focus_button = QPushButton("포커스 해제")
         self.clear_focus_button.setEnabled(False)
         self.clear_focus_button.clicked.connect(self.clear_focus_range)
-        self.graph_detail_button = QPushButton("그래프 확대")
-        self.graph_detail_button.clicked.connect(self.open_graph_detail)
         self.graph_advanced_controls = QWidget()
         graph_advanced_layout = QHBoxLayout(self.graph_advanced_controls)
         graph_advanced_layout.setContentsMargins(0, 0, 0, 0)
@@ -360,7 +357,6 @@ class MainWindow(QMainWindow):
         graph_advanced_layout.addWidget(self.load_timeline_button)
         graph_advanced_layout.addWidget(self.reset_current_button)
         graph_advanced_layout.addWidget(self.clear_focus_button)
-        graph_advanced_layout.addWidget(self.graph_detail_button)
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
         graph_header.addWidget(self.target_summary_status_label)

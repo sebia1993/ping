@@ -71,7 +71,7 @@ def test_main_window_initial_state(qt_app) -> None:
             for action in menu_action.menu().actions()
         ]
         assert "고급 기능 표시" not in view_actions
-        assert "그래프 확대" in view_actions
+        assert "그래프 확대" not in view_actions
         assert window.command_title_label.text() == "네트워크 경로 진단"
         assert window.target_input.maximumHeight() == 52
         assert window.timeline_label.text() == "Timeline: Live"
@@ -146,7 +146,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.statistics_start_edit.isEnabled() is False
         assert window.statistics_end_edit.isEnabled() is False
         assert window.export_session_button.isEnabled() == (window.session_combo.count() > 0)
-        assert window.graph_detail_button.text() == "그래프 확대"
+        assert hasattr(window, "graph_detail_button") is False
         window.set_advanced_features_visible(True)
         assert window.advanced_features_visible is False
         assert window.right_panel.isHidden() is True
