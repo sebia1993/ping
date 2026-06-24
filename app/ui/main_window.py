@@ -130,7 +130,6 @@ ALERT_RULE_PRESET_VERSION = 2
 GRAPH_RENDER_THROTTLE_TARGET_COUNT = 5
 GRAPH_RENDER_THROTTLE_SECONDS = 2.0
 MAIN_GRAPH_DEFAULT_RANGE_SECONDS = 600
-MAIN_GRAPH_PAN_FRACTION = 0.5
 
 
 @dataclass(frozen=True)
@@ -216,7 +215,6 @@ class MainWindow(QMainWindow):
         self.target_graph_metric_labels: dict[str, QLabel] = {}
         self.target_graph_remove_buttons: dict[str, QPushButton] = {}
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
-        self.main_graph_time_range: tuple[datetime, datetime] | None = None
         self._last_graph_render_monotonic = 0.0
         self._pending_graph_render = False
         self._graph_render_timer = QTimer(self)
@@ -230,7 +228,6 @@ class MainWindow(QMainWindow):
         self.set_advanced_features_visible(False)
         self._set_state_chip("대기", "neutral")
         self._update_target_summary(None)
-        self._sync_main_graph_time_controls()
         self._sync_sessions_box()
 
     def _build_ui(self) -> None:
@@ -361,24 +358,7 @@ class MainWindow(QMainWindow):
         graph_advanced_layout.addWidget(self.load_timeline_button)
         graph_advanced_layout.addWidget(self.reset_current_button)
         graph_advanced_layout.addWidget(self.clear_focus_button)
-        self.graph_time_controls = QWidget()
-        graph_time_layout = QHBoxLayout(self.graph_time_controls)
-        graph_time_layout.setContentsMargins(0, 0, 0, 0)
-        graph_time_layout.setSpacing(4)
-        self.graph_time_previous_button = QPushButton("이전")
-        self.graph_time_previous_button.setToolTip("모든 IP 그래프 시간을 이전 구간으로 이동합니다.")
-        self.graph_time_previous_button.clicked.connect(lambda: self._pan_main_graph_time(-MAIN_GRAPH_PAN_FRACTION))
-        self.graph_time_current_button = QPushButton("현재")
-        self.graph_time_current_button.setToolTip("모든 IP 그래프 시간을 최신 측정 구간으로 되돌립니다.")
-        self.graph_time_current_button.clicked.connect(self._reset_main_graph_time_to_current)
-        self.graph_time_next_button = QPushButton("다음")
-        self.graph_time_next_button.setToolTip("모든 IP 그래프 시간을 다음 구간으로 이동합니다.")
-        self.graph_time_next_button.clicked.connect(lambda: self._pan_main_graph_time(MAIN_GRAPH_PAN_FRACTION))
-        graph_time_layout.addWidget(self.graph_time_previous_button)
-        graph_time_layout.addWidget(self.graph_time_current_button)
-        graph_time_layout.addWidget(self.graph_time_next_button)
         graph_header.addWidget(graph_title)
-        graph_header.addWidget(self.graph_time_controls)
         graph_header.addStretch(1)
         graph_header.addWidget(self.target_summary_status_label)
         graph_header.addWidget(self.graph_advanced_controls)
@@ -1064,7 +1044,6 @@ class MainWindow(QMainWindow):
         self.alert_event_actions = {}
         self.pending_alert_image_keys = set()
         self.active_alert_keys = set()
-        self.main_graph_time_range = None
         self._clear_focus_state()
         self._clear_timeline_state()
         self._sync_focus_controls()
@@ -1694,7 +1673,6 @@ class MainWindow(QMainWindow):
         start = end - timedelta(seconds=seconds)
         observations = self._observations_for_range(start, end)
         self.timeline_range = (start, end)
-        self.main_graph_time_range = None
         self.timeline_observations = observations
         self.timeline_target_history = self._target_history_from_observations(observations)
         focus_set = build_focus_snapshots(observations, current_target=self.current_target)
@@ -1717,7 +1695,6 @@ class MainWindow(QMainWindow):
     def clear_timeline_range(self) -> None:
         self._clear_timeline_state()
         self._reset_target_graphs_to_current()
-        self.main_graph_time_range = None
         self._render_current_view(force_graph=True)
         self.status_label.setText("Timeline restored to live buffer")
 
@@ -1725,7 +1702,6 @@ class MainWindow(QMainWindow):
         self._clear_focus_state()
         self._clear_timeline_state()
         self._reset_target_graphs_to_current()
-        self.main_graph_time_range = None
         if self.graph_detail_window is not None:
             self.graph_detail_window.graph.reset_to_current()
         self._sync_focus_controls()
@@ -1834,7 +1810,6 @@ class MainWindow(QMainWindow):
             self.graph.set_visible_time_range(None, None)
             self.target_graph_empty_label.setVisible(True)
             self.target_graph_render_keys.clear()
-            self._sync_main_graph_time_controls()
             return
 
         primary_address = self.current_target if self.current_target in addresses else addresses[0]
@@ -1872,7 +1847,6 @@ class MainWindow(QMainWindow):
 
         self.graph.set_annotations(self._timeline_annotations())
         self.target_graph_empty_label.setVisible(False)
-        self._sync_main_graph_time_controls()
 
     def _target_graph_render_key(
         self,
@@ -1931,10 +1905,6 @@ class MainWindow(QMainWindow):
 
     def _configure_main_graph_widget(self, graph: LatencyGraphWidget) -> None:
         graph.set_main_graph_mode(True)
-        if getattr(graph, "_main_window_time_pan_connected", False):
-            return
-        graph.time_pan_requested.connect(self._pan_main_graph_time)
-        setattr(graph, "_main_window_time_pan_connected", True)
 
     def _main_graph_data_bounds(self) -> tuple[datetime, datetime] | None:
         histories = self._target_histories_by_address(self._graph_observations_for_rows())
@@ -1950,56 +1920,10 @@ class MainWindow(QMainWindow):
     def _main_graph_visible_time_range(self) -> tuple[datetime, datetime] | None:
         bounds = self._main_graph_data_bounds()
         if bounds is None:
-            self.main_graph_time_range = None
             return None
-        if self.main_graph_time_range is not None:
-            clamped = self._clamp_main_graph_time_range(*self.main_graph_time_range)
-            self.main_graph_time_range = None if clamped[1] >= bounds[1] else clamped
-            return clamped
         full_start, full_end = bounds
         start = max(full_start, full_end - timedelta(seconds=MAIN_GRAPH_DEFAULT_RANGE_SECONDS))
         return start, full_end
-
-    def _clamp_main_graph_time_range(self, start: datetime, end: datetime) -> tuple[datetime, datetime]:
-        bounds = self._main_graph_data_bounds()
-        if bounds is None:
-            return start, end
-        full_start, full_end = bounds
-        if end < start:
-            start, end = end, start
-        requested_span = max((end - start).total_seconds(), 1.0)
-        full_span = max((full_end - full_start).total_seconds(), 1.0)
-        if requested_span >= full_span:
-            return full_start, full_end
-        if start < full_start:
-            start = full_start
-            end = start + timedelta(seconds=requested_span)
-        if end > full_end:
-            end = full_end
-            start = end - timedelta(seconds=requested_span)
-        return start, end
-
-    def _pan_main_graph_time(self, direction: float) -> None:
-        visible_range = self._main_graph_visible_time_range()
-        bounds = self._main_graph_data_bounds()
-        if visible_range is None or bounds is None:
-            return
-        start, end = visible_range
-        full_start, full_end = bounds
-        span_seconds = max((end - start).total_seconds(), 1.0)
-        if span_seconds >= max((full_end - full_start).total_seconds(), 1.0):
-            return
-        shift_seconds = span_seconds * direction
-        next_range = self._clamp_main_graph_time_range(
-            start + timedelta(seconds=shift_seconds),
-            end + timedelta(seconds=shift_seconds),
-        )
-        self.main_graph_time_range = None if next_range[1] >= full_end else next_range
-        self._request_graph_render(force=True)
-
-    def _reset_main_graph_time_to_current(self) -> None:
-        self.main_graph_time_range = None
-        self._request_graph_render(force=True)
 
     def _apply_main_graph_time_range_to_widget(
         self,
@@ -2010,23 +1934,6 @@ class MainWindow(QMainWindow):
             graph.set_visible_time_range(None, None)
             return
         graph.set_visible_time_range(*visible_range)
-
-    def _sync_main_graph_time_controls(self) -> None:
-        if not hasattr(self, "graph_time_previous_button"):
-            return
-        bounds = self._main_graph_data_bounds()
-        visible_range = self._main_graph_visible_time_range() if bounds is not None else None
-        has_range = bounds is not None and visible_range is not None
-        can_move_previous = False
-        can_move_next = False
-        if has_range:
-            full_start, full_end = bounds
-            visible_start, visible_end = visible_range
-            can_move_previous = visible_start > full_start
-            can_move_next = visible_end < full_end
-        self.graph_time_previous_button.setEnabled(can_move_previous)
-        self.graph_time_current_button.setEnabled(bool(has_range and can_move_next))
-        self.graph_time_next_button.setEnabled(can_move_next)
 
     def _remove_target_graph_row(self, address: str) -> None:
         row = self.target_graph_rows.pop(address, None)
@@ -2083,12 +1990,10 @@ class MainWindow(QMainWindow):
         if end < start:
             start, end = end, start
         self.focus_range = (start, end)
-        self.main_graph_time_range = None
         self._rebuild_focus_view(show_status=True)
 
     def clear_focus_range(self, *_args, render: bool = True) -> None:
         self._clear_focus_state()
-        self.main_graph_time_range = None
         self._sync_focus_controls()
         if render:
             self._render_current_view(force_graph=True)

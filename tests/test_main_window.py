@@ -1763,7 +1763,7 @@ def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
         window.close()
 
 
-def test_main_window_syncs_time_range_across_target_graph_rows(qt_app) -> None:
+def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
     targets = ["198.51.100.10", "203.0.113.10"]
@@ -1785,22 +1785,9 @@ def test_main_window_syncs_time_range_across_target_graph_rows(qt_app) -> None:
         assert window.graph.visible_datetime_range() == expected_current_range
         assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_current_range
         assert len(window.graph._points) == 21
-        assert window.graph_time_previous_button.isEnabled() is True
-        assert window.graph_time_current_button.isEnabled() is False
-        assert window.graph_time_next_button.isEnabled() is False
-
-        window.graph_time_previous_button.click()
-
-        expected_previous_range = (now + timedelta(minutes=5), now + timedelta(minutes=15))
-        assert window.graph.visible_datetime_range() == expected_previous_range
-        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_previous_range
-        assert window.graph_time_current_button.isEnabled() is True
-        assert window.graph_time_next_button.isEnabled() is True
-
-        window.graph_time_current_button.click()
-
-        assert window.graph.visible_datetime_range() == expected_current_range
-        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_current_range
+        assert hasattr(window, "graph_time_previous_button") is False
+        assert hasattr(window, "graph_time_current_button") is False
+        assert hasattr(window, "graph_time_next_button") is False
     finally:
         window.close()
 

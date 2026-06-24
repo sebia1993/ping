@@ -111,7 +111,7 @@ def test_latency_graph_renders_response_failures_without_crashing(qt_app) -> Non
     assert graph._last_plot_rect.height() > 100
 
 
-def test_latency_graph_main_mode_forwards_normal_wheel_and_emits_shift_pan(qt_app) -> None:
+def test_latency_graph_main_mode_ignores_wheel_without_time_pan(qt_app) -> None:
     graph = LatencyGraphWidget()
     now = datetime(2026, 1, 1, 12, 0, 0)
     points = [
@@ -135,8 +135,8 @@ def test_latency_graph_main_mode_forwards_normal_wheel_and_emits_shift_pan(qt_ap
     shift_wheel = _WheelEvent(-120, Qt.KeyboardModifier.ShiftModifier)
     graph.wheelEvent(shift_wheel)
 
-    assert shift_wheel.accepted is True
-    assert requests == [-0.5]
+    assert shift_wheel.ignored is True
+    assert requests == []
 
 
 def test_latency_graph_pans_visible_range_and_resets_current(qt_app) -> None:

@@ -140,11 +140,7 @@ class LatencyGraphWidget(QWidget):
         if delta == 0:
             return
         if self._main_graph_mode:
-            if event.modifiers() & Qt.ShiftModifier:
-                self.time_pan_requested.emit(0.5 if delta > 0 else -0.5)
-                event.accept()
-            else:
-                event.ignore()
+            event.ignore()
             return
         if event.modifiers() & Qt.ShiftModifier:
             self._pan(0.5 if delta > 0 else -0.5)
