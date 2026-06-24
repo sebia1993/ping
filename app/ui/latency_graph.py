@@ -13,6 +13,7 @@ from app.core.models import STATUS_ERROR, STATUS_TIMEOUT, STATUS_UNREACHABLE, Ho
 MAX_DISPLAY_POINTS = 1200
 SERIES_COLORS = ["#2563eb", "#059669", "#7c3aed", "#d97706", "#0f766e", "#be123c"]
 FAILURE_BAR_COLOR = "#dc2626"
+FAILURE_REGION_ALPHA = 48
 FAILURE_STATUSES = {STATUS_TIMEOUT, STATUS_UNREACHABLE, STATUS_ERROR}
 
 
@@ -246,6 +247,7 @@ class LatencyGraphWidget(QWidget):
         painter.drawText(4, rect.top() + 10, f"{max_latency:.0f} ms")
         painter.drawText(10, rect.bottom(), "0 ms")
 
+        self._draw_failure_markers(painter, visible, rect, rect.top() + 2, rect.bottom())
         line_points: list[QPointF] = []
         for point in visible:
             x = self._x_for_time(point.timestamp.timestamp(), rect)
@@ -254,8 +256,6 @@ class LatencyGraphWidget(QWidget):
             if point.success and point.latency_ms is not None:
                 y = rect.bottom() - (rect.height() * min(point.latency_ms, max_latency) / max_latency)
                 line_points.append(QPointF(x, y))
-            elif _is_failure_observation(point):
-                _draw_failure_bar(painter, x, rect.top() + 2, rect.bottom())
 
         if len(line_points) >= 2:
             painter.setPen(QPen(_series_qcolor(series, 0), 2))
@@ -283,6 +283,7 @@ class LatencyGraphWidget(QWidget):
             painter.setPen(QPen(QColor("#edf0f4"), 1))
             painter.drawLine(rect.left(), int(bottom), rect.right(), int(bottom))
 
+            self._draw_failure_markers(painter, points, rect, top + 2, bottom - 2)
             line_points: list[QPointF] = []
             for point in points:
                 x = self._x_for_time(point.timestamp.timestamp(), rect)
@@ -291,13 +292,32 @@ class LatencyGraphWidget(QWidget):
                 if point.success and point.latency_ms is not None:
                     y = bottom - ((bottom - top) * min(point.latency_ms, max_latency) / max_latency)
                     line_points.append(QPointF(x, y))
-                elif _is_failure_observation(point):
-                    _draw_failure_bar(painter, x, top + 2, bottom - 2)
 
             if len(line_points) >= 2:
                 painter.setPen(QPen(_series_qcolor(series, index), 2))
                 for start, end in zip(line_points, line_points[1:]):
                     painter.drawLine(start, end)
+
+    def _draw_failure_markers(
+        self,
+        painter: QPainter,
+        points: list[HopObservation],
+        rect: QRect,
+        top: float,
+        bottom: float,
+    ) -> None:
+        for run in _failure_runs(points):
+            x_values = [
+                x
+                for point in run
+                if (x := self._x_for_time(point.timestamp.timestamp(), rect)) is not None
+            ]
+            if not x_values:
+                continue
+            if len(x_values) == 1:
+                _draw_failure_bar(painter, x_values[0], top, bottom)
+            else:
+                _draw_failure_region(painter, min(x_values), max(x_values), top, bottom)
 
     def _draw_selection(self, painter: QPainter, rect: QRect) -> None:
         if self._selection is None:
@@ -569,6 +589,21 @@ def _is_failure_observation(point: HopObservation) -> bool:
     return not point.success and point.status in FAILURE_STATUSES
 
 
+def _failure_runs(points: list[HopObservation]) -> list[list[HopObservation]]:
+    runs: list[list[HopObservation]] = []
+    current: list[HopObservation] = []
+    for point in points:
+        if _is_failure_observation(point):
+            current.append(point)
+            continue
+        if current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return runs
+
+
 def _draw_failure_bar(painter: QPainter, x: float, top: float, bottom: float) -> None:
     y1 = int(min(top, bottom))
     y2 = int(max(top, bottom))
@@ -576,6 +611,24 @@ def _draw_failure_bar(painter: QPainter, x: float, top: float, bottom: float) ->
         return
     painter.setPen(QPen(QColor(FAILURE_BAR_COLOR), 3))
     painter.drawLine(int(x), y1, int(x), y2)
+
+
+def _draw_failure_region(painter: QPainter, start_x: float, end_x: float, top: float, bottom: float) -> None:
+    y1 = int(min(top, bottom))
+    y2 = int(max(top, bottom))
+    if y2 <= y1:
+        return
+    left = int(min(start_x, end_x))
+    right = int(max(start_x, end_x))
+    if right <= left:
+        _draw_failure_bar(painter, start_x, top, bottom)
+        return
+    fill = QColor(FAILURE_BAR_COLOR)
+    fill.setAlpha(FAILURE_REGION_ALPHA)
+    painter.fillRect(QRect(left, y1, max(right - left, 1), y2 - y1), fill)
+    painter.setPen(QPen(QColor(FAILURE_BAR_COLOR), 2))
+    painter.drawLine(left, y1, left, y2)
+    painter.drawLine(right, y1, right, y2)
 
 
 def _downsample_points(points: list[HopObservation], limit: int) -> list[HopObservation]:

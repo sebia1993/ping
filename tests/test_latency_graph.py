@@ -23,7 +23,13 @@ from app.ui.graph_detail_window import (
     VIEW_VISIBLE_HOPS,
     summarize_points,
 )
-from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries, _is_failure_observation
+from app.ui.latency_graph import (
+    LatencyGraphWidget,
+    TimelineAnnotation,
+    TimelineSeries,
+    _failure_runs,
+    _is_failure_observation,
+)
 
 
 def test_latency_graph_supports_zoom_selection_and_annotations(qt_app) -> None:
@@ -92,6 +98,24 @@ def test_latency_graph_failure_marker_policy_only_marks_response_failures(qt_app
     assert _is_failure_observation(high_latency) is False
 
 
+def test_latency_graph_groups_only_consecutive_response_failures(qt_app) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", False, None, STATUS_UNREACHABLE, True),
+        HopObservation(now + timedelta(seconds=3), 0, "198.51.100.10", "Target", True, 12.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=4), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=5), 0, "198.51.100.10", "Target", False, None, STATUS_PAUSED, True),
+        HopObservation(now + timedelta(seconds=6), 0, "198.51.100.10", "Target", False, None, STATUS_ERROR, True),
+        HopObservation(now + timedelta(seconds=7), 0, "198.51.100.10", "Target", False, None, STATUS_ERROR, True),
+    ]
+
+    runs = _failure_runs(points)
+
+    assert [[point.timestamp.second for point in run] for run in runs] == [[1, 2], [4], [6, 7]]
+
+
 def test_latency_graph_renders_response_failures_without_crashing(qt_app) -> None:
     graph = LatencyGraphWidget()
     graph.resize(720, 260)
@@ -100,6 +124,27 @@ def test_latency_graph_renders_response_failures_without_crashing(qt_app) -> Non
         HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
         HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
         HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", True, 12.0, STATUS_OK, True),
+    ]
+
+    graph.set_points(points)
+    pixmap = QPixmap(graph.size())
+    pixmap.fill(Qt.GlobalColor.white)
+    graph.render(pixmap)
+
+    assert pixmap.isNull() is False
+    assert graph._last_plot_rect.height() > 100
+
+
+def test_latency_graph_renders_consecutive_response_failures_without_crashing(qt_app) -> None:
+    graph = LatencyGraphWidget()
+    graph.resize(720, 260)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=3), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=4), 0, "198.51.100.10", "Target", True, 12.0, STATUS_OK, True),
     ]
 
     graph.set_points(points)
