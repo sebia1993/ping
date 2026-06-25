@@ -287,7 +287,7 @@ class GraphDetailWindow(QMainWindow):
             ("current", "현재 지연"),
             ("avg", "평균 지연"),
             ("loss", "손실률"),
-            ("jitter", "지터"),
+            ("jitter", "지연 변동"),
             ("samples", "샘플"),
         ]:
             box = QFrame()

@@ -214,7 +214,7 @@ def test_analyzer_adds_overlap_guidance_for_loss_and_jitter() -> None:
 
     assert any(
         line.startswith("ANALYSIS_MULTIPLE_SYMPTOMS_OVERLAP:")
-        and "loss, jitter" in line
+        and "loss, latency variation" in line
         for line in analysis
     )
     assert any(

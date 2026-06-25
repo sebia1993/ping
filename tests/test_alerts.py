@@ -163,8 +163,8 @@ def test_evaluate_target_alerts_detects_jitter_condition() -> None:
     )
 
     assert active_keys == {JITTER_ALERT_KEY}
-    assert events[0].title == "지터 경고"
-    assert events[0].message == "최근 4개 샘플의 지터 28.9 ms가 기준 20 ms 이상입니다."
+    assert events[0].title == "지연 변동 경고"
+    assert events[0].message == "최근 4개 샘플의 지연 변동 28.9 ms가 기준 20 ms 이상입니다."
 
 
 def test_evaluate_target_alerts_keeps_jitter_disabled_by_default() -> None:

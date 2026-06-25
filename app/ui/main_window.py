@@ -512,7 +512,7 @@ class MainWindow(QMainWindow):
             ("current", "현재 지연"),
             ("avg", "평균 지연"),
             ("loss", "손실률"),
-            ("jitter", "지터"),
+            ("jitter", "지연 변동"),
             ("samples", "샘플"),
         ]:
             box = _panel("metricBox")
@@ -551,7 +551,7 @@ class MainWindow(QMainWindow):
         self.states_box.setObjectName("statesBox")
         self.states_box.setPlainText(
             "정상: 최종 대상 응답 정상, 손실률 0-5%\n"
-            "주의: 손실률 5-20% 또는 지터 30ms 이상\n"
+            "주의: 손실률 5-20% 또는 지연 변동 30ms 이상\n"
             "심각: 손실률 20% 이상 또는 연속 timeout"
         )
 
@@ -583,7 +583,7 @@ class MainWindow(QMainWindow):
         self.latency_threshold_spin.setRange(1, 5000)
         self.latency_threshold_spin.setValue(100)
         self.latency_threshold_spin.setSuffix("ms")
-        self.jitter_alert_check = QCheckBox("지터")
+        self.jitter_alert_check = QCheckBox("지연 변동")
         self.jitter_alert_check.setChecked(False)
         self.jitter_threshold_spin = QSpinBox()
         self.jitter_threshold_spin.setRange(1, 1000)

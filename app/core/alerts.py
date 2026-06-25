@@ -266,8 +266,8 @@ def _jitter_alert(
         start=window[0].timestamp,
         end=window[-1].timestamp,
         severity="warning",
-        title="지터 경고",
-        message=f"최근 {window_count}개 샘플의 지터 {jitter_ms:.1f} ms가 기준 {threshold_ms:.0f} ms 이상입니다.",
+        title="지연 변동 경고",
+        message=f"최근 {window_count}개 샘플의 지연 변동 {jitter_ms:.1f} ms가 기준 {threshold_ms:.0f} ms 이상입니다.",
     )
 
 
@@ -414,7 +414,7 @@ def _alert_title_for_key(alert_key: str) -> str:
     if alert_key == LATENCY_ALERT_KEY:
         return "지연 경고"
     if alert_key == JITTER_ALERT_KEY:
-        return "지터 경고"
+        return "지연 변동 경고"
     if alert_key == SAMPLE_ALERT_KEY:
         return "샘플 불량 경고"
     if alert_key == TIMER_ALERT_KEY:

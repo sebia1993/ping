@@ -161,20 +161,20 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
         if isolated_jitter:
             hop_list = ", ".join(f"Hop {snapshot.hop_index}" for snapshot in isolated_jitter[:5])
             analysis.append(
-                f"{hop_list} shows high jitter only at intermediate hops while the final target is healthy. This usually points to ICMP/control-plane deprioritization."
+                f"{hop_list} shows high latency variation only at intermediate hops while the final target is healthy. This usually points to ICMP/control-plane deprioritization."
             )
             analysis.append(
                 _diagnostic_line(
                     "ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED",
-                    f"Only intermediate hops show high jitter: {hop_list}. The final target is healthy.",
-                    "Do not treat middle-hop-only jitter as Wi-Fi or bandwidth congestion unless the final target also varies.",
+                    f"Only intermediate hops show high latency variation: {hop_list}. The final target is healthy.",
+                    "Do not treat middle-hop-only latency variation as Wi-Fi or bandwidth congestion unless the final target also varies.",
                 )
             )
             analysis.append(
                 _cause_line(
                     "CAUSE_INTERMEDIATE_HOP_JITTER_DEPRIORITIZATION",
-                    f"{hop_list} has high jitter while the final target remains healthy.",
-                    "Treat this as ICMP response deprioritization or control-plane rate limiting unless later hops inherit the same jitter.",
+                    f"{hop_list} has high latency variation while the final target remains healthy.",
+                    "Treat this as ICMP response deprioritization or control-plane rate limiting unless later hops inherit the same latency variation.",
                 )
             )
 
@@ -438,7 +438,7 @@ def _symptom_family(line: str) -> str | None:
             "ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:",
         )
     ):
-        return "jitter"
+        return "latency variation"
     return None
 
 

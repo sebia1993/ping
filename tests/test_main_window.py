@@ -115,6 +115,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.graph_png_scope_combo.isEnabled() is False
         assert window.loss_alert_check.isChecked() is True
         assert window.latency_alert_check.isChecked() is True
+        assert window.jitter_alert_check.text() == "지연 변동"
         assert window.jitter_alert_check.isChecked() is False
         assert window.sample_alert_check.isChecked() is True
         assert window.timer_alert_check.isChecked() is True
@@ -3876,10 +3877,10 @@ def test_main_window_records_jitter_alert_action(qt_app, tmp_path) -> None:
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert "지터 경고" in window.alerts_box.toPlainText()
-        assert [row["title"] for row in rows] == ["지터 경고"]
-        assert rows[0]["message"] == "최근 4개 샘플의 지터 28.9 ms가 기준 20 ms 이상입니다."
-        assert window.graph._annotations[0].label == "지터 경고"
+        assert "지연 변동 경고" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["지연 변동 경고"]
+        assert rows[0]["message"] == "최근 4개 샘플의 지연 변동 28.9 ms가 기준 20 ms 이상입니다."
+        assert window.graph._annotations[0].label == "지연 변동 경고"
     finally:
         window.close()
 
