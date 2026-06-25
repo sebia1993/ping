@@ -20,7 +20,6 @@ from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
@@ -366,30 +365,14 @@ class MainWindow(QMainWindow):
         graph_advanced_layout.addWidget(self.load_timeline_button)
         graph_advanced_layout.addWidget(self.reset_current_button)
         graph_advanced_layout.addWidget(self.clear_focus_button)
-        self.graph_range_recent_button = QPushButton("최근 10분")
-        self.graph_range_recent_button.setObjectName("graphRangeToggle")
-        self.graph_range_recent_button.setToolTip("최근 10분만 크게 표시합니다.")
-        self.graph_range_recent_button.setCheckable(True)
-        self.graph_range_recent_button.clicked.connect(
-            lambda _checked=False: self.set_main_graph_range_mode(MAIN_GRAPH_RANGE_RECENT)
-        )
-        self.graph_range_all_button = QPushButton("전체")
-        self.graph_range_all_button.setObjectName("graphRangeToggle")
-        self.graph_range_all_button.setToolTip("측정 시작 시간부터 현재까지 전체 기간을 표시합니다.")
-        self.graph_range_all_button.setCheckable(True)
-        self.graph_range_all_button.clicked.connect(
-            lambda _checked=False: self.set_main_graph_range_mode(MAIN_GRAPH_RANGE_ALL)
-        )
-        self.graph_range_button_group = QButtonGroup(self)
-        self.graph_range_button_group.setExclusive(True)
-        self.graph_range_button_group.addButton(self.graph_range_recent_button)
-        self.graph_range_button_group.addButton(self.graph_range_all_button)
-        self._sync_main_graph_range_buttons()
+        self.graph_range_toggle_button = QPushButton("전체 보기")
+        self.graph_range_toggle_button.setObjectName("graphRangeToggle")
+        self.graph_range_toggle_button.clicked.connect(self.toggle_main_graph_range_mode)
+        self._sync_main_graph_range_button()
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
         graph_header.addWidget(self.target_summary_status_label)
-        graph_header.addWidget(self.graph_range_recent_button)
-        graph_header.addWidget(self.graph_range_all_button)
+        graph_header.addWidget(self.graph_range_toggle_button)
         graph_header.addWidget(self.graph_advanced_controls)
         self.graph = LatencyGraphWidget()
         self.graph.setMinimumHeight(112)
@@ -2007,16 +1990,29 @@ class MainWindow(QMainWindow):
         if mode not in {MAIN_GRAPH_RANGE_RECENT, MAIN_GRAPH_RANGE_ALL}:
             mode = MAIN_GRAPH_RANGE_RECENT
         self.main_graph_range_mode = mode
-        self._sync_main_graph_range_buttons()
+        self._sync_main_graph_range_button()
         self._sync_main_graph_time_axis_modes()
         if render:
             self._request_graph_render(force=True)
 
-    def _sync_main_graph_range_buttons(self) -> None:
-        if hasattr(self, "graph_range_recent_button"):
-            self.graph_range_recent_button.setChecked(self.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT)
-        if hasattr(self, "graph_range_all_button"):
-            self.graph_range_all_button.setChecked(self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL)
+    def toggle_main_graph_range_mode(self) -> None:
+        next_mode = (
+            MAIN_GRAPH_RANGE_ALL
+            if self.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
+            else MAIN_GRAPH_RANGE_RECENT
+        )
+        self.set_main_graph_range_mode(next_mode)
+
+    def _sync_main_graph_range_button(self) -> None:
+        button = getattr(self, "graph_range_toggle_button", None)
+        if button is None:
+            return
+        if self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL:
+            button.setText("최근 보기")
+            button.setToolTip("전체 기간에서 최근 측정 구간 보기로 돌아갑니다.")
+        else:
+            button.setText("전체 보기")
+            button.setToolTip("측정 시작 시간부터 현재까지 전체 기간을 표시합니다.")
 
     def _sync_main_graph_time_axis_modes(self) -> None:
         seen: set[int] = set()

@@ -81,10 +81,10 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.graph_panel.isHidden() is True
         assert window.timeline_label.text() == "그래프: 실시간"
         assert window.target_summary_status_label.text() == "IP: 0"
-        assert window.graph_range_recent_button.text() == "최근 10분"
-        assert window.graph_range_recent_button.isChecked() is True
-        assert window.graph_range_all_button.text() == "전체"
-        assert window.graph_range_all_button.isChecked() is False
+        assert hasattr(window, "graph_range_recent_button") is False
+        assert hasattr(window, "graph_range_all_button") is False
+        assert window.graph_range_toggle_button.text() == "전체 보기"
+        assert "전체 기간" in window.graph_range_toggle_button.toolTip()
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
         assert hasattr(window, "toggle_target_panel_button") is False
@@ -1085,8 +1085,7 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert window.running_target_summary_label.text() == "측정 IP 2개"
         assert window.graph_panel.isHidden() is False
         assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
-        assert window.graph_range_recent_button.isChecked() is True
-        assert window.graph_range_all_button.isChecked() is False
+        assert window.graph_range_toggle_button.text() == "전체 보기"
 
         window.stop_measurement()
 
@@ -1997,14 +1996,21 @@ def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) ->
         assert hasattr(window, "graph_time_current_button") is False
         assert hasattr(window, "graph_time_next_button") is False
 
-        window.graph_range_all_button.click()
+        window.graph_range_toggle_button.click()
 
         expected_all_range = (now, now + timedelta(minutes=20))
         assert window.graph.visible_datetime_range() == expected_all_range
         assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_all_range
         assert window.graph._time_axis_labels() == ("시작 12:00:00", "현재 12:20:00")
-        assert window.graph_range_recent_button.isChecked() is False
-        assert window.graph_range_all_button.isChecked() is True
+        assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL
+        assert window.graph_range_toggle_button.text() == "최근 보기"
+
+        window.graph_range_toggle_button.click()
+
+        assert window.graph.visible_datetime_range() == expected_current_range
+        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_current_range
+        assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
+        assert window.graph_range_toggle_button.text() == "전체 보기"
     finally:
         window.close()
 
