@@ -708,6 +708,31 @@ def test_worker_marks_session_paused_when_session_log_write_fails(monkeypatch, t
     assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
 
 
+def test_worker_marks_session_paused_when_session_log_close_fails(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
+    log_path = tmp_path / "close_failed.samples.csv"
+
+    def create_log(cls, target: str, root=None):
+        return _CloseFailingSessionLogWriter(log_path)
+
+    monkeypatch.setattr(worker_module.SessionLogWriter, "create", classmethod(create_log))
+
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=0, max_cycles=1)
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    sessions = SessionIndexStore.create(tmp_path).list_sessions(target="198.51.100.10")
+    assert len(sessions) == 1
+    assert sessions[0].state == SESSION_STATE_PAUSED
+    assert sessions[0].samples >= 1
+    assert "SESSION_LOG_WRITE_FAILED: PermissionError" in sessions[0].last_error
+    assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
+
+
 def test_worker_thread_start_stop_repeats_without_lingering(monkeypatch) -> None:
     _app()
 
@@ -752,6 +777,11 @@ def test_worker_applies_runtime_add_and_remove_requests() -> None:
     assert set(target_trackers) == {"198.51.100.10", "203.0.113.10"}
     assert set(target_states) == {"198.51.100.10", "203.0.113.10"}
 
+    worker.pause_targets(["198.51.100.10"])
+    worker.set_target_interval_seconds(["198.51.100.10"], 5)
+    assert worker.paused_targets() == {"198.51.100.10"}
+    assert worker.target_interval_overrides() == {"198.51.100.10": 5}
+
     assert worker.remove_targets(["198.51.100.10"]) == ["198.51.100.10"]
     assert worker._apply_pending_target_changes(target_trackers, target_states, active_target_pings) is True
 
@@ -760,6 +790,34 @@ def test_worker_applies_runtime_add_and_remove_requests() -> None:
     assert set(target_trackers) == {"203.0.113.10"}
     assert set(target_states) == {"203.0.113.10"}
     assert active_target_pings == set()
+    assert worker.paused_targets() == set()
+    assert worker.target_interval_overrides() == {}
+
+
+def test_worker_can_cancel_pending_runtime_addition_before_apply() -> None:
+    _app()
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=1,
+        max_cycles=None,
+        targets=["198.51.100.10"],
+    )
+    target_trackers = {
+        "198.51.100.10": TargetMetricTracker(
+            "198.51.100.10",
+            recent_observation_limit=RECENT_OBSERVATION_LIMIT,
+        )
+    }
+    target_states = {"198.51.100.10": TargetProbeState("198.51.100.10")}
+    active_target_pings: set[str] = set()
+
+    assert worker.add_targets(["203.0.113.10"]) == ["203.0.113.10"]
+    assert worker.remove_targets(["203.0.113.10"]) == []
+    assert worker._apply_pending_target_changes(target_trackers, target_states, active_target_pings) is False
+
+    assert worker.targets == ["198.51.100.10"]
+    assert set(target_trackers) == {"198.51.100.10"}
+    assert set(target_states) == {"198.51.100.10"}
 
 
 def test_worker_records_ping_exceptions_as_error_results(monkeypatch) -> None:
@@ -932,6 +990,19 @@ class _FailingSessionLogWriter:
 
     def close(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+
+
+class _CloseFailingSessionLogWriter:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.paths = [path]
+
+    def write_many(self, _observations) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.touch()
+
+    def close(self) -> None:
+        raise PermissionError("locked during close")
 
 
 class _SlowTargetPingRunner:

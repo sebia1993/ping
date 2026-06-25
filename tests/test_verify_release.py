@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import scripts.verify_release as verify_release
 from app.core.models import STATUS_ERROR, STATUS_OK, HopInfo, MetricSnapshot, PingResult
@@ -98,6 +99,17 @@ def test_release_policy_rejects_external_api_clients(monkeypatch, tmp_path) -> N
         assert "External API client dependency" in str(exc)
     else:
         raise AssertionError("Expected release policy check to fail")
+
+
+def test_field_verification_docs_match_current_graph_controls() -> None:
+    text = (Path(__file__).resolve().parents[1] / "docs" / "field_verification.md").read_text(encoding="utf-8")
+
+    assert "`그래프 확대` 버튼" not in text
+    assert "`전체 보기`" not in text
+    assert "`최근 보기`" not in text
+    assert "시간 범위 선택" in text
+    assert "이름 버튼" in text
+    assert "일시중지/삭제 버튼" in text
 
 
 class _Signal:

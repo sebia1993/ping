@@ -122,6 +122,42 @@ def test_soak_evaluation_allows_in_flight_pings_at_shutdown() -> None:
     assert evaluate_summary(summary, args) == []
 
 
+def test_soak_evaluation_rejects_resource_pressure() -> None:
+    args = _args()
+    summary = _summary(
+        updates=1778,
+        diagnostic_samples=1778,
+        max_update_gap_seconds=2.031,
+        avg_update_gap_seconds=1.013,
+        max_pending_ping_count=99,
+        max_log_queue_depth=999,
+        max_active_threads=99,
+    )
+
+    failures = evaluate_summary(summary, args)
+
+    assert any("pending ping count too high" in failure for failure in failures)
+    assert any("log queue depth too high" in failure for failure in failures)
+    assert any("active thread count too high" in failure for failure in failures)
+
+
+def test_soak_evaluation_rejects_memory_and_cpu_growth() -> None:
+    args = _args()
+    summary = _summary(
+        updates=1778,
+        diagnostic_samples=1778,
+        max_update_gap_seconds=2.031,
+        avg_update_gap_seconds=1.013,
+        memory_growth_bytes=200 * 1024 * 1024,
+        cpu_percent=95.0,
+    )
+
+    failures = evaluate_summary(summary, args)
+
+    assert any("memory growth too high" in failure for failure in failures)
+    assert any("CPU usage too high" in failure for failure in failures)
+
+
 def _args() -> Namespace:
     return Namespace(
         duration_seconds=1800.0,
@@ -152,6 +188,11 @@ def _summary(
     ping_results: int | None = None,
     session_log_rows: int = 89_000,
     session_log_segments: int = 1,
+    max_pending_ping_count: int = 18,
+    max_log_queue_depth: int = 8,
+    max_active_threads: int = 24,
+    memory_growth_bytes: int = 5_100_000,
+    cpu_percent: float = 2.7,
 ) -> dict[str, object]:
     completed = ping_calls if ping_results is None else ping_results
     return {
@@ -162,11 +203,11 @@ def _summary(
         "max_update_gap_seconds": max_update_gap_seconds,
         "avg_update_gap_seconds": avg_update_gap_seconds,
         "max_ui_event_gap_seconds": 0.075,
-        "max_pending_ping_count": 18,
-        "max_log_queue_depth": 8,
-        "max_active_threads": 24,
-        "memory_growth_bytes": 5_100_000,
-        "cpu_percent": 2.7,
+        "max_pending_ping_count": max_pending_ping_count,
+        "max_log_queue_depth": max_log_queue_depth,
+        "max_active_threads": max_active_threads,
+        "memory_growth_bytes": memory_growth_bytes,
+        "cpu_percent": cpu_percent,
         "max_backoff_target_count": 41,
         "traceroute_calls": 30,
         "ping_calls": ping_calls,
