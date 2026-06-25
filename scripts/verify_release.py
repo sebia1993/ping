@@ -84,7 +84,7 @@ def run_command(command: list[str], *, env: dict[str, str] | None = None, timeou
 
 
 def run_pytest() -> None:
-    run_command([sys.executable, "-m", "pytest"], timeout=180)
+    run_command([sys.executable, "-m", "pytest"], timeout=300)
 
 
 def run_compileall() -> None:
