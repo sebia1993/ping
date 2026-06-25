@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QFontDatabase
+from PySide6.QtGui import QCloseEvent, QFontDatabase
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.core.alerts import AlertEvent
@@ -16,6 +16,7 @@ from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopInfo, HopObservation, 
 from app.core.route_history import RouteHistory
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.route_log import RouteLogWriter, route_log_path_for_session
+from app.storage import session_index as session_index_module
 from app.storage.session_index import (
     SESSION_STATE_ARCHIVED,
     SESSION_STATE_PAUSED,
@@ -524,6 +525,44 @@ def test_main_window_refresh_sessions_recovers_missing_saved_logs(qt_app, tmp_pa
         assert window.session_combo.count() == 2
         assert "203.0.113.20" in window.sessions_box.toPlainText()
         assert window.status_label.text() == "저장된 로그 기준으로 세션 목록을 새로고침했습니다."
+    finally:
+        window.close()
+
+
+def test_main_window_sync_sessions_retries_pending_deletions(qt_app, tmp_path, monkeypatch) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "locked.samples.csv"
+    sample_path.parent.mkdir(parents=True)
+    sample_path.write_text("managed\n", encoding="utf-8")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    def locked_unlink(path):
+        if path == sample_path:
+            raise PermissionError("locked")
+        path.unlink()
+
+    monkeypatch.setattr(session_index_module, "_unlink_path", locked_unlink)
+    failed_delete = store.delete_session(record.session_id)
+    assert failed_delete is not None
+    assert failed_delete.state == SESSION_STATE_WILL_DELETE
+
+    try:
+        monkeypatch.setattr(session_index_module, "_unlink_path", lambda path: path.unlink())
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        assert store.find_session(record.session_id) is None
+        assert "저장된 세션이 없습니다." in window.sessions_box.toPlainText()
     finally:
         window.close()
 
@@ -4681,6 +4720,22 @@ def test_main_window_exports_alert_route_and_manual_annotations(qt_app) -> None:
         window.close()
 
 
+def test_main_window_close_event_only_requests_stop_once_when_reentered(qt_app) -> None:
+    window = MainWindow()
+    worker = _SlowStoppingWorker()
+
+    try:
+        window.worker = worker
+        window.closeEvent(QCloseEvent())
+        window.closeEvent(QCloseEvent())
+
+        assert worker.request_stop_calls == 1
+        assert worker.wait_calls == [3000]
+    finally:
+        window.worker = None
+        window.close()
+
+
 def _snapshot(
     hop_index: int,
     address: str,
@@ -4810,3 +4865,20 @@ class _FakeExportWorker:
 
     def wait(self, timeout_ms: int) -> bool:
         return True
+
+
+class _SlowStoppingWorker(QObject):
+    def __init__(self) -> None:
+        super().__init__()
+        self.request_stop_calls = 0
+        self.wait_calls: list[int] = []
+
+    def isRunning(self) -> bool:
+        return True
+
+    def request_stop(self) -> None:
+        self.request_stop_calls += 1
+
+    def wait(self, timeout_ms: int) -> bool:
+        self.wait_calls.append(timeout_ms)
+        return False

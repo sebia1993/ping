@@ -111,7 +111,12 @@ def test_field_verification_docs_match_current_graph_controls() -> None:
     assert "이름 버튼" in text
     assert "일시중지/삭제 버튼" in text
     assert "python scripts\\soak_test.py --profile long --duration-seconds 1800 --no-ui" in text
-    assert "python scripts\\soak_test.py --profile ui --duration-seconds 600" in text
+    assert "python scripts\\soak_test.py --profile long4h" in text
+    assert "python scripts\\soak_test.py --profile long8h" in text
+    assert "python scripts\\soak_test.py --profile long24h" in text
+    assert "python scripts\\soak_test.py --profile ui10" in text
+    assert "python scripts\\soak_test.py --profile ui20" in text
+    assert "python scripts\\soak_test.py --profile ui50" in text
     assert "`max_active_threads`" in text
     assert "`max_pending_ping_count`" in text
 

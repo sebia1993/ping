@@ -205,6 +205,7 @@ class MainWindow(QMainWindow):
         self.worker: MeasurementWorker | None = None
         self.export_worker: ExportWorker | None = None
         self.graph_detail_window: GraphDetailWindow | None = None
+        self._closing = False
         self.advanced_features_visible = False
         self.worker_factory = worker_factory or MeasurementWorker
         self.session_index_store = SessionIndexStore.create()
@@ -3200,6 +3201,7 @@ class MainWindow(QMainWindow):
             self.session_index_store.recover_stale_active_sessions(
                 stale_after=timedelta(seconds=STALE_ACTIVE_SESSION_RECOVERY_SECONDS)
             )
+            self.session_index_store.retry_pending_deletions()
             self.session_index_store.reconcile_missing_session_files()
         sessions = self.session_index_store.list_sessions()
         filtered_sessions = self._filtered_session_records(sessions)
@@ -3267,10 +3269,16 @@ class MainWindow(QMainWindow):
         return self._filtered_session_records(sessions)[:SESSION_MANAGER_DISPLAY_LIMIT]
 
     def refresh_saved_sessions(self) -> None:
+        removed_pending = self.session_index_store.retry_pending_deletions()
         self.session_index_store.recover_missing_sessions()
         self.session_index_store.reconcile_session_log_metadata()
         self._sync_sessions_box()
-        self.status_label.setText("저장된 로그 기준으로 세션 목록을 새로고침했습니다.")
+        if removed_pending:
+            self.status_label.setText(
+                f"저장된 로그 기준으로 세션 목록을 새로고침했습니다. 삭제 예정 {len(removed_pending)}개 정리 완료."
+            )
+        else:
+            self.status_label.setText("저장된 로그 기준으로 세션 목록을 새로고침했습니다.")
 
     def _sync_session_combo(self, sessions: list[TraceSessionRecord]) -> None:
         if not hasattr(self, "session_combo"):
@@ -4295,6 +4303,10 @@ class MainWindow(QMainWindow):
         self.trace_target_combo.blockSignals(False)
 
     def closeEvent(self, event) -> None:
+        if self._closing:
+            super().closeEvent(event)
+            return
+        self._closing = True
         if self._graph_render_timer.isActive():
             self._graph_render_timer.stop()
         if self.worker and self.worker.isRunning():

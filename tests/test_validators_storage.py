@@ -1129,6 +1129,81 @@ def test_session_index_delete_marks_will_delete_when_file_is_locked(tmp_path, mo
     assert not route_path.exists()
 
 
+def test_session_index_retry_pending_deletions_removes_session_after_lock_is_released(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "locked.samples.csv"
+    sample_path.parent.mkdir(parents=True)
+    sample_path.write_text("managed\n", encoding="utf-8")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    def locked_unlink(path):
+        if path == sample_path:
+            raise PermissionError("locked")
+        path.unlink()
+
+    monkeypatch.setattr(session_index_module, "_unlink_path", locked_unlink)
+    failed_delete = store.delete_session(record.session_id)
+    assert failed_delete is not None
+    assert failed_delete.state == SESSION_STATE_WILL_DELETE
+    assert store.find_session(record.session_id) is not None
+
+    monkeypatch.setattr(session_index_module, "_unlink_path", lambda path: path.unlink())
+    removed = store.retry_pending_deletions()
+
+    assert [item.session_id for item in removed] == [record.session_id]
+    assert store.find_session(record.session_id) is None
+    assert not sample_path.exists()
+
+
+def test_session_index_retry_pending_deletions_keeps_session_when_file_is_still_locked(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "still_locked.samples.csv"
+    sample_path.parent.mkdir(parents=True)
+    sample_path.write_text("managed\n", encoding="utf-8")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    def still_locked(_path):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(session_index_module, "_unlink_path", still_locked)
+    failed_delete = store.delete_session(record.session_id)
+    assert failed_delete is not None
+    assert failed_delete.state == SESSION_STATE_WILL_DELETE
+
+    removed = store.retry_pending_deletions()
+
+    assert removed == []
+    refreshed = store.find_session(record.session_id)
+    assert refreshed is not None
+    assert refreshed.state == SESSION_STATE_WILL_DELETE
+    assert SESSION_DELETE_FILES_FAILED_CODE in refreshed.last_error
+    assert sample_path.exists()
+
+
 def test_session_index_prunes_old_inactive_sessions_and_keeps_active(tmp_path) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 31, 12, 0, 0)
@@ -1178,6 +1253,40 @@ def test_session_index_prunes_old_inactive_sessions_and_keeps_active(tmp_path) -
     assert not old_path.exists()
     assert active_path.exists()
     assert recent_path.exists()
+
+
+def test_session_index_prune_marks_locked_files_as_will_delete(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 31, 12, 0, 0)
+    old_path = tmp_path / "198.51.100.10" / "2026-01" / "old.samples.csv"
+    old_path.parent.mkdir(parents=True)
+    old_path.write_text("managed\n", encoding="utf-8")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=old_path,
+        route_path=None,
+        started_at=now - timedelta(days=40),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now - timedelta(days=39))
+
+    def locked_unlink(path):
+        if path == old_path:
+            raise PermissionError("locked")
+        path.unlink()
+
+    monkeypatch.setattr(session_index_module, "_unlink_path", locked_unlink)
+
+    pruned = store.prune_sessions_older_than(older_than=timedelta(days=30), now=now)
+
+    assert [item.session_id for item in pruned] == [record.session_id]
+    refreshed = store.find_session(record.session_id)
+    assert refreshed is not None
+    assert refreshed.state == SESSION_STATE_WILL_DELETE
+    assert SESSION_DELETE_FILES_FAILED_CODE in refreshed.last_error
+    assert old_path.exists()
 
 
 def test_export_worker_writes_csv_from_session_log(tmp_path) -> None:

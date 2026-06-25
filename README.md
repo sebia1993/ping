@@ -93,8 +93,15 @@ python scripts\soak_test.py --profile release
 # 30-minute 50-target stability check for longer local validation
 python scripts\soak_test.py --profile long
 
-# Offscreen MainWindow wiring check
-python scripts\soak_test.py --profile ui
+# 4/8/24-hour simulated long-run checks
+python scripts\soak_test.py --profile long4h
+python scripts\soak_test.py --profile long8h
+python scripts\soak_test.py --profile long24h
+
+# Offscreen MainWindow UI freeze checks by target count
+python scripts\soak_test.py --profile ui10
+python scripts\soak_test.py --profile ui20
+python scripts\soak_test.py --profile ui50
 ```
 
 ## 운영 개선 사항

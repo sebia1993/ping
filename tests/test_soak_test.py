@@ -32,6 +32,18 @@ def test_soak_long_profile_sets_thirty_minute_fifty_target_defaults() -> None:
     assert args.with_ui is False
 
 
+def test_soak_long_duration_profiles_define_four_eight_and_twenty_four_hour_runs() -> None:
+    four = parse_args(["--profile", "long4h"])
+    eight = parse_args(["--profile", "long8h"])
+    twenty_four = parse_args(["--profile", "long24h"])
+
+    assert four.duration_seconds == 14_400.0
+    assert eight.duration_seconds == 28_800.0
+    assert twenty_four.duration_seconds == 86_400.0
+    assert {four.targets, eight.targets, twenty_four.targets} == {50}
+    assert twenty_four.max_memory_growth_mb == 256.0
+
+
 def test_soak_ui_profile_drives_offscreen_window_by_default() -> None:
     args = parse_args(["--profile", "ui"])
 
@@ -39,6 +51,23 @@ def test_soak_ui_profile_drives_offscreen_window_by_default() -> None:
     assert args.duration_seconds == 60.0
     assert args.targets == 50
     assert args.with_ui is True
+
+
+def test_soak_ui_freeze_profiles_measure_ten_twenty_and_fifty_targets() -> None:
+    ten = parse_args(["--profile", "ui10"])
+    twenty = parse_args(["--profile", "ui20"])
+    fifty = parse_args(["--profile", "ui50"])
+
+    assert [ten.targets, twenty.targets, fifty.targets] == [10, 20, 50]
+    assert ten.with_ui is True
+    assert twenty.with_ui is True
+    assert fifty.with_ui is True
+    assert ten.duration_seconds == 600.0
+    assert twenty.duration_seconds == 600.0
+    assert fifty.duration_seconds == 600.0
+    assert ten.max_ui_event_gap_seconds == 0.2
+    assert twenty.max_ui_event_gap_seconds == 0.2
+    assert fifty.max_ui_event_gap_seconds == 0.2
 
 
 def test_soak_profile_allows_explicit_cli_overrides() -> None:

@@ -17,14 +17,19 @@ python scripts\verify_release.py --live --exe
 
 ```powershell
 python scripts\soak_test.py --profile long --duration-seconds 1800 --no-ui
-python scripts\soak_test.py --profile ui --duration-seconds 600
+python scripts\soak_test.py --profile long4h
+python scripts\soak_test.py --profile long8h
+python scripts\soak_test.py --profile long24h
+python scripts\soak_test.py --profile ui10
+python scripts\soak_test.py --profile ui20
+python scripts\soak_test.py --profile ui50
 ```
 
 주요 기준:
 - `max_active_threads`는 40 이하
-- `max_ui_event_gap_seconds`는 2초 이하
-- `memory_growth_bytes`는 96MB 이하
-- `cpu_percent`는 long profile 기준 80% 이하
+- `max_ui_event_gap_seconds`는 UI profile 기준 0.2초 이하
+- `memory_growth_bytes`는 profile별 기준값 이하
+- `cpu_percent`는 long profile 기준 80% 이하, 4/8/24시간 profile 기준 70% 이하
 - `max_pending_ping_count`와 `max_log_queue_depth`가 실패 기준을 넘으면 안정성 회귀로 처리
 - `session_log_rows`와 `session_log_segments`가 0이면 세션 저장 실패로 처리
 

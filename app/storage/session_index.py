@@ -255,6 +255,41 @@ class SessionIndexStore:
                 self._write_records(updated)
         return updated_records
 
+    def retry_pending_deletions(self) -> list[TraceSessionRecord]:
+        """파일 잠금 때문에 삭제 예정으로 남은 세션을 다시 정리합니다."""
+
+        removed_records: list[TraceSessionRecord] = []
+        with self._lock:
+            records = self._read_records()
+            kept: list[TraceSessionRecord] = []
+            changed = False
+            for record in records:
+                if record.state != SESSION_STATE_WILL_DELETE:
+                    kept.append(record)
+                    continue
+                if SESSION_DELETE_FILES_FAILED_CODE not in record.last_error:
+                    kept.append(record)
+                    continue
+                _deleted, failures = _delete_session_files_with_failures(record, root=self.path.parent)
+                if failures:
+                    first_path, first_error = failures[0]
+                    refreshed = _replace_record(
+                        record,
+                        end=record.end or datetime.now(),
+                        last_error=(
+                            f"{SESSION_DELETE_FILES_FAILED_CODE}: "
+                            f"{type(first_error).__name__}: {first_path}"
+                        ),
+                    )
+                    kept.append(refreshed)
+                    changed = changed or refreshed != record
+                    continue
+                removed_records.append(record)
+                changed = True
+            if changed:
+                self._write_records(kept)
+        return removed_records
+
     def reconcile_session_log_metadata(self) -> list[TraceSessionRecord]:
         """이미 등록된 세션의 요약 정보를 실제 CSV 세그먼트 기준으로 다시 맞춥니다.
 
@@ -326,6 +361,7 @@ class SessionIndexStore:
     ) -> list[TraceSessionRecord]:
         cutoff = (now or datetime.now()) - older_than
         pruned: list[TraceSessionRecord] = []
+        failed_deletions: list[TraceSessionRecord] = []
         with self._lock:
             records = self._read_records()
             kept: list[TraceSessionRecord] = []
@@ -338,7 +374,26 @@ class SessionIndexStore:
                 self._write_records(kept)
         if delete_files:
             for record in pruned:
-                delete_session_files(record, root=self.path.parent)
+                _deleted, failures = _delete_session_files_with_failures(record, root=self.path.parent)
+                if failures:
+                    first_path, first_error = failures[0]
+                    failed_deletions.append(
+                        _replace_record(
+                            record,
+                            state=SESSION_STATE_WILL_DELETE,
+                            end=record.end or datetime.now(),
+                            last_error=(
+                                f"{SESSION_DELETE_FILES_FAILED_CODE}: "
+                                f"{type(first_error).__name__}: {first_path}"
+                            ),
+                        )
+                    )
+            if failed_deletions:
+                with self._lock:
+                    records = self._read_records()
+                    existing_ids = {record.session_id for record in records}
+                    records.extend(record for record in failed_deletions if record.session_id not in existing_ids)
+                    self._write_records(records)
         return pruned
 
     def _read_records(self) -> list[TraceSessionRecord]:
