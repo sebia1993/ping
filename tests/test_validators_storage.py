@@ -1152,6 +1152,45 @@ def test_export_worker_writes_csv_from_session_log(tmp_path) -> None:
     assert "192.168.0.1" in export_path.read_text(encoding="utf-8-sig")
 
 
+def test_export_worker_writes_csv_from_large_segmented_session_log(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    session_path = tmp_path / "large_session.csv"
+    observations = [
+        _sample_observation(
+            timestamp=now + timedelta(seconds=index),
+            address=f"192.168.0.{index % 250 + 1}",
+        )
+        for index in range(1200)
+    ]
+    writer = SessionLogWriter(session_path, max_rows_per_file=200)
+    writer.write_many(observations)
+    writer.close()
+
+    export_path = tmp_path / "large_worker_export.csv"
+    completed: list[str] = []
+    errors: list[str] = []
+    worker = ExportWorker(
+        kind="csv",
+        path=export_path,
+        target="8.8.8.8",
+        session_log_path=session_path,
+        snapshots=[_sample_snapshot(address="203.0.113.5")],
+        analysis=["large session"],
+    )
+    worker.export_completed.connect(completed.append)
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    text = export_path.read_text(encoding="utf-8-sig")
+    assert errors == []
+    assert completed == [str(export_path)]
+    assert len(session_log_segment_index(session_path)) == 6
+    assert "192.168.0.1" in text
+    assert "192.168.0.250" in text
+    assert text.count("\n2026-01-01T") >= 1200
+
+
 def test_export_worker_includes_focus_annotations(tmp_path) -> None:
     now = datetime(2026, 1, 1, 12, 0, 0)
     session_path = tmp_path / "session.csv"
