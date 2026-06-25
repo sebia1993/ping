@@ -2084,6 +2084,75 @@ def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) ->
         window.close()
 
 
+def test_main_window_all_range_uses_session_log_start_beyond_live_buffer(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    start = datetime(2026, 1, 1, 9, 0, 0)
+    now = start + timedelta(hours=2)
+    targets = ["198.51.100.10", "203.0.113.10"]
+    session_path = tmp_path / "session.csv"
+    writer = SessionLogWriter(session_path)
+    writer.write_many([
+        HopObservation(start, 0, targets[0], "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(start, 0, targets[1], "Target", True, 20.0, STATUS_OK, True),
+    ])
+    writer.close()
+    snapshots = [
+        _snapshot(0, targets[0], None, latency=12.0, is_target=True),
+        _snapshot(0, targets[1], None, latency=22.0, is_target=True),
+    ]
+    live_buffer_only = [
+        HopObservation(now, 0, targets[0], "Target", True, 12.0, STATUS_OK, True),
+        HopObservation(now, 0, targets[1], "Target", True, 22.0, STATUS_OK, True),
+    ]
+
+    try:
+        window.current_target = targets[0]
+        window.current_targets = list(targets)
+        window.session_log_path = session_path
+        window.on_measurement_updated([], snapshots[0], snapshots, ["live"], live_buffer_only, live_buffer_only[:1])
+
+        expected_recent_range = (now - timedelta(minutes=10), now)
+        assert window.graph.visible_datetime_range() == expected_recent_range
+        assert [point.timestamp for point in window.graph._points] == [now]
+        assert [point.timestamp for point in window.target_graph_widgets[targets[1]]._points] == [now]
+
+        window.graph_range_toggle_button.click()
+
+        expected_all_range = (start, now)
+        assert window.graph.visible_datetime_range() == expected_all_range
+        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_all_range
+        assert [point.timestamp for point in window.graph._points] == [start, now]
+        assert [point.timestamp for point in window.target_graph_widgets[targets[1]]._points] == [start, now]
+        assert window.graph._time_axis_labels() == ("시작 09:00:00", "현재 11:00:00")
+        assert window.graph_range_toggle_button.text() == "최근 보기"
+    finally:
+        window.close()
+
+
+def test_main_window_falls_back_to_live_buffer_when_session_log_has_no_bounds(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    target = "198.51.100.10"
+    snapshot = _snapshot(0, target, None, latency=20.0, is_target=True)
+    observations = [
+        HopObservation(now + timedelta(minutes=minute), 0, target, "Target", True, 20.0 + minute, STATUS_OK, True)
+        for minute in range(3)
+    ]
+
+    try:
+        window.current_target = target
+        window.current_targets = [target]
+        window.session_log_path = tmp_path / "missing-session.csv"
+        window.on_measurement_updated([], snapshot, [snapshot], ["live"], observations, observations)
+
+        assert window.graph._points == observations
+        window.graph_range_toggle_button.click()
+        assert window.graph._points == observations
+        assert window.graph.visible_datetime_range() == (now, now + timedelta(minutes=2))
+    finally:
+        window.close()
+
+
 def test_main_window_live_time_range_does_not_move_backward_between_updates(qt_app) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)

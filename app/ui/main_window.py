@@ -1844,6 +1844,15 @@ class MainWindow(QMainWindow):
             return self.timeline_observations
         if self.focus_range is not None:
             return self.focus_observations
+        if self.session_log_path is not None and session_log_bounds(self.session_log_path) is not None:
+            visible_range = self._main_graph_visible_time_range()
+            if visible_range is None:
+                return self.observations
+            start, end = visible_range
+            return _merge_observations(
+                self._observations_for_range(start, end),
+                observations_in_range(self.observations, start, end),
+            )
         return self.observations
 
     def _target_histories_by_address(self, observations: list[HopObservation]) -> dict[str, list[HopObservation]]:
@@ -1966,6 +1975,7 @@ class MainWindow(QMainWindow):
         return (
             graph_state,
             len(history),
+            history[0].timestamp.isoformat(timespec="milliseconds") if history else "",
             latest.timestamp.isoformat(timespec="milliseconds") if latest is not None else "",
             latest.status if latest is not None else "",
             latest.latency_ms if latest is not None else None,
@@ -2125,6 +2135,14 @@ class MainWindow(QMainWindow):
             graph.set_time_axis_mode(self.main_graph_range_mode)
 
     def _main_graph_data_bounds(self) -> tuple[datetime, datetime] | None:
+        if self.timeline_range is None and self.focus_range is None:
+            log_bounds = session_log_bounds(self.session_log_path)
+            if log_bounds is not None:
+                live_bounds = _observation_bounds(self.observations)
+                if live_bounds is None:
+                    return log_bounds
+                return min(log_bounds[0], live_bounds[0]), max(log_bounds[1], live_bounds[1])
+
         histories = self._target_histories_by_address(self._graph_observations_for_rows())
         timestamps = [
             observation.timestamp
@@ -4136,6 +4154,25 @@ def _unique_addresses(values: object) -> list[str]:
         addresses.append(address)
         seen.add(address)
     return addresses
+
+
+def _merge_observations(*groups: list[HopObservation]) -> list[HopObservation]:
+    merged: list[HopObservation] = []
+    seen: set[HopObservation] = set()
+    for group in groups:
+        for observation in group:
+            if observation in seen:
+                continue
+            seen.add(observation)
+            merged.append(observation)
+    return sorted(merged, key=lambda observation: observation.timestamp)
+
+
+def _observation_bounds(observations: list[HopObservation]) -> tuple[datetime, datetime] | None:
+    timestamps = [observation.timestamp for observation in observations]
+    if not timestamps:
+        return None
+    return min(timestamps), max(timestamps)
 
 
 def _all_targets_summary_line(snapshots: list[MetricSnapshot], *, total_count: int | None = None) -> str:
