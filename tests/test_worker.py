@@ -733,6 +733,30 @@ def test_worker_marks_session_paused_when_session_log_close_fails(monkeypatch, t
     assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
 
 
+def test_worker_reports_session_index_finish_failure_without_crashing(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
+    log_path = tmp_path / "index_finish_failed.samples.csv"
+
+    def create_log(cls, target: str, root=None):
+        return cls(log_path)
+
+    def fail_finish(self, session_id: str, **kwargs) -> None:
+        raise PermissionError("index locked during finish")
+
+    monkeypatch.setattr(worker_module.SessionLogWriter, "create", classmethod(create_log))
+    monkeypatch.setattr(SessionIndexStore, "finish_session", fail_finish)
+
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=0, max_cycles=1)
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    assert any("SESSION_INDEX_FINISH_FAILED: PermissionError" in error for error in errors)
+
+
 def test_worker_thread_start_stop_repeats_without_lingering(monkeypatch) -> None:
     _app()
 
