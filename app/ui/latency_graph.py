@@ -257,7 +257,7 @@ class LatencyGraphWidget(QWidget):
         painter.drawText(4, rect.top() + 10, f"{max_latency:.0f} ms")
         painter.drawText(10, rect.bottom(), "0 ms")
 
-        self._draw_failure_markers(painter, visible, rect, rect.top() + 2, rect.bottom())
+        self._draw_failure_markers(painter, series.points, rect, rect.top() + 2, rect.bottom())
         line_points: list[QPointF] = []
         for point in visible:
             x = self._x_for_time(point.timestamp.timestamp(), rect)
@@ -293,7 +293,7 @@ class LatencyGraphWidget(QWidget):
             painter.setPen(QPen(QColor("#edf0f4"), 1))
             painter.drawLine(rect.left(), int(bottom), rect.right(), int(bottom))
 
-            self._draw_failure_markers(painter, points, rect, top + 2, bottom - 2)
+            self._draw_failure_markers(painter, series.points, rect, top + 2, bottom - 2)
             line_points: list[QPointF] = []
             for point in points:
                 x = self._x_for_time(point.timestamp.timestamp(), rect)
@@ -316,18 +316,18 @@ class LatencyGraphWidget(QWidget):
         top: float,
         bottom: float,
     ) -> None:
-        for run in _failure_runs(points):
-            x_values = [
-                x
-                for point in run
-                if (x := self._x_for_time(point.timestamp.timestamp(), rect)) is not None
-            ]
-            if not x_values:
+        visible_start, visible_end = self._visible_range()
+        if visible_start is None or visible_end is None:
+            return
+        for start, end in _failure_marker_spans(points, visible_start, visible_end):
+            start_x = self._x_for_time(start, rect)
+            end_x = self._x_for_time(end, rect)
+            if start_x is None or end_x is None:
                 continue
-            if len(x_values) == 1:
-                _draw_failure_bar(painter, x_values[0], top, bottom)
+            if start == end:
+                _draw_failure_bar(painter, start_x, top, bottom)
             else:
-                _draw_failure_region(painter, min(x_values), max(x_values), top, bottom)
+                _draw_failure_region(painter, start_x, end_x, top, bottom)
 
     def _draw_selection(self, painter: QPainter, rect: QRect) -> None:
         if self._selection is None:
@@ -613,6 +613,35 @@ def _failure_runs(points: list[HopObservation]) -> list[list[HopObservation]]:
     if current:
         runs.append(current)
     return runs
+
+
+def _failure_marker_spans(
+    points: list[HopObservation],
+    visible_start: float,
+    visible_end: float,
+) -> list[tuple[float, float]]:
+    if visible_end < visible_start:
+        visible_start, visible_end = visible_end, visible_start
+    latest_point = points[-1] if points else None
+    spans: list[tuple[float, float]] = []
+    for run in _failure_runs(points):
+        run_start = run[0].timestamp.timestamp()
+        run_end = run[-1].timestamp.timestamp()
+        if run_end < visible_start or run_start > visible_end:
+            continue
+        if len(run) == 1:
+            if visible_start <= run_start <= visible_end:
+                spans.append((run_start, run_start))
+            continue
+
+        start = max(run_start, visible_start)
+        end = min(run_end, visible_end)
+        if latest_point is not None and run[-1] == latest_point:
+            end = visible_end
+        if end < visible_start or start > visible_end:
+            continue
+        spans.append((start, max(start, end)))
+    return spans
 
 
 def _draw_failure_bar(painter: QPainter, x: float, top: float, bottom: float) -> None:

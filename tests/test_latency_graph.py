@@ -27,6 +27,7 @@ from app.ui.latency_graph import (
     LatencyGraphWidget,
     TimelineAnnotation,
     TimelineSeries,
+    _failure_marker_spans,
     _failure_runs,
     _is_failure_observation,
 )
@@ -164,6 +165,70 @@ def test_latency_graph_groups_only_consecutive_response_failures(qt_app) -> None
     runs = _failure_runs(points)
 
     assert [[point.timestamp.second for point in run] for run in runs] == [[1, 2], [4], [6, 7]]
+
+
+def test_latency_graph_failure_region_extends_to_live_visible_end(qt_app) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+        for index in range(3)
+    ]
+    visible_start = now.timestamp()
+    visible_end = (now + timedelta(seconds=10)).timestamp()
+
+    spans = _failure_marker_spans(points, visible_start, visible_end)
+
+    assert spans == [(visible_start, visible_end)]
+
+
+def test_latency_graph_failure_region_extends_to_left_visible_boundary(qt_app) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+        for index in range(5)
+    ]
+    visible_start = (now + timedelta(seconds=2, milliseconds=500)).timestamp()
+    visible_end = (now + timedelta(seconds=4)).timestamp()
+
+    spans = _failure_marker_spans(points, visible_start, visible_end)
+
+    assert spans == [(visible_start, visible_end)]
+
+
+def test_latency_graph_single_failure_remains_bar_marker(qt_app) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    failed_at = now + timedelta(seconds=1)
+    points = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(failed_at, 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=2), 0, "198.51.100.10", "Target", True, 11.0, STATUS_OK, True),
+    ]
+
+    spans = _failure_marker_spans(points, now.timestamp(), (now + timedelta(seconds=2)).timestamp())
+
+    assert spans == [(failed_at.timestamp(), failed_at.timestamp())]
+
+
+def test_latency_graph_continuous_total_loss_keeps_one_failure_region_when_window_moves(qt_app) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+        for index in range(120)
+    ]
+    first_window = (
+        (now + timedelta(seconds=30)).timestamp(),
+        (now + timedelta(seconds=119)).timestamp(),
+    )
+    next_window = (
+        (now + timedelta(seconds=31)).timestamp(),
+        (now + timedelta(seconds=120)).timestamp(),
+    )
+
+    first_spans = _failure_marker_spans(points, *first_window)
+    next_spans = _failure_marker_spans(points, *next_window)
+
+    assert first_spans == [first_window]
+    assert next_spans == [next_window]
 
 
 def test_latency_graph_renders_response_failures_without_crashing(qt_app) -> None:
