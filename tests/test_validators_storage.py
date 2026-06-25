@@ -14,6 +14,8 @@ from app.storage import session_index as session_index_module
 from app.storage import session_log as session_log_module
 from app.storage.session_index import (
     SESSION_DELETE_FILES_FAILED_CODE,
+    SESSION_INDEX_REBUILT_CODE,
+    SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE,
     SESSION_STATE_ACTIVE,
     SESSION_STATE_ARCHIVED,
     SESSION_STATE_PAUSED,
@@ -28,6 +30,7 @@ from app.storage.session_log import (
     read_observations,
     session_log_directory,
     session_log_bounds,
+    session_log_read_summary,
     session_log_segment_index,
     session_log_segment_index_path,
 )
@@ -372,9 +375,13 @@ def test_session_log_recovers_valid_rows_after_malformed_tail(tmp_path) -> None:
         handle.write("not-a-timestamp,broken,Target,not-a-hop,,,,\n")
 
     observations = read_observations(path)
+    summary = session_log_read_summary(path)
 
     assert len(observations) == 1
     assert observations[0].address == "192.168.0.1"
+    assert summary.rows == 1
+    assert summary.skipped_rows == 1
+    assert summary.skipped_row_files == (path,)
 
 
 def test_session_log_reads_observations_in_selected_range(tmp_path) -> None:
@@ -907,7 +914,7 @@ def test_session_index_recovers_sessions_from_existing_logs_when_index_missing(t
     assert record.state == SESSION_STATE_ARCHIVED
     assert record.target_count == 2
     assert len(record.segments) == 2
-    assert record.last_error == "Recovered from session log scan"
+    assert record.last_error == f"{SESSION_INDEX_REBUILT_CODE}: recovered_rows=3"
     assert store.path.exists()
     assert store.find_session(record.session_id) is not None
 
@@ -926,6 +933,59 @@ def test_session_index_recovers_sessions_from_logs_when_index_is_corrupt(tmp_pat
     assert sessions[0].target == "198.51.100.10"
     assert sessions[0].samples == 1
     assert store.find_session(sessions[0].session_id) is not None
+
+
+def test_session_index_recovers_session_from_korean_windows_path(tmp_path) -> None:
+    root = tmp_path / "한글 세션 저장소"
+    store = SessionIndexStore.create(root)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = root / "장비A" / "2026-01" / "한글세션.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "대상", True, 10.0, STATUS_OK, True)])
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].sample_path == sample_path
+    assert sessions[0].target == "198.51.100.10"
+    assert sessions[0].last_error == f"{SESSION_INDEX_REBUILT_CODE}: recovered_rows=1"
+
+
+def test_session_index_skips_locked_session_log_during_recovery(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "locked.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    original_open = type(sample_path).open
+
+    def locked_open(self, *args, **kwargs):
+        if self == sample_path:
+            raise PermissionError("locked")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(sample_path), "open", locked_open)
+
+    assert store.list_sessions() == []
+
+
+def test_session_index_records_skipped_rows_when_recovering_partial_session_log(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "partial.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    with sample_path.open("a", encoding="utf-8") as handle:
+        handle.write("not-a-timestamp,broken,Target,not-a-hop,,,,\n")
+    store.path.write_text("{bad json", encoding="utf-8")
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].samples == 1
+    assert sessions[0].last_error.startswith(SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE)
+    assert "skipped_rows=1" in sessions[0].last_error
+    assert "partial.samples.csv" in sessions[0].last_error
 
 
 def test_session_index_merges_missing_log_sessions_into_valid_index(tmp_path) -> None:
@@ -961,7 +1021,7 @@ def test_session_index_merges_missing_log_sessions_into_valid_index(tmp_path) ->
     assert orphan_session is not None
     assert orphan_session.samples == 2
     assert orphan_session.target_count == 2
-    assert orphan_session.last_error == "Recovered from session log scan"
+    assert orphan_session.last_error == f"{SESSION_INDEX_REBUILT_CODE}: recovered_rows=2"
 
 
 def test_session_index_retries_transient_replace_permission_error(tmp_path, monkeypatch) -> None:

@@ -41,6 +41,13 @@ class SessionLogSegment:
         return self.start <= end and self.end >= start
 
 
+@dataclass(frozen=True)
+class SessionLogReadSummary:
+    rows: int
+    skipped_rows: int
+    skipped_row_files: tuple[Path, ...]
+
+
 class SessionLogWriter:
     def __init__(self, path: Path, *, max_rows_per_file: int | None = None) -> None:
         self.path = path
@@ -154,6 +161,33 @@ def read_observations(path: Path | None) -> list[HopObservation]:
     if path is None:
         return []
     return list(iter_observations(path))
+
+
+def session_log_read_summary(path: Path | None) -> SessionLogReadSummary:
+    if path is None:
+        return SessionLogReadSummary(rows=0, skipped_rows=0, skipped_row_files=())
+    rows = 0
+    skipped_rows = 0
+    skipped_row_files: list[Path] = []
+    seen_skipped_files: set[Path] = set()
+    for segment_path in session_log_segments(path):
+        with segment_path.open("r", newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                try:
+                    row_to_observation(row)
+                except (KeyError, TypeError, ValueError):
+                    skipped_rows += 1
+                    if segment_path not in seen_skipped_files:
+                        skipped_row_files.append(segment_path)
+                        seen_skipped_files.add(segment_path)
+                    continue
+                rows += 1
+    return SessionLogReadSummary(
+        rows=rows,
+        skipped_rows=skipped_rows,
+        skipped_row_files=tuple(skipped_row_files),
+    )
 
 
 def iter_observations(path: Path | None) -> Iterator[HopObservation]:

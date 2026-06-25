@@ -10,7 +10,12 @@ from pathlib import Path
 
 from app.storage.alert_action_log import alert_action_log_path_for_session
 from app.storage.route_log import route_log_path_for_session
-from app.storage.session_log import iter_observations, session_log_segment_index, session_log_segment_index_path
+from app.storage.session_log import (
+    iter_observations,
+    session_log_read_summary,
+    session_log_segment_index,
+    session_log_segment_index_path,
+)
 
 
 # Session Manager 화면은 원본 CSV를 매번 전부 읽지 않고 이 작은 JSON 인덱스를 먼저 봅니다.
@@ -22,6 +27,8 @@ SESSION_STATE_WILL_DELETE = "Will Delete"
 SESSION_INDEX_IO_RETRY_ATTEMPTS = 5
 SESSION_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
 SESSION_DELETE_FILES_FAILED_CODE = "SESSION_DELETE_FILES_FAILED"
+SESSION_INDEX_REBUILT_CODE = "SESSION_INDEX_REBUILT"
+SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE = "SESSION_RECOVERED_WITH_SKIPPED_ROWS"
 
 
 @dataclass(frozen=True)
@@ -480,8 +487,15 @@ def _recover_records_from_logs(root: Path) -> list[TraceSessionRecord]:
 
 
 def _record_from_sample_log(sample_path: Path) -> TraceSessionRecord | None:
-    segments = tuple(segment for segment in session_log_segment_index(sample_path) if segment.rows > 0)
+    try:
+        segments = tuple(segment for segment in session_log_segment_index(sample_path) if segment.rows > 0)
+    except OSError:
+        return None
     if not segments:
+        return None
+    try:
+        read_summary = session_log_read_summary(sample_path)
+    except OSError:
         return None
     starts = [segment.start for segment in segments if segment.start is not None]
     ends = [segment.end for segment in segments if segment.end is not None]
@@ -501,8 +515,16 @@ def _record_from_sample_log(sample_path: Path) -> TraceSessionRecord | None:
         state=SESSION_STATE_ARCHIVED,
         target_count=max(1, len(target_addresses)),
         segments=tuple(segment.path for segment in segments),
-        last_error="Recovered from session log scan",
+        last_error=_session_recovery_last_error(read_summary),
     )
+
+
+def _session_recovery_last_error(read_summary) -> str:
+    if read_summary.skipped_rows > 0:
+        files = ", ".join(path.name for path in read_summary.skipped_row_files[:3])
+        suffix = f"; files={files}" if files else ""
+        return f"{SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE}: skipped_rows={read_summary.skipped_rows}{suffix}"
+    return f"{SESSION_INDEX_REBUILT_CODE}: recovered_rows={read_summary.rows}"
 
 
 def _record_with_reconciled_log_metadata(record: TraceSessionRecord) -> TraceSessionRecord:
@@ -514,6 +536,9 @@ def _record_with_reconciled_log_metadata(record: TraceSessionRecord) -> TraceSes
     route_path = record.route_path
     if route_path is None and recovered.route_path is not None:
         route_path = recovered.route_path
+    last_error = record.last_error
+    if recovered.last_error.startswith(SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE):
+        last_error = recovered.last_error
     return _replace_record(
         record,
         target=record.target or recovered.target,
@@ -523,19 +548,23 @@ def _record_with_reconciled_log_metadata(record: TraceSessionRecord) -> TraceSes
         samples=recovered.samples,
         target_count=max(record.target_count, recovered.target_count),
         segments=recovered.segments,
+        last_error=last_error,
     )
 
 
 def _target_addresses_from_log(sample_path: Path) -> list[str]:
     targets: list[str] = []
     seen: set[str] = set()
-    for observation in iter_observations(sample_path):
-        if observation.hop_index != 0 and not observation.is_target:
-            continue
-        if not observation.address or observation.address in seen:
-            continue
-        targets.append(observation.address)
-        seen.add(observation.address)
+    try:
+        for observation in iter_observations(sample_path):
+            if observation.hop_index != 0 and not observation.is_target:
+                continue
+            if not observation.address or observation.address in seen:
+                continue
+            targets.append(observation.address)
+            seen.add(observation.address)
+    except OSError:
+        return []
     return targets
 
 

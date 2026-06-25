@@ -2849,11 +2849,14 @@ class MainWindow(QMainWindow):
         record_actions: bool = True,
         actions: list[str] | None = None,
     ) -> None:
-        if any(existing.key == event.key for existing in self.alert_events):
+        event_identity = _alert_event_identity(event)
+        if any(_alert_event_identity(existing) == event_identity for existing in self.alert_events):
             if actions is not None:
                 self.alert_event_actions[event.key] = actions
                 self._sync_alerts_box()
             return
+        if any(existing.key == event.key for existing in self.alert_events):
+            event = replace(event, key=_alert_event_instance_key(event))
         self.alert_events.append(event)
         self.alert_events = self.alert_events[-100:]
         if actions is not None:
@@ -3229,6 +3232,9 @@ class MainWindow(QMainWindow):
             resume_summary = _session_resume_summary(session)
             if resume_summary:
                 row_parts.append(resume_summary)
+            error_summary = _session_error_summary(session)
+            if error_summary:
+                row_parts.append(error_summary)
             lines.append(" | ".join(row_parts))
         self.sessions_box.setPlainText("\n".join(lines))
 
@@ -4419,6 +4425,20 @@ def _alert_severity_text(severity: str) -> str:
     }.get(severity.casefold(), severity.upper())
 
 
+def _alert_event_identity(event: AlertEvent) -> tuple[str, str, str, str]:
+    return (
+        event.key,
+        event.start.isoformat(timespec="seconds"),
+        event.end.isoformat(timespec="seconds"),
+        event.title,
+    )
+
+
+def _alert_event_instance_key(event: AlertEvent) -> str:
+    stamp = event.start.isoformat(timespec="seconds")
+    return f"{event.key}:event:{stamp}"
+
+
 def _target_snapshot_matches_filter(snapshot: MetricSnapshot, terms: list[str], state_filter: str) -> bool:
     status = display_status(snapshot)
     if state_filter == "problem":
@@ -4856,6 +4876,19 @@ def _session_resume_summary(session: TraceSessionRecord) -> str:
     if not session.resumed_from_session_id:
         return ""
     return f"원본 세션 {session.resumed_from_session_id}"
+
+
+def _session_error_summary(session: TraceSessionRecord) -> str:
+    if not session.last_error:
+        return ""
+    error = session.last_error
+    code, separator, detail = error.partition(":")
+    if separator:
+        detail = detail.strip()
+        if len(detail) > 80:
+            detail = f"{detail[:77]}..."
+        return f"오류 {code}: {detail}"
+    return f"오류 {error[:80]}"
 
 
 def _session_mode_label(value: str) -> str:

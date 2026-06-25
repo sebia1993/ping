@@ -465,6 +465,40 @@ def test_main_window_recovers_stale_active_sessions_in_session_list(qt_app, tmp_
         window.close()
 
 
+def test_main_window_session_manager_shows_session_recovery_error_summary(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "partial.samples.csv"
+    sample_path.parent.mkdir(parents=True)
+    sample_path.write_text("header\n", encoding="utf-8")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(
+        record.session_id,
+        state=SESSION_STATE_ARCHIVED,
+        ended_at=now + timedelta(seconds=1),
+        last_error="SESSION_RECOVERED_WITH_SKIPPED_ROWS: skipped_rows=2; files=partial.samples.csv",
+    )
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        text = window.sessions_box.toPlainText()
+        assert "오류 SESSION_RECOVERED_WITH_SKIPPED_ROWS" in text
+        assert "skipped_rows=2" in text
+    finally:
+        window.close()
+
+
 def test_main_window_marks_missing_session_files_for_delete(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime.now()
@@ -4386,6 +4420,27 @@ def test_main_window_alert_log_write_failure_does_not_crash_action_recording(
         assert actions == ["log"]
         assert window.status_label.text() == "알림 로그 저장 실패: PermissionError"
         assert not window.alert_action_log_path.exists()
+    finally:
+        window.close()
+
+
+def test_main_window_records_repeated_alert_episode_without_duplicate_same_event(qt_app) -> None:
+    window = MainWindow()
+    first = datetime(2026, 1, 1, 12, 0, 0)
+    second = datetime(2026, 1, 1, 12, 5, 0)
+    base_key = "target:198.51.100.10:target_sample_condition"
+    first_event = AlertEvent(base_key, first, first, first, "critical", "샘플 불량 경고", "first")
+    duplicate_first_event = AlertEvent(base_key, first, first, first, "critical", "샘플 불량 경고", "first")
+    second_event = AlertEvent(base_key, second, second, second, "critical", "샘플 불량 경고", "second")
+
+    try:
+        window._append_alert_event(first_event, record_actions=False, actions=["log"])
+        window._append_alert_event(duplicate_first_event, record_actions=False, actions=["log"])
+        window._append_alert_event(second_event, record_actions=False, actions=["log"])
+
+        assert [event.message for event in window.alert_events] == ["first", "second"]
+        assert window.alert_events[0].key == base_key
+        assert window.alert_events[1].key == f"{base_key}:event:2026-01-01T12:05:00"
     finally:
         window.close()
 
