@@ -220,6 +220,7 @@ class MainWindow(QMainWindow):
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
         self.paused_target_addresses: set[str] = set()
         self.main_graph_range_mode = MAIN_GRAPH_RANGE_RECENT
+        self.main_graph_live_end_time: datetime | None = None
         self._last_graph_render_monotonic = 0.0
         self._pending_graph_render = False
         self._graph_render_timer = QTimer(self)
@@ -1057,6 +1058,7 @@ class MainWindow(QMainWindow):
         self.alert_event_actions = {}
         self.pending_alert_image_keys = set()
         self.active_alert_keys = set()
+        self.main_graph_live_end_time = None
         self._clear_focus_state()
         self._clear_timeline_state()
         self._sync_focus_controls()
@@ -1199,6 +1201,7 @@ class MainWindow(QMainWindow):
             self.target_snapshot = None
             self.observations = []
             self.target_history = []
+            self.main_graph_live_end_time = None
             self._clear_target_graph_rows()
             self._request_graph_render(force=True)
             self.stop_measurement()
@@ -2041,10 +2044,18 @@ class MainWindow(QMainWindow):
         if bounds is None:
             return None
         full_start, full_end = bounds
+        visible_end = self._main_graph_visible_end(full_end)
         if self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL:
-            return full_start, full_end
-        start = max(full_start, full_end - timedelta(seconds=MAIN_GRAPH_DEFAULT_RANGE_SECONDS))
-        return start, full_end
+            return full_start, visible_end
+        start = max(full_start, visible_end - timedelta(seconds=MAIN_GRAPH_DEFAULT_RANGE_SECONDS))
+        return start, visible_end
+
+    def _main_graph_visible_end(self, data_end: datetime) -> datetime:
+        if self.timeline_range is not None or self.focus_range is not None:
+            return data_end
+        if self.main_graph_live_end_time is None or data_end > self.main_graph_live_end_time:
+            self.main_graph_live_end_time = data_end
+        return self.main_graph_live_end_time
 
     def _apply_main_graph_time_range_to_widget(
         self,
@@ -3258,6 +3269,7 @@ class MainWindow(QMainWindow):
         self.alert_event_actions = {}
         self.pending_alert_image_keys = set()
         self.active_alert_keys = set()
+        self.main_graph_live_end_time = None
         self._clear_focus_state()
         self._clear_timeline_state()
         bounds = session_log_bounds(self.session_log_path)
@@ -3283,6 +3295,7 @@ class MainWindow(QMainWindow):
         self.current_targets = targets
         self.pending_resume_session_id = record.session_id
         self.pending_resume_targets = list(targets)
+        self.main_graph_live_end_time = None
         self.target_input.setPlainText("\n".join(targets))
         self.refresh_trace_targets()
         if self.trace_target_combo.findText(self.current_target) >= 0:

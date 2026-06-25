@@ -2015,6 +2015,64 @@ def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) ->
         window.close()
 
 
+def test_main_window_live_time_range_does_not_move_backward_between_updates(qt_app) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    targets = ["198.51.100.10", "203.0.113.10"]
+    first_snapshot = _snapshot(0, targets[0], None, latency=10.0, is_target=True)
+    second_snapshot = _snapshot(0, targets[1], None, latency=20.0, is_target=True)
+    first_observations = [
+        HopObservation(now + timedelta(minutes=minute), 0, target, "Target", True, 10.0 + minute, STATUS_OK, True)
+        for minute in range(21)
+        for target in targets
+    ]
+    remaining_observations = [
+        HopObservation(now + timedelta(minutes=minute), 0, targets[0], "Target", True, 10.0 + minute, STATUS_OK, True)
+        for minute in range(16)
+    ]
+
+    try:
+        window.current_target = targets[0]
+        window.current_targets = list(targets)
+        window.on_measurement_updated([], first_snapshot, [first_snapshot, second_snapshot], ["live"], first_observations, [])
+
+        expected_range = (now + timedelta(minutes=10), now + timedelta(minutes=20))
+        assert window.graph.visible_datetime_range() == expected_range
+
+        window.current_targets = [targets[0]]
+        window.on_measurement_updated([], first_snapshot, [first_snapshot], ["live"], remaining_observations, [])
+
+        assert window.graph.visible_datetime_range() == expected_range
+        assert window.target_graph_widgets[targets[0]].visible_datetime_range() == expected_range
+        assert targets[1] not in window.target_graph_widgets
+    finally:
+        window.close()
+
+
+def test_main_window_timeline_range_uses_selected_end_instead_of_live_anchor(qt_app) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    target = "198.51.100.10"
+    snapshot = _snapshot(0, target, None, latency=10.0, is_target=True)
+    observations = [
+        HopObservation(now + timedelta(minutes=minute), 0, target, "Target", True, 10.0 + minute, STATUS_OK, True)
+        for minute in range(21)
+    ]
+
+    try:
+        window.current_target = target
+        window.current_targets = [target]
+        window.on_measurement_updated([], snapshot, [snapshot], ["live"], observations, [])
+
+        window.timeline_range = (now, now + timedelta(minutes=5))
+        window.timeline_observations = observations[:6]
+        window.timeline_target_history = observations[:6]
+
+        assert window._main_graph_visible_time_range() == (now, now + timedelta(minutes=5))
+    finally:
+        window.close()
+
+
 def test_main_window_throttles_many_target_graph_rows_but_updates_table(qt_app) -> None:
     window = MainWindow()
     now = datetime.now()
