@@ -64,6 +64,106 @@ def test_soak_suite_dry_run_writes_manifest_without_running_profiles(tmp_path) -
     assert all(Path(result["output_dir"]).name in {"long4h", "ui10"} for result in payload["results"])
 
 
+def test_soak_suite_validate_only_rejects_dry_run_manifest(tmp_path) -> None:
+    suite.main([
+        "--dry-run",
+        "--run-id",
+        "dry-run",
+        "--output-dir",
+        str(tmp_path),
+        "--profiles",
+        "long4h",
+    ])
+
+    exit_code = suite.main([
+        "--validate-only",
+        "--run-id",
+        "dry-run",
+        "--output-dir",
+        str(tmp_path),
+        "--profiles",
+        "long4h",
+    ])
+
+    assert exit_code == 1
+
+
+def test_soak_suite_validate_accepts_completed_manifest(tmp_path) -> None:
+    run_root = tmp_path / "completed"
+    run_root.mkdir()
+    summary_path = run_root / "soak_50_targets_20260101_010101.json"
+    summary_path.write_text(
+        json.dumps(_summary("release", duration_seconds=5.0), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest_path = run_root / "stability_soak_suite.json"
+    suite.write_manifest(
+        manifest_path,
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[
+            {
+                "profile": "release",
+                "status": "passed",
+                "summary_json": str(summary_path),
+                "failures": [],
+            }
+        ],
+        finished_at="2026-01-01T01:00:05",
+    )
+
+    assert suite.validate_manifest(manifest_path, ["release"]) == []
+
+
+def test_soak_suite_validate_rejects_short_long_run(tmp_path) -> None:
+    summary = _summary("long4h", duration_seconds=10.0)
+
+    failures = suite.validate_summary("long4h", summary)
+
+    assert any("duration too short" in failure for failure in failures)
+
+
+def test_soak_suite_resume_reuses_existing_passed_profile(tmp_path, monkeypatch) -> None:
+    run_root = tmp_path / "resume-run"
+    run_root.mkdir()
+    summary_path = run_root / "soak_50_targets_20260101_010101.json"
+    summary_path.write_text(
+        json.dumps(_summary("release", duration_seconds=5.0), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    suite.write_manifest(
+        run_root / "stability_soak_suite.json",
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[
+            {
+                "profile": "release",
+                "status": "passed",
+                "summary_json": str(summary_path),
+                "failures": [],
+            }
+        ],
+        finished_at="2026-01-01T01:00:05",
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("passed profile should be reused")
+
+    monkeypatch.setattr(suite, "run_profile", fail_if_called)
+
+    exit_code = suite.main([
+        "--resume",
+        "--run-id",
+        "resume-run",
+        "--output-dir",
+        str(tmp_path),
+        "--profiles",
+        "release",
+    ])
+
+    assert exit_code == 0
+
+
 def test_soak_suite_loads_latest_summary(tmp_path) -> None:
     old = tmp_path / "soak_50_targets_20260101_010101.json"
     new = tmp_path / "soak_50_targets_20260101_020202.json"
@@ -75,3 +175,15 @@ def test_soak_suite_loads_latest_summary(tmp_path) -> None:
     assert summary is not None
     assert summary["path"] == new
     assert summary["data"]["failures"] == []
+
+
+def _summary(profile: str, *, duration_seconds: float) -> dict[str, object]:
+    return {
+        "profile": profile,
+        "duration_seconds": duration_seconds,
+        "failures": [],
+        "stopped_cleanly": True,
+        "session_log_rows": 10,
+        "session_log_segments": 1,
+        "max_ui_event_gap_seconds": 0.02,
+    }

@@ -25,6 +25,12 @@ python scripts\run_stability_soak_suite.py --dry-run
 
 # 4시간, 8시간, 24시간, UI 10/20/50대 검증을 순서대로 실행합니다.
 python scripts\run_stability_soak_suite.py
+
+# 같은 run-id로 중간에 끊긴 검증을 이어서 실행합니다.
+python scripts\run_stability_soak_suite.py --resume --run-id <RUN_ID>
+
+# 기존 manifest와 summary JSON이 실제 통과 증거인지 다시 검증합니다.
+python scripts\run_stability_soak_suite.py --validate-only --run-id <RUN_ID>
 ```
 
 개별 프로필만 따로 실행할 수도 있습니다.

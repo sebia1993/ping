@@ -112,6 +112,8 @@ def test_field_verification_docs_match_current_graph_controls() -> None:
     assert "일시중지/삭제 버튼" in text
     assert "python scripts\\run_stability_soak_suite.py --dry-run" in text
     assert "python scripts\\run_stability_soak_suite.py" in text
+    assert "python scripts\\run_stability_soak_suite.py --resume --run-id <RUN_ID>" in text
+    assert "python scripts\\run_stability_soak_suite.py --validate-only --run-id <RUN_ID>" in text
     assert "python scripts\\soak_test.py --profile long --duration-seconds 1800 --no-ui" in text
     assert "python scripts\\soak_test.py --profile long4h" in text
     assert "python scripts\\soak_test.py --profile long8h" in text

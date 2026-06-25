@@ -92,6 +92,8 @@ python scripts\soak_test.py --profile release
 # 4/8/24시간 및 UI 10/20/50대 장시간 검증 suite
 python scripts\run_stability_soak_suite.py --dry-run
 python scripts\run_stability_soak_suite.py
+python scripts\run_stability_soak_suite.py --resume --run-id <RUN_ID>
+python scripts\run_stability_soak_suite.py --validate-only --run-id <RUN_ID>
 
 # 30분 50-target 안정성 검증
 python scripts\soak_test.py --profile long
