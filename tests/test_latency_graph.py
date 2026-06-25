@@ -83,6 +83,20 @@ def test_latency_graph_time_axis_labels_use_visible_sample_times(qt_app) -> None
     assert graph._time_axis_labels() == ("최근 12:00:00", "현재 12:01:59")
 
 
+def test_latency_graph_time_axis_labels_use_start_prefix_for_all_range(qt_app) -> None:
+    graph = LatencyGraphWidget()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 1.0, STATUS_OK, True)
+        for index in range(120)
+    ]
+
+    graph.set_time_axis_mode("all")
+    graph.set_series([TimelineSeries("target", "Target", points)])
+
+    assert graph._time_axis_labels() == ("시작 12:00:00", "현재 12:01:59")
+
+
 def test_latency_graph_failure_marker_policy_only_marks_response_failures(qt_app) -> None:
     now = datetime(2026, 1, 1, 12, 0, 0)
     timeout = HopObservation(now, 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)

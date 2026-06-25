@@ -15,6 +15,8 @@ SERIES_COLORS = ["#2563eb", "#059669", "#7c3aed", "#d97706", "#0f766e", "#be123c
 FAILURE_BAR_COLOR = "#dc2626"
 FAILURE_REGION_ALPHA = 48
 FAILURE_STATUSES = {STATUS_TIMEOUT, STATUS_UNREACHABLE, STATUS_ERROR}
+TIME_AXIS_MODE_RECENT = "recent"
+TIME_AXIS_MODE_ALL = "all"
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class LatencyGraphWidget(QWidget):
         self._view_end_timestamp: float | None = None
         self._external_visible_range: tuple[float, float] | None = None
         self._main_graph_mode = False
+        self._time_axis_mode = TIME_AXIS_MODE_RECENT
         self._drag_started_at: float | None = None
         self._pan_drag_anchor_x: float | None = None
         self._pan_drag_anchor_view_end: float | None = None
@@ -60,6 +63,13 @@ class LatencyGraphWidget(QWidget):
 
     def set_main_graph_mode(self, enabled: bool) -> None:
         self._main_graph_mode = enabled
+
+    def set_time_axis_mode(self, mode: str) -> None:
+        next_mode = mode if mode in {TIME_AXIS_MODE_RECENT, TIME_AXIS_MODE_ALL} else TIME_AXIS_MODE_RECENT
+        if self._time_axis_mode == next_mode:
+            return
+        self._time_axis_mode = next_mode
+        self.update()
 
     def set_visible_time_range(self, start: datetime | None, end: datetime | None) -> None:
         if start is None or end is None:
@@ -386,12 +396,13 @@ class LatencyGraphWidget(QWidget):
 
     def _time_axis_labels(self) -> tuple[str, str]:
         visible_start, visible_end = self._visible_range()
+        left_prefix = "시작" if self._time_axis_mode == TIME_AXIS_MODE_ALL else "최근"
         if visible_start is None or visible_end is None:
-            return "최근", "현재"
+            return left_prefix, "현재"
         if self._external_visible_range is not None:
             start = datetime.fromtimestamp(visible_start)
             end = datetime.fromtimestamp(visible_end)
-            return f"최근 {start.strftime('%H:%M:%S')}", f"현재 {end.strftime('%H:%M:%S')}"
+            return f"{left_prefix} {start.strftime('%H:%M:%S')}", f"현재 {end.strftime('%H:%M:%S')}"
         visible_timestamps = [
             point.timestamp
             for series in self._series
@@ -403,7 +414,7 @@ class LatencyGraphWidget(QWidget):
         else:
             start = datetime.fromtimestamp(visible_start)
             end = datetime.fromtimestamp(visible_end)
-        return f"최근 {start.strftime('%H:%M:%S')}", f"현재 {end.strftime('%H:%M:%S')}"
+        return f"{left_prefix} {start.strftime('%H:%M:%S')}", f"현재 {end.strftime('%H:%M:%S')}"
 
     def _visible_points(self, points: list[HopObservation]) -> list[HopObservation]:
         visible_start, visible_end = self._visible_range()

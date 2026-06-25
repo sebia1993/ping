@@ -32,6 +32,8 @@ from app.ui.main_window import (
     GRAPH_PNG_SCOPE_BOTH,
     GRAPH_PNG_SCOPE_TIMELINE,
     GRAPH_PNG_SCOPE_TRACE,
+    MAIN_GRAPH_RANGE_ALL,
+    MAIN_GRAPH_RANGE_RECENT,
     MainWindow,
     SESSION_HEADERS,
     SESSION_ID_ROLE,
@@ -76,6 +78,10 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.target_input.maximumHeight() == 52
         assert window.timeline_label.text() == "Timeline: Live"
         assert window.target_summary_status_label.text() == "IP: 0"
+        assert window.graph_range_recent_button.text() == "최근 10분"
+        assert window.graph_range_recent_button.isChecked() is True
+        assert window.graph_range_all_button.text() == "전체"
+        assert window.graph_range_all_button.isChecked() is False
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
         assert hasattr(window, "toggle_target_panel_button") is False
@@ -1046,6 +1052,7 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
 
     try:
         window.target_input.setText("8.8.8.8\n192.168.0.1\n8.8.8.8")
+        window.set_main_graph_range_mode(MAIN_GRAPH_RANGE_ALL, render=False)
         window.refresh_trace_targets()
         window.trace_target_combo.setCurrentText("192.168.0.1")
         window.interval_combo.setCurrentText("2")
@@ -1072,6 +1079,9 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert window.target_input.isHidden() is True
         assert window.running_target_summary_label.isHidden() is False
         assert window.running_target_summary_label.text() == "측정 IP 2개 | 기준 IP 8.8.8.8"
+        assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
+        assert window.graph_range_recent_button.isChecked() is True
+        assert window.graph_range_all_button.isChecked() is False
 
         window.stop_measurement()
 
@@ -1788,6 +1798,15 @@ def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) ->
         assert hasattr(window, "graph_time_previous_button") is False
         assert hasattr(window, "graph_time_current_button") is False
         assert hasattr(window, "graph_time_next_button") is False
+
+        window.graph_range_all_button.click()
+
+        expected_all_range = (now, now + timedelta(minutes=20))
+        assert window.graph.visible_datetime_range() == expected_all_range
+        assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_all_range
+        assert window.graph._time_axis_labels() == ("시작 12:00:00", "현재 12:20:00")
+        assert window.graph_range_recent_button.isChecked() is False
+        assert window.graph_range_all_button.isChecked() is True
     finally:
         window.close()
 

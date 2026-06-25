@@ -20,6 +20,7 @@ from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
@@ -130,6 +131,8 @@ ALERT_RULE_PRESET_VERSION = 2
 GRAPH_RENDER_THROTTLE_TARGET_COUNT = 5
 GRAPH_RENDER_THROTTLE_SECONDS = 2.0
 MAIN_GRAPH_DEFAULT_RANGE_SECONDS = 600
+MAIN_GRAPH_RANGE_RECENT = "recent"
+MAIN_GRAPH_RANGE_ALL = "all"
 
 
 @dataclass(frozen=True)
@@ -215,6 +218,7 @@ class MainWindow(QMainWindow):
         self.target_graph_metric_labels: dict[str, QLabel] = {}
         self.target_graph_remove_buttons: dict[str, QPushButton] = {}
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
+        self.main_graph_range_mode = MAIN_GRAPH_RANGE_RECENT
         self._last_graph_render_monotonic = 0.0
         self._pending_graph_render = False
         self._graph_render_timer = QTimer(self)
@@ -358,9 +362,30 @@ class MainWindow(QMainWindow):
         graph_advanced_layout.addWidget(self.load_timeline_button)
         graph_advanced_layout.addWidget(self.reset_current_button)
         graph_advanced_layout.addWidget(self.clear_focus_button)
+        self.graph_range_recent_button = QPushButton("최근 10분")
+        self.graph_range_recent_button.setObjectName("graphRangeToggle")
+        self.graph_range_recent_button.setToolTip("최근 10분만 크게 표시합니다.")
+        self.graph_range_recent_button.setCheckable(True)
+        self.graph_range_recent_button.clicked.connect(
+            lambda _checked=False: self.set_main_graph_range_mode(MAIN_GRAPH_RANGE_RECENT)
+        )
+        self.graph_range_all_button = QPushButton("전체")
+        self.graph_range_all_button.setObjectName("graphRangeToggle")
+        self.graph_range_all_button.setToolTip("측정 시작 시간부터 현재까지 전체 기간을 표시합니다.")
+        self.graph_range_all_button.setCheckable(True)
+        self.graph_range_all_button.clicked.connect(
+            lambda _checked=False: self.set_main_graph_range_mode(MAIN_GRAPH_RANGE_ALL)
+        )
+        self.graph_range_button_group = QButtonGroup(self)
+        self.graph_range_button_group.setExclusive(True)
+        self.graph_range_button_group.addButton(self.graph_range_recent_button)
+        self.graph_range_button_group.addButton(self.graph_range_all_button)
+        self._sync_main_graph_range_buttons()
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
         graph_header.addWidget(self.target_summary_status_label)
+        graph_header.addWidget(self.graph_range_recent_button)
+        graph_header.addWidget(self.graph_range_all_button)
         graph_header.addWidget(self.graph_advanced_controls)
         self.graph = LatencyGraphWidget()
         self.graph.setMinimumHeight(112)
@@ -1047,6 +1072,7 @@ class MainWindow(QMainWindow):
         self._clear_focus_state()
         self._clear_timeline_state()
         self._sync_focus_controls()
+        self.set_main_graph_range_mode(MAIN_GRAPH_RANGE_RECENT, render=False)
         self._sync_alerts_box()
         self._sync_route_changes_box()
         self._sync_sessions_box()
@@ -1905,6 +1931,33 @@ class MainWindow(QMainWindow):
 
     def _configure_main_graph_widget(self, graph: LatencyGraphWidget) -> None:
         graph.set_main_graph_mode(True)
+        graph.set_time_axis_mode(self.main_graph_range_mode)
+
+    def set_main_graph_range_mode(self, mode: str, *, render: bool = True) -> None:
+        if mode not in {MAIN_GRAPH_RANGE_RECENT, MAIN_GRAPH_RANGE_ALL}:
+            mode = MAIN_GRAPH_RANGE_RECENT
+        self.main_graph_range_mode = mode
+        self._sync_main_graph_range_buttons()
+        self._sync_main_graph_time_axis_modes()
+        if render:
+            self._request_graph_render(force=True)
+
+    def _sync_main_graph_range_buttons(self) -> None:
+        if hasattr(self, "graph_range_recent_button"):
+            self.graph_range_recent_button.setChecked(self.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT)
+        if hasattr(self, "graph_range_all_button"):
+            self.graph_range_all_button.setChecked(self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL)
+
+    def _sync_main_graph_time_axis_modes(self) -> None:
+        seen: set[int] = set()
+        for graph in [getattr(self, "graph", None), *getattr(self, "target_graph_widgets", {}).values()]:
+            if graph is None:
+                continue
+            graph_id = id(graph)
+            if graph_id in seen:
+                continue
+            seen.add(graph_id)
+            graph.set_time_axis_mode(self.main_graph_range_mode)
 
     def _main_graph_data_bounds(self) -> tuple[datetime, datetime] | None:
         histories = self._target_histories_by_address(self._graph_observations_for_rows())
@@ -1922,6 +1975,8 @@ class MainWindow(QMainWindow):
         if bounds is None:
             return None
         full_start, full_end = bounds
+        if self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL:
+            return full_start, full_end
         start = max(full_start, full_end - timedelta(seconds=MAIN_GRAPH_DEFAULT_RANGE_SECONDS))
         return start, full_end
 
@@ -1930,6 +1985,7 @@ class MainWindow(QMainWindow):
         graph: LatencyGraphWidget,
         visible_range: tuple[datetime, datetime] | None,
     ) -> None:
+        graph.set_time_axis_mode(self.main_graph_range_mode)
         if visible_range is None:
             graph.set_visible_time_range(None, None)
             return
@@ -4484,6 +4540,14 @@ QPushButton#dangerButton {
 }
 QPushButton#targetPanelToggle {
     padding: 6px 10px;
+}
+QPushButton#graphRangeToggle {
+    padding: 5px 10px;
+}
+QPushButton#graphRangeToggle:checked {
+    background: #2563eb;
+    border-color: #2563eb;
+    color: #ffffff;
 }
 QPushButton:disabled {
     color: #9ca3af;
