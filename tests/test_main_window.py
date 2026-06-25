@@ -1251,6 +1251,11 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
             "203.0.113.20": 10,
             "192.0.2.1": 7,
         }
+        window.target_aliases = {
+            "198.51.100.10": "사무실 PC",
+            "203.0.113.20": "AP 장비",
+            "192.0.2.1": "저장 제외",
+        }
 
         window.save_target_group_preset()
 
@@ -1268,6 +1273,10 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         assert data["targets"] == ["198.51.100.10", "203.0.113.20"]
         assert data["trace_target"] == "203.0.113.20"
         assert data["target_interval_overrides"] == {"203.0.113.20": 10}
+        assert data["target_aliases"] == {
+            "198.51.100.10": "사무실 PC",
+            "203.0.113.20": "AP 장비",
+        }
         assert data["settings"]["interval_seconds"] == 5
         assert data["settings"]["unlimited"] is False
         assert data["settings"]["count"] == 25
@@ -1284,6 +1293,7 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         window.probe_engine_combo.setCurrentIndex(window.probe_engine_combo.findData("icmp"))
         window.tcp_port_spin.setValue(443)
         window.target_interval_overrides = {}
+        window.target_aliases = {}
 
         window.load_target_group_preset()
 
@@ -1298,6 +1308,10 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         assert window.tcp_port_spin.value() == 8443
         assert window.tcp_port_spin.isEnabled() is True
         assert window.target_interval_overrides == {"203.0.113.20": 10}
+        assert window.target_aliases == {
+            "198.51.100.10": "사무실 PC",
+            "203.0.113.20": "AP 장비",
+        }
         assert window.status_label.text() == "대상 그룹 불러오기 완료: IP 2개 | target_group | 개별 주기 1개"
     finally:
         window.close()
@@ -1342,6 +1356,7 @@ def test_main_window_loads_legacy_target_group_preset(qt_app, tmp_path, monkeypa
         assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
         assert window.tcp_port_spin.value() == 8443
         assert window.target_interval_overrides == {}
+        assert window.target_aliases == {}
         assert window.status_label.text() == "대상 그룹 불러오기 완료: IP 2개"
     finally:
         window.close()
@@ -1504,6 +1519,11 @@ def test_main_window_saves_selected_target_group_from_summary(qt_app, tmp_path, 
 
     try:
         window.target_input.setText("198.51.100.10\n203.0.113.20\n203.0.113.30")
+        window.target_aliases = {
+            "198.51.100.10": "저장 제외",
+            "203.0.113.20": "모바일",
+            "203.0.113.30": "네트워크 장비",
+        }
         window.refresh_trace_targets()
         window.trace_target_combo.setCurrentText("198.51.100.10")
         window.on_measurement_updated(
@@ -1528,6 +1548,10 @@ def test_main_window_saves_selected_target_group_from_summary(qt_app, tmp_path, 
         assert data["targets"] == ["203.0.113.20", "203.0.113.30"]
         assert data["trace_target"] == "203.0.113.20"
         assert data["target_interval_overrides"] == {}
+        assert data["target_aliases"] == {
+            "203.0.113.20": "모바일",
+            "203.0.113.30": "네트워크 장비",
+        }
         assert window.status_label.text() == f"대상 그룹 저장 완료: {preset_path} (IP 2개)"
     finally:
         window.close()
@@ -1780,9 +1804,16 @@ def test_main_window_removes_target_from_graph_row_while_running(qt_app) -> None
 
     try:
         window.target_input.setText("198.51.100.10\n203.0.113.10")
+        window.target_aliases = {
+            "198.51.100.10": "사무실 PC",
+            "203.0.113.10": "AP 장비",
+        }
         window.start_measurement()
         worker = created_workers[0]
         window.on_measurement_updated([], first, [first, second], ["live"], observations, observations[:1])
+        assert window.target_graph_title_labels["198.51.100.10"].text() == "사무실 PC"
+        assert window.target_graph_address_labels["198.51.100.10"].text() == "198.51.100.10"
+        assert window.target_graph_address_labels["198.51.100.10"].isHidden() is False
 
         window.target_graph_pause_buttons["198.51.100.10"].click()
 
@@ -1806,6 +1837,7 @@ def test_main_window_removes_target_from_graph_row_while_running(qt_app) -> None
         assert window.current_target == "203.0.113.10"
         assert "198.51.100.10" not in window.target_graph_rows
         assert "203.0.113.10" in window.target_graph_rows
+        assert window.target_aliases == {"203.0.113.10": "AP 장비"}
         assert window.target_input.toPlainText().splitlines() == ["203.0.113.10"]
 
         window.target_graph_remove_buttons["203.0.113.10"].click()
@@ -1813,6 +1845,56 @@ def test_main_window_removes_target_from_graph_row_while_running(qt_app) -> None
         assert worker.removed_calls == [["198.51.100.10"], ["203.0.113.10"]]
         assert worker.stopped is True
         assert window.current_targets == []
+    finally:
+        window.close()
+
+
+def test_main_window_edits_target_alias_from_graph_row(qt_app, monkeypatch) -> None:
+    window = MainWindow()
+    now = datetime.now()
+    target = "198.51.100.10"
+    snapshot = _snapshot(0, target, None, latency=10.0, is_target=True)
+    observations = [
+        HopObservation(now, 0, target, "Target", True, 10.0, STATUS_OK, True),
+    ]
+    dialog_results = iter([
+        ("사무실 PC", True),
+        ("", True),
+        ("취소됨", False),
+    ])
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: next(dialog_results),
+    )
+
+    try:
+        window.current_target = target
+        window.current_targets = [target]
+        window.on_measurement_updated([], snapshot, [snapshot], ["live"], observations, observations)
+
+        assert window.target_graph_title_labels[target].text() == target
+        assert window.target_graph_address_labels[target].isHidden() is True
+
+        window.target_graph_alias_buttons[target].click()
+
+        assert window.target_aliases == {target: "사무실 PC"}
+        assert window.target_graph_title_labels[target].text() == "사무실 PC"
+        assert window.target_graph_address_labels[target].text() == target
+        assert window.target_graph_address_labels[target].isHidden() is False
+        assert window.status_label.text() == f"{target} 이름 저장: 사무실 PC"
+
+        window.target_graph_alias_buttons[target].click()
+
+        assert window.target_aliases == {}
+        assert window.target_graph_title_labels[target].text() == target
+        assert window.target_graph_address_labels[target].isHidden() is True
+        assert window.status_label.text() == f"{target} 이름 삭제"
+
+        window.target_graph_alias_buttons[target].click()
+
+        assert window.target_aliases == {}
+        assert window.target_graph_title_labels[target].text() == target
     finally:
         window.close()
 

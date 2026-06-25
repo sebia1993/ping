@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -212,6 +213,7 @@ class MainWindow(QMainWindow):
         self.current_target = ""
         self.current_targets: list[str] = []
         self.target_interval_overrides: dict[str, int] = {}
+        self.target_aliases: dict[str, str] = {}
         self.pending_resume_session_id = ""
         self.pending_resume_targets: list[str] = []
         self.session_log_path: Path | None = None
@@ -256,8 +258,10 @@ class MainWindow(QMainWindow):
         self.target_graph_rows: dict[str, QFrame] = {}
         self.target_graph_widgets: dict[str, LatencyGraphWidget] = {}
         self.target_graph_title_labels: dict[str, QLabel] = {}
+        self.target_graph_address_labels: dict[str, QLabel] = {}
         self.target_graph_status_labels: dict[str, QLabel] = {}
         self.target_graph_metric_labels: dict[str, QLabel] = {}
+        self.target_graph_alias_buttons: dict[str, QPushButton] = {}
         self.target_graph_pause_buttons: dict[str, QPushButton] = {}
         self.target_graph_remove_buttons: dict[str, QPushButton] = {}
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
@@ -995,9 +999,12 @@ class MainWindow(QMainWindow):
                 raise ValueError("대상 그룹 JSON은 객체 형식이어야 합니다.")
             targets = _target_group_targets(data)
             target_interval_overrides = _target_group_interval_overrides(data, targets)
+            target_aliases = _target_group_aliases(data, targets)
             targets = self._apply_target_group_preset(data)
             self.target_interval_overrides = target_interval_overrides
+            self.target_aliases = target_aliases
             self._refresh_target_interval_view()
+            self._sync_all_target_graph_alias_labels()
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "대상 그룹", str(exc))
             self.status_label.setText(str(exc))
@@ -1020,6 +1027,7 @@ class MainWindow(QMainWindow):
             targets,
             global_interval=int(self.interval_combo.currentText()),
         )
+        target_aliases = _filtered_target_aliases(self.target_aliases, targets)
         return {
             "version": TARGET_GROUP_PRESET_VERSION,
             "name": name,
@@ -1036,6 +1044,7 @@ class MainWindow(QMainWindow):
             "targets": targets,
             "trace_target": trace_target,
             "target_interval_overrides": target_interval_overrides,
+            "target_aliases": target_aliases,
             "settings": {
                 "interval_seconds": int(self.interval_combo.currentText()),
                 "unlimited": self.unlimited_check.isChecked(),
@@ -1104,6 +1113,7 @@ class MainWindow(QMainWindow):
         self.current_target = target
         self.current_targets = targets
         self.target_interval_overrides = dict(initial_target_interval_overrides)
+        self.target_aliases = _filtered_target_aliases(self.target_aliases, targets)
         self.paused_target_addresses = set()
         self.session_log_path = None
         self.route_log_path = None
@@ -1236,6 +1246,7 @@ class MainWindow(QMainWindow):
         self.current_targets = [target for target in self.current_targets if target not in removed_set]
         for target in removed_set:
             self.target_interval_overrides.pop(target, None)
+            self.target_aliases.pop(target, None)
         self._discard_target_alert_state(removed_set)
         self.target_snapshots = [
             snapshot for snapshot in self.target_snapshots if snapshot.address not in removed_set
@@ -1966,12 +1977,12 @@ class MainWindow(QMainWindow):
             graph_color = TARGET_GRAPH_STATE_COLORS[graph_state]
             graph = self.target_graph_widgets[address]
             render_key = self._target_graph_render_key(snapshot, history, graph_state)
+            self._sync_target_graph_alias_label(address)
             if self.target_graph_render_keys.get(address) != render_key:
                 if history:
                     graph.set_series([TimelineSeries(address, address, history, graph_color)])
                 else:
                     graph.set_points([])
-                self.target_graph_title_labels[address].setText(address)
                 self.target_graph_metric_labels[address].setText(
                     self._target_graph_metric_text(snapshot, history)
                 )
@@ -2048,6 +2059,48 @@ class MainWindow(QMainWindow):
         label.style().unpolish(label)
         label.style().polish(label)
 
+    def edit_target_alias(self, address: str) -> None:
+        if not address:
+            return
+        current_alias = self.target_aliases.get(address, "")
+        text, accepted = QInputDialog.getText(
+            self,
+            "IP 이름",
+            f"{address} 표시 이름",
+            QLineEdit.EchoMode.Normal,
+            current_alias,
+        )
+        if not accepted:
+            return
+        alias = _normalize_target_alias(text)
+        if alias:
+            self.target_aliases[address] = alias
+            self.status_label.setText(f"{address} 이름 저장: {alias}")
+        else:
+            self.target_aliases.pop(address, None)
+            self.status_label.setText(f"{address} 이름 삭제")
+        self._sync_target_graph_alias_label(address)
+
+    def _sync_all_target_graph_alias_labels(self) -> None:
+        for address in list(getattr(self, "target_graph_rows", {})):
+            self._sync_target_graph_alias_label(address)
+
+    def _sync_target_graph_alias_label(self, address: str) -> None:
+        title = self.target_graph_title_labels.get(address)
+        address_label = self.target_graph_address_labels.get(address)
+        alias_button = self.target_graph_alias_buttons.get(address)
+        alias = self.target_aliases.get(address, "")
+        if title is not None:
+            title.setText(alias or address)
+            title.setToolTip(f"{alias}\n{address}" if alias else address)
+        if address_label is not None:
+            address_label.setText(address)
+            address_label.setVisible(bool(alias))
+            address_label.setToolTip(address)
+        if alias_button is not None:
+            alias_button.setText("이름")
+            alias_button.setToolTip("이 IP에 표시할 이름을 추가, 수정 또는 삭제합니다.")
+
     def _create_target_graph_row(self, address: str, *, use_primary_graph: bool) -> None:
         row = QFrame()
         row.setObjectName("targetGraphRow")
@@ -2059,13 +2112,28 @@ class MainWindow(QMainWindow):
         info = QVBoxLayout()
         info.setContentsMargins(0, 8, 0, 8)
         info.setSpacing(4)
-        title = QLabel(address)
+        title = QLabel(self.target_aliases.get(address, "") or address)
         title.setObjectName("targetGraphTitle")
         title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        title.setMaximumWidth(170)
+        address_label = QLabel(address)
+        address_label.setObjectName("targetGraphAddress")
+        address_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        address_label.setMaximumWidth(170)
+        alias_button = QPushButton("이름")
+        alias_button.setObjectName("targetGraphAliasButton")
+        alias_button.setMaximumWidth(48)
+        alias_button.clicked.connect(lambda _checked=False, target=address: self.edit_target_alias(target))
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(4)
+        title_row.addWidget(title, 1)
+        title_row.addWidget(alias_button, 0)
         status_badge = _chip("대기", "neutral")
         metric = QLabel("대기")
         metric.setObjectName("targetGraphMeta")
         metric.setWordWrap(True)
+        metric.setMaximumWidth(170)
         pause_button = QPushButton("일시중지")
         pause_button.setObjectName("targetGraphPauseButton")
         pause_button.setToolTip("이 IP만 잠시 측정을 멈춥니다.")
@@ -2079,7 +2147,8 @@ class MainWindow(QMainWindow):
         action_row.setSpacing(6)
         action_row.addWidget(pause_button)
         action_row.addWidget(remove_button)
-        info.addWidget(title)
+        info.addLayout(title_row)
+        info.addWidget(address_label)
         info.addWidget(status_badge)
         info.addWidget(metric)
         info.addLayout(action_row)
@@ -2094,10 +2163,13 @@ class MainWindow(QMainWindow):
         self.target_graph_rows[address] = row
         self.target_graph_widgets[address] = graph
         self.target_graph_title_labels[address] = title
+        self.target_graph_address_labels[address] = address_label
         self.target_graph_status_labels[address] = status_badge
         self.target_graph_metric_labels[address] = metric
+        self.target_graph_alias_buttons[address] = alias_button
         self.target_graph_pause_buttons[address] = pause_button
         self.target_graph_remove_buttons[address] = remove_button
+        self._sync_target_graph_alias_label(address)
 
     def _sync_target_graph_action_buttons(self, address: str, snapshot: MetricSnapshot | None = None) -> None:
         button = self.target_graph_pause_buttons.get(address)
@@ -2298,8 +2370,10 @@ class MainWindow(QMainWindow):
         row = self.target_graph_rows.pop(address, None)
         graph = self.target_graph_widgets.pop(address, None)
         self.target_graph_title_labels.pop(address, None)
+        self.target_graph_address_labels.pop(address, None)
         self.target_graph_status_labels.pop(address, None)
         self.target_graph_metric_labels.pop(address, None)
+        self.target_graph_alias_buttons.pop(address, None)
         self.target_graph_pause_buttons.pop(address, None)
         self.target_graph_remove_buttons.pop(address, None)
         self.target_graph_render_keys.pop(address, None)
@@ -3486,6 +3560,7 @@ class MainWindow(QMainWindow):
         observations = list(iter_observations(record.sample_path))
         self.current_target = record.target
         self.current_targets = [record.target]
+        self.target_aliases = {}
         self.target_input.setPlainText(record.target)
         self.refresh_trace_targets()
         self.trace_target_combo.setCurrentText(record.target)
@@ -3529,6 +3604,7 @@ class MainWindow(QMainWindow):
             return
         self.current_target = record.target if record.target in targets else targets[0]
         self.current_targets = targets
+        self.target_aliases = {}
         self.pending_resume_session_id = record.session_id
         self.pending_resume_targets = list(targets)
         self.main_graph_live_end_time = None
@@ -4610,6 +4686,32 @@ def _target_group_interval_overrides(data: dict[str, object], targets: list[str]
     return overrides
 
 
+def _target_group_aliases(data: dict[str, object], targets: list[str]) -> dict[str, str]:
+    raw_aliases = data.get("target_aliases", {})
+    if raw_aliases in (None, ""):
+        return {}
+    if not isinstance(raw_aliases, dict):
+        raise ValueError("대상 그룹 JSON의 IP 이름 설정이 올바르지 않습니다.")
+    return _filtered_target_aliases(raw_aliases, targets)
+
+
+def _filtered_target_aliases(aliases: dict[str, object], targets: list[str]) -> dict[str, str]:
+    target_set = set(targets)
+    filtered: dict[str, str] = {}
+    for target, value in aliases.items():
+        target_text = str(target)
+        if target_text not in target_set:
+            continue
+        alias = _normalize_target_alias(value)
+        if alias:
+            filtered[target_text] = alias
+    return filtered
+
+
+def _normalize_target_alias(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
 def _validate_target_group_interval_override_summary(summary: object, *, override_count: int) -> None:
     if not isinstance(summary, dict):
         return
@@ -4949,11 +5051,19 @@ QLabel#targetGraphTitle {
     font-size: 12px;
     font-weight: 700;
     min-width: 132px;
+    max-width: 170px;
+}
+QLabel#targetGraphAddress {
+    color: #6b7280;
+    font-size: 10px;
+    min-width: 132px;
+    max-width: 170px;
 }
 QLabel#targetGraphMeta {
     color: #6b7280;
     font-size: 11px;
     min-width: 132px;
+    max-width: 170px;
 }
 QLabel#targetGraphLegend {
     color: #374151;
@@ -5041,6 +5151,10 @@ QPushButton#dangerButton {
 }
 QPushButton#targetPanelToggle {
     padding: 6px 10px;
+}
+QPushButton#targetGraphAliasButton {
+    padding: 4px 7px;
+    font-size: 10px;
 }
 QComboBox#mainGraphRangeCombo {
     min-width: 104px;
