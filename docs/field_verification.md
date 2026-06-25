@@ -11,6 +11,23 @@ python scripts\verify_release.py
 python scripts\verify_release.py --live --exe
 ```
 
+## 장시간 안정성 검증
+아래 명령은 실제 사내 장비 정보를 쓰지 않고 simulated probe로 다중 IP timeout 부하를 재현합니다.
+결과 JSON의 `failures`가 비어 있고, `stopped_cleanly`가 `true`여야 합니다.
+
+```powershell
+python scripts\soak_test.py --profile long --duration-seconds 1800 --no-ui
+python scripts\soak_test.py --profile ui --duration-seconds 600
+```
+
+주요 기준:
+- `max_active_threads`는 40 이하
+- `max_ui_event_gap_seconds`는 2초 이하
+- `memory_growth_bytes`는 96MB 이하
+- `cpu_percent`는 long profile 기준 80% 이하
+- `max_pending_ping_count`와 `max_log_queue_depth`가 실패 기준을 넘으면 안정성 회귀로 처리
+- `session_log_rows`와 `session_log_segments`가 0이면 세션 저장 실패로 처리
+
 ## 사내 게이트웨이 또는 업무 사이트 검증
 
 `<FIELD_TARGET>`을 사내 게이트웨이 IPv4 주소 또는 업무 사이트 IPv4 주소로 바꿔 로컬에서 실행합니다.

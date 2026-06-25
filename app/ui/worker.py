@@ -55,6 +55,7 @@ MAX_TARGET_PING_WORKERS = 20
 MAX_HOP_PING_WORKERS = 4
 WORKER_POLL_SECONDS = 0.05
 TRACE_REFRESH_SECONDS = 60.0
+SESSION_LOG_CLOSE_TIMEOUT_SECONDS = 5.0
 BACKOFF_AFTER_FAILURES = 3
 SLOW_BACKOFF_AFTER_FAILURES = 10
 FIRST_BACKOFF_SECONDS = 2.0
@@ -195,7 +196,9 @@ class _AsyncSessionLogWriter:
                 return
             self._closed = True
             self._queue.put(None)
-        self._thread.join()
+        self._thread.join(SESSION_LOG_CLOSE_TIMEOUT_SECONDS)
+        if self._thread.is_alive():
+            raise TimeoutError("session log writer did not close within timeout")
         if self._error:
             raise self._error
 

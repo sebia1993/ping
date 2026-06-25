@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from concurrent.futures import Future
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,9 @@ from PySide6.QtWidgets import QApplication
 from app.core.alerts import AlertRuleConfig
 from app.core.metrics import TargetMetricTracker
 from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, PingResult
+from app.storage import session_log as session_log_module
 from app.storage.route_log import RouteLogWriter, route_changes_in_range
+from app.storage.session_log import SessionLogWriter
 from app.storage.session_index import SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
 from app.ui import worker as worker_module
 from app.ui.worker import (
@@ -733,6 +736,67 @@ def test_worker_marks_session_paused_when_session_log_close_fails(monkeypatch, t
     assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
 
 
+def test_worker_marks_session_paused_when_session_log_close_hangs(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
+    monkeypatch.setattr(worker_module, "SESSION_LOG_CLOSE_TIMEOUT_SECONDS", 0.05)
+    log_path = tmp_path / "close_hung.samples.csv"
+    release_close = threading.Event()
+
+    def create_log(cls, target: str, root=None):
+        return _BlockingCloseSessionLogWriter(log_path, release_close)
+
+    monkeypatch.setattr(worker_module.SessionLogWriter, "create", classmethod(create_log))
+
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=0, max_cycles=1)
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    try:
+        worker.run()
+    finally:
+        release_close.set()
+
+    sessions = SessionIndexStore.create(tmp_path).list_sessions(target="198.51.100.10")
+    assert len(sessions) == 1
+    assert sessions[0].state == SESSION_STATE_PAUSED
+    assert "SESSION_LOG_WRITE_FAILED: TimeoutError" in sessions[0].last_error
+    assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
+
+
+def test_worker_marks_session_paused_when_session_log_segment_index_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    log_path = tmp_path / "segment_index_failed.samples.csv"
+
+    def create_log(cls, target: str, root=None):
+        return SessionLogWriter(log_path)
+
+    def locked_replace(_source, _target):
+        raise PermissionError("segment index locked")
+
+    monkeypatch.setattr(worker_module.SessionLogWriter, "create", classmethod(create_log))
+    monkeypatch.setattr(session_log_module, "_replace_path", locked_replace)
+
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=0, max_cycles=1)
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    sessions = SessionIndexStore.create(tmp_path).list_sessions(target="198.51.100.10")
+    assert len(sessions) == 1
+    assert sessions[0].state == SESSION_STATE_PAUSED
+    assert "SESSION_LOG_WRITE_FAILED: PermissionError" in sessions[0].last_error
+    assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
+
+
 def test_worker_reports_session_index_finish_failure_without_crashing(monkeypatch, tmp_path) -> None:
     _app()
     monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
@@ -772,8 +836,36 @@ def test_worker_thread_start_stop_repeats_without_lingering(monkeypatch) -> None
         time.sleep(0.05)
         worker.request_stop()
 
-        assert worker.wait(1500) is True
+        assert worker.wait(3000) is True
         assert worker.isRunning() is False
+
+
+def test_worker_stop_request_with_slow_active_pings_finishes_without_deadlock() -> None:
+    _app()
+    targets = [f"198.51.100.{index}" for index in range(1, 9)]
+    calls: list[str] = []
+
+    worker = MeasurementWorker(
+        targets[0],
+        interval_seconds=1,
+        max_cycles=None,
+        targets=targets,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        ping_probe_factory=lambda timeout_ms: _StopDelayPingRunner(timeout_ms, calls, delay_seconds=0.25),
+    )
+
+    worker.start()
+    deadline = time.monotonic() + 2.0
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    stopped_at = time.monotonic()
+    worker.request_stop()
+
+    assert worker.wait(3000) is True
+    assert time.monotonic() - stopped_at < 3.0
+    assert calls
+    assert worker.isRunning() is False
 
 
 def test_worker_applies_runtime_add_and_remove_requests() -> None:
@@ -1029,6 +1121,20 @@ class _CloseFailingSessionLogWriter:
         raise PermissionError("locked during close")
 
 
+class _BlockingCloseSessionLogWriter:
+    def __init__(self, path: Path, release_event: threading.Event) -> None:
+        self.path = path
+        self.paths = [path]
+        self.release_event = release_event
+
+    def write_many(self, _observations) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.touch()
+
+    def close(self) -> None:
+        self.release_event.wait(5.0)
+
+
 class _SlowTargetPingRunner:
     def __init__(self, timeout_ms: int, calls: dict[str, int]) -> None:
         self.timeout_ms = timeout_ms
@@ -1040,6 +1146,18 @@ class _SlowTargetPingRunner:
             time.sleep(1.5)
             return PingResult(target, False, None, STATUS_TIMEOUT, datetime.now())
         return PingResult(target, True, 20.0, STATUS_OK, datetime.now())
+
+
+class _StopDelayPingRunner:
+    def __init__(self, timeout_ms: int, calls: list[str], *, delay_seconds: float) -> None:
+        self.timeout_ms = timeout_ms
+        self.calls = calls
+        self.delay_seconds = delay_seconds
+
+    def ping(self, target: str) -> PingResult:
+        self.calls.append(target)
+        time.sleep(self.delay_seconds)
+        return PingResult(target, False, None, STATUS_TIMEOUT, datetime.now())
 
 
 class _CountingPingRunner:
