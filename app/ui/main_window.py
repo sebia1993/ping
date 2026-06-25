@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _build_menu_bar(self) -> None:
-        # 현재 기본 화면은 IP 입력과 실시간 그래프만 노출합니다.
+        # 현재 기본 화면은 IP 입력을 먼저 크게 보여 주고, 측정 시작 후 실시간 그래프를 노출합니다.
         # GraphDetailWindow 코드는 내부 검증/export 경로에서 계속 쓰이지만, 사용자 메뉴 진입점은 만들지 않습니다.
         return
 
@@ -322,6 +322,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.hop_table_panel, 1)
 
         graph_panel = _panel("graphPanel")
+        self.graph_panel = graph_panel
+        graph_panel.setVisible(False)
         graph_layout = QVBoxLayout(graph_panel)
         graph_layout.setContentsMargins(12, 10, 12, 12)
         graph_layout.setSpacing(8)
@@ -1545,6 +1547,7 @@ class MainWindow(QMainWindow):
         self._update_target_summary(target_snapshot)
         self._sync_running_target_summary()
         self._request_graph_render(force=force_graph or bool(self.pending_alert_image_keys))
+        self._sync_graph_panel_visibility()
         self._save_pending_alert_images()
         self.analysis_box.setPlainText("\n".join(f"- {line}" for line in analysis))
         self._set_export_enabled(self._has_export_data())
@@ -3675,11 +3678,27 @@ class MainWindow(QMainWindow):
         if label is not None:
             label.setText(self._running_target_summary_text())
 
+    def _sync_graph_panel_visibility(self, *, running: bool | None = None) -> None:
+        panel = getattr(self, "graph_panel", None)
+        if panel is None:
+            return
+        if running is None:
+            running = bool(self.worker and self.worker.isRunning())
+        has_graph_data = bool(
+            self.target_graph_rows
+            or self.target_history
+            or self.observations
+            or self.target_snapshots
+            or self.timeline_observations
+        )
+        panel.setVisible(bool(running or has_graph_data))
+
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.target_input.setEnabled(not running)
         self.target_input.setVisible(not running)
+        self._sync_graph_panel_visibility(running=running)
         if hasattr(self, "running_target_summary_label"):
             self._sync_running_target_summary()
             self.running_target_summary_label.setVisible(running)

@@ -44,9 +44,9 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     root.setSpacing(0)
 
     owner.target_input = TargetInputEdit()
-    owner.target_input.setPlaceholderText("IP 주소 입력: 8.8.8.8  192.168.0.1")
-    owner.target_input.setMinimumHeight(40)
-    owner.target_input.setMaximumHeight(52)
+    owner.target_input.setPlaceholderText("IP를 한 줄에 하나씩 입력하거나 붙여넣기")
+    owner.target_input.setMinimumHeight(110)
+    owner.target_input.setMaximumHeight(180)
     owner.target_input.setLineWrapMode(QPlainTextEdit.NoWrap)
     owner.trace_target_combo = QComboBox()
     owner.refresh_targets_button = QPushButton("목록 반영")

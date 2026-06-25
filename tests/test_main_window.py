@@ -75,7 +75,10 @@ def test_main_window_initial_state(qt_app) -> None:
         assert "고급 기능 표시" not in view_actions
         assert "그래프 확대" not in view_actions
         assert window.command_title_label.text() == "멀티핑체크"
-        assert window.target_input.maximumHeight() == 52
+        assert window.target_input.minimumHeight() == 110
+        assert window.target_input.maximumHeight() == 180
+        assert "한 줄" in window.target_input.placeholderText()
+        assert window.graph_panel.isHidden() is True
         assert window.timeline_label.text() == "그래프: 실시간"
         assert window.target_summary_status_label.text() == "IP: 0"
         assert window.graph_range_recent_button.text() == "최근 10분"
@@ -1080,6 +1083,7 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert window.target_input.isHidden() is True
         assert window.running_target_summary_label.isHidden() is False
         assert window.running_target_summary_label.text() == "측정 IP 2개"
+        assert window.graph_panel.isHidden() is False
         assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
         assert window.graph_range_recent_button.isChecked() is True
         assert window.graph_range_all_button.isChecked() is False
@@ -1092,6 +1096,71 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         window.on_worker_finished()
         assert window.target_input.isHidden() is False
         assert window.running_target_summary_label.isHidden() is True
+        assert window.graph_panel.isHidden() is True
+    finally:
+        window.close()
+
+
+def test_main_window_keeps_graph_visible_after_stop_when_data_exists(qt_app) -> None:
+    created_workers: list[_FakeWorker] = []
+
+    def worker_factory(
+        target: str,
+        interval_seconds: int,
+        max_cycles: int | None,
+        targets: list[str],
+        measurement_mode: str,
+        probe_engine: str = "icmp",
+        tcp_port: int = 443,
+    ) -> "_FakeWorker":
+        worker = _FakeWorker(
+            target=target,
+            interval_seconds=interval_seconds,
+            max_cycles=max_cycles,
+            targets=targets,
+            measurement_mode=measurement_mode,
+            probe_engine=probe_engine,
+            tcp_port=tcp_port,
+        )
+        created_workers.append(worker)
+        return worker
+
+    window = MainWindow(worker_factory=worker_factory)
+    now = datetime.now()
+    snapshot = _snapshot(0, "198.51.100.10", None, latency=10.0, is_target=True)
+    history = [HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)]
+
+    try:
+        assert window.graph_panel.isHidden() is True
+        window.target_input.setText("198.51.100.10")
+        window.start_measurement()
+        assert window.graph_panel.isHidden() is False
+
+        window.on_measurement_updated([], snapshot, [snapshot], ["live"], history, history)
+        window.stop_measurement()
+        window.on_worker_finished()
+
+        assert created_workers[0].stopped is True
+        assert window.target_input.isHidden() is False
+        assert window.graph_panel.isHidden() is False
+        assert window.graph._points == history
+    finally:
+        window.close()
+
+
+def test_main_window_keeps_graph_hidden_when_start_input_is_empty(qt_app, monkeypatch) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+    window = MainWindow()
+
+    try:
+        assert window.graph_panel.isHidden() is True
+        window.start_measurement()
+
+        assert warnings
+        assert window.worker is None
+        assert window.target_input.isHidden() is False
+        assert window.graph_panel.isHidden() is True
     finally:
         window.close()
 
