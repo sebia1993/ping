@@ -324,7 +324,7 @@ class GraphDetailWindow(QMainWindow):
     def _target_series(self) -> list[TimelineSeries]:
         if not self._target_history:
             return []
-        return [TimelineSeries("target", self._target or "Target", self._target_history)]
+        return [TimelineSeries("target", self._target or "대상", self._target_history)]
 
     def _all_hop_series(self) -> list[TimelineSeries]:
         grouped = self._observations_by_hop()
@@ -390,7 +390,7 @@ class GraphDetailWindow(QMainWindow):
         self.hop_combo.blockSignals(True)
         self.hop_combo.clear()
         for snapshot in sorted(self._hop_snapshots, key=lambda item: item.hop_index):
-            label = f"Hop {snapshot.hop_index} - {snapshot.address or 'Timeout'}"
+            label = f"Hop {snapshot.hop_index} - {snapshot.address or '응답 없음'}"
             self.hop_combo.addItem(label, snapshot.hop_index)
             if snapshot.hop_index == self._selected_hop_index:
                 self.hop_combo.setCurrentIndex(self.hop_combo.count() - 1)
@@ -429,7 +429,7 @@ class GraphDetailWindow(QMainWindow):
             swatch.setStyleSheet(f"background: {self._hop_color(snapshot.hop_index)}; border-radius: 3px;")
 
             checkbox = QCheckBox(f"Hop {snapshot.hop_index}")
-            checkbox.setToolTip(snapshot.address or "Timeout")
+            checkbox.setToolTip(snapshot.address or "응답 없음")
             checkbox.blockSignals(True)
             checkbox.setChecked(snapshot.hop_index in self._visible_hop_indices)
             checkbox.blockSignals(False)

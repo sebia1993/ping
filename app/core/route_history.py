@@ -63,12 +63,12 @@ def route_change(previous: RouteSnapshot, current: RouteSnapshot) -> RouteChange
     removed_hops = tuple(sorted(previous_indexes - current_indexes))
     parts: list[str] = []
     if changed_hops:
-        parts.append("changed " + ", ".join(f"Hop {index}" for index in changed_hops[:6]))
+        parts.append("변경 " + ", ".join(f"Hop {index}" for index in changed_hops[:6]))
     if added_hops:
-        parts.append("added " + ", ".join(f"Hop {index}" for index in added_hops[:6]))
+        parts.append("추가 " + ", ".join(f"Hop {index}" for index in added_hops[:6]))
     if removed_hops:
-        parts.append("removed " + ", ".join(f"Hop {index}" for index in removed_hops[:6]))
-    summary = "; ".join(parts) if parts else "route changed"
+        parts.append("삭제 " + ", ".join(f"Hop {index}" for index in removed_hops[:6]))
+    summary = "; ".join(parts) if parts else "경로 변경"
     return RouteChange(
         timestamp=current.timestamp,
         previous=previous,
@@ -83,19 +83,19 @@ def route_change(previous: RouteSnapshot, current: RouteSnapshot) -> RouteChange
 def route_path(snapshot: RouteSnapshot, limit: int = 8) -> str:
     labels = list(snapshot.labels)
     if len(labels) > limit:
-        labels = [*labels[:limit], f"... +{len(snapshot.labels) - limit} more"]
+        labels = [*labels[:limit], f"... 외 {len(snapshot.labels) - limit}개"]
     return " > ".join(labels)
 
 
 def _hop_signature(hop: HopInfo) -> str:
-    node = hop.address or hop.hostname or "Timeout"
+    node = hop.address or hop.hostname or "응답 없음"
     timeout = "timeout" if hop.timed_out else "reply"
     target = "target" if hop.is_target else "hop"
     return f"{hop.index}|{node}|{timeout}|{target}"
 
 
 def _hop_label(hop: HopInfo) -> str:
-    node = hop.address or hop.hostname or "Timeout"
+    node = hop.address or hop.hostname or "응답 없음"
     return f"H{hop.index}:{node}"
 
 

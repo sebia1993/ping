@@ -118,7 +118,7 @@ def test_analyzer_flags_target_only_full_timeout_as_icmp_or_firewall_block() -> 
 
     assert any(line.startswith("ANALYSIS_TARGET_ONLY_LOSS_OR_FILTER:") for line in analysis)
     assert any(line.startswith("CAUSE_TARGET_ICMP_OR_FIREWALL_BLOCK:") for line in analysis)
-    assert any("TCP Connect" in line and "443" in line for line in analysis)
+    assert any("TCP 연결" in line and "443" in line for line in analysis)
 
 
 def test_analyzer_flags_latency_jump_after_hop() -> None:
@@ -197,8 +197,8 @@ def test_analyzer_flags_target_jitter_even_when_hops_are_stable() -> None:
 
     analysis = analyze_path(snapshots, target)
 
-    assert any(line.startswith("ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:") and "Target" in line for line in analysis)
-    assert any(line.startswith("CAUSE_JITTER_OR_LOCAL_CONGESTION:") and "Target" in line for line in analysis)
+    assert any(line.startswith("ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:") and "최종 대상" in line for line in analysis)
+    assert any(line.startswith("CAUSE_JITTER_OR_LOCAL_CONGESTION:") and "최종 대상" in line for line in analysis)
     assert not any(line.startswith("ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED:") for line in analysis)
 
 
@@ -214,12 +214,12 @@ def test_analyzer_adds_overlap_guidance_for_loss_and_jitter() -> None:
 
     assert any(
         line.startswith("ANALYSIS_MULTIPLE_SYMPTOMS_OVERLAP:")
-        and "loss, latency variation" in line
+        and "손실, 지연 변동" in line
         for line in analysis
     )
     assert any(
         line.startswith("CAUSE_MULTIPLE_SYMPTOM_OVERLAP:")
-        and "final destination" in line
+        and "최종 대상" in line
         for line in analysis
     )
 

@@ -139,11 +139,10 @@ def _cause_evidence_items(analysis: list[str]) -> list[CauseEvidence]:
     for line in analysis:
         if not line.startswith("CAUSE_"):
             continue
-        try:
-            code, remainder = line.split(": Evidence:", 1)
-            evidence, action = remainder.split(" Action:", 1)
-        except ValueError:
+        parsed = _parse_cause_evidence_line(line)
+        if parsed is None:
             continue
+        code, evidence, action = parsed
         item = CauseEvidence(code.strip(), evidence.strip(), action.strip())
         key = (item.code, item.evidence, item.action)
         if key in seen:
@@ -151,6 +150,21 @@ def _cause_evidence_items(analysis: list[str]) -> list[CauseEvidence]:
         seen.add(key)
         items.append(item)
     return items
+
+
+def _parse_cause_evidence_line(line: str) -> tuple[str, str, str] | None:
+    formats = (
+        (": Evidence:", " Action:"),
+        (": 근거:", " 조치:"),
+    )
+    for evidence_marker, action_marker in formats:
+        try:
+            code, remainder = line.split(evidence_marker, 1)
+            evidence, action = remainder.split(action_marker, 1)
+        except ValueError:
+            continue
+        return code, evidence, action
+    return None
 
 
 def _html_cause_table(items: list[CauseEvidence]) -> str:

@@ -219,8 +219,8 @@ def test_text_report_contains_evidence_annotations(tmp_path) -> None:
 def test_text_report_groups_cause_evidence_summary(tmp_path) -> None:
     path = tmp_path / "cause_report.txt"
     cause_line = (
-        "CAUSE_PROVIDER_OR_BORDER_HANDOFF: Evidence: Loss starts at Hop 2 and reaches the target. "
-        "Action: Send a focused report to the provider."
+        "CAUSE_PROVIDER_OR_BORDER_HANDOFF: 근거: 손실이 Hop 2에서 시작되어 대상까지 이어집니다. "
+        "조치: 공급자에게 집중 보고서를 전달하세요."
     )
 
     write_text_report(path, "8.8.8.8", [_sample_snapshot()], ["Target path needs review", cause_line, cause_line])
@@ -229,8 +229,8 @@ def test_text_report_groups_cause_evidence_summary(tmp_path) -> None:
     summary = text.split("Analysis:", 1)[0]
     assert "Cause Evidence Summary:" in summary
     assert summary.count("CAUSE_PROVIDER_OR_BORDER_HANDOFF") == 1
-    assert "Loss starts at Hop 2 and reaches the target." in summary
-    assert "Send a focused report to the provider." in summary
+    assert "손실이 Hop 2에서 시작되어 대상까지 이어집니다." in summary
+    assert "공급자에게 집중 보고서를 전달하세요." in summary
 
 
 def test_html_report_contains_printable_sections_and_escapes_values(tmp_path) -> None:
@@ -273,8 +273,8 @@ def test_html_report_groups_cause_evidence_summary_and_escapes_values(tmp_path) 
         "8.8.8.8",
         [_sample_snapshot()],
         [
-            "CAUSE_FIREWALL_OR_TARGET_FILTER: Evidence: Target <host> times out while earlier hops are healthy. "
-            "Action: Test TCP 443 & firewall policy."
+            "CAUSE_FIREWALL_OR_TARGET_FILTER: 근거: 앞 구간은 정상인데 대상 <host>만 응답하지 않습니다. "
+            "조치: TCP 443 및 방화벽 정책을 확인하세요."
         ],
     )
 
@@ -282,8 +282,8 @@ def test_html_report_groups_cause_evidence_summary_and_escapes_values(tmp_path) 
     assert "<h2>Cause Evidence Summary</h2>" in html
     assert "Cause Code" in html
     assert "CAUSE_FIREWALL_OR_TARGET_FILTER" in html
-    assert "Target &lt;host&gt; times out while earlier hops are healthy." in html
-    assert "Test TCP 443 &amp; firewall policy." in html
+    assert "앞 구간은 정상인데 대상 &lt;host&gt;만 응답하지 않습니다." in html
+    assert "TCP 443 및 방화벽 정책을 확인하세요." in html
 
 
 def test_annotations_in_range_keeps_overlapping_events() -> None:
@@ -1345,7 +1345,7 @@ def test_export_worker_rejects_empty_statistics_csv_range(tmp_path) -> None:
     worker.run()
 
     assert completed == []
-    assert errors == ["No statistics samples matched the selected export range."]
+    assert errors == ["선택한 내보내기 범위에 해당하는 통계 샘플이 없습니다."]
     assert not export_path.exists()
 
 
@@ -1369,7 +1369,7 @@ def test_export_worker_rejects_empty_statistics_xlsx_override(tmp_path) -> None:
     worker.run()
 
     assert completed == []
-    assert errors == ["No statistics samples matched the selected export range."]
+    assert errors == ["선택한 내보내기 범위에 해당하는 통계 샘플이 없습니다."]
     assert not export_path.exists()
 
 

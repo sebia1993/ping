@@ -467,7 +467,7 @@ class MeasurementWorker(QThread):
                 self.status_message.emit("측정 중... 경로 탐색 병행")
             else:
                 self._tracert_status = "final hop only"
-                self.status_message.emit("측정 중... Final Hop Only")
+                self.status_message.emit("측정 중... 최종 IP만")
 
             # 아래 while 문이 실제 장시간 측정 루프입니다. 한 바퀴마다 새 ping을 예약하고,
             # 완료된 결과를 수집한 뒤 UI와 저장소에 반영합니다.
@@ -861,15 +861,15 @@ class MeasurementWorker(QThread):
                     break
             self.measurement_mode = MEASUREMENT_MODE_FULL_ROUTE
             self._auto_full_route_active = True
-            self.status_message.emit(f"자동 Full Route 전환: {reason}")
+            self.status_message.emit(f"자동 전체 경로 전환: {reason}")
             return self._start_trace_refresh(executor)
         if self._auto_full_route_active and not route_adjustment_keys:
             self._auto_full_route_active = False
             if self.auto_restore_final_hop_on_recovery:
                 self.measurement_mode = MEASUREMENT_MODE_FINAL_HOP_ONLY
-                self.status_message.emit("자동 Final Hop Only 복원: 알림 정상 복구")
+                self.status_message.emit("자동 최종 IP만 복원: 알림 정상 복구")
             else:
-                self.status_message.emit("알림 정상 복구: Full Route 유지")
+                self.status_message.emit("알림 정상 복구: 전체 경로 유지")
             return trace_future
         return trace_future
 

@@ -105,5 +105,5 @@ class ExportWorker(QThread):
         try:
             first = next(iterator)
         except StopIteration as exc:
-            raise RuntimeError("No statistics samples matched the selected export range.") from exc
+            raise RuntimeError("선택한 내보내기 범위에 해당하는 통계 샘플이 없습니다.") from exc
         return chain([first], iterator)

@@ -76,7 +76,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert "그래프 확대" not in view_actions
         assert window.command_title_label.text() == "멀티핑체크"
         assert window.target_input.maximumHeight() == 52
-        assert window.timeline_label.text() == "Timeline: Live"
+        assert window.timeline_label.text() == "그래프: 실시간"
         assert window.target_summary_status_label.text() == "IP: 0"
         assert window.graph_range_recent_button.text() == "최근 10분"
         assert window.graph_range_recent_button.isChecked() is True
@@ -188,11 +188,11 @@ def test_main_window_renders_session_index_summary(qt_app, tmp_path) -> None:
         window._sync_sessions_box()
 
         text = window.sessions_box.toPlainText()
-        assert "Archived" in text
-        assert "Storage: targets 1 | target-month buckets 1 | segments 1" in text
+        assert "보관됨" in text
+        assert "저장소: 대상 1개 | 대상-월 버킷 1개 | 세그먼트 1개" in text
         assert "198.51.100.10" in text
-        assert "samples 12" in text
-        assert "Full Route / ICMP" in text
+        assert "샘플 12" in text
+        assert "전체 경로 / ICMP" in text
         assert window.session_combo.count() == 1
         assert window.open_session_button.isEnabled() is True
         assert window.export_session_button.isEnabled() is True
@@ -239,8 +239,8 @@ def test_main_window_renders_and_selects_session_table_rows(qt_app, tmp_path) ->
         assert window.session_table.rowCount() == 2
         assert window.session_table.item(0, 1).text() == "203.0.113.10"
         assert window.session_table.item(0, 4).text() == "7"
-        assert window.session_table.item(0, 6).text() == "Final Hop Only"
-        assert window.session_table.item(0, 7).text() == "TCP Connect"
+        assert window.session_table.item(0, 6).text() == "최종 IP만"
+        assert window.session_table.item(0, 7).text() == "TCP 연결"
         assert window.session_table.item(0, 8).text() == "443"
         assert window.session_table.item(0, 0).data(SESSION_ID_ROLE) == second.session_id
 
@@ -294,11 +294,11 @@ def test_main_window_session_manager_reports_storage_buckets(qt_app, tmp_path) -
         window._sync_sessions_box()
 
         text = window.sessions_box.toPlainText()
-        assert "Storage: targets 2 | target-month buckets 3 | segments 3" in text
-        assert "indexed samples 14" in text
-        assert "Recent buckets:" in text
-        assert "203.0.113.10/2026-02 sessions 1 segments 1 indexed samples 4 states Archived 1" in text
-        assert "198.51.100.10/2026-02 sessions 1 segments 1 indexed samples 10 states Archived 1" in text
+        assert "저장소: 대상 2개 | 대상-월 버킷 3개 | 세그먼트 3개" in text
+        assert "인덱스 샘플 14개" in text
+        assert "최근 버킷:" in text
+        assert "203.0.113.10/2026-02 세션 1개 세그먼트 1개 인덱스 샘플 4개 상태 보관됨 1" in text
+        assert "198.51.100.10/2026-02 세션 1개 세그먼트 1개 인덱스 샘플 10개 상태 보관됨 1" in text
     finally:
         window.close()
 
@@ -336,7 +336,7 @@ def test_main_window_session_manager_shows_summary_and_latest_display_limit(qt_a
         window._sync_sessions_box()
 
         text = window.sessions_box.toPlainText()
-        assert text.splitlines()[0] == "Sessions: 5 | showing latest 3 | Archived 5"
+        assert text.splitlines()[0] == "세션: 5 | 최근 3개 표시 | 보관됨 5"
         assert window.session_combo.count() == 3
         assert window.session_combo.findData(records[-1].session_id) >= 0
         assert window.session_combo.findData(records[0].session_id) == -1
@@ -387,8 +387,8 @@ def test_main_window_filters_saved_sessions(qt_app, tmp_path) -> None:
 
         window.session_filter_edit.setText("203.0.113")
         text = window.sessions_box.toPlainText()
-        assert text.splitlines()[0] == "Sessions: 1/2 | Will Delete 1"
-        assert "Storage: targets 1 | target-month buckets 1 | segments 1" in text
+        assert text.splitlines()[0] == "세션: 1/2 | 삭제 예정 1"
+        assert "저장소: 대상 1개 | 대상-월 버킷 1개 | 세그먼트 1개" in text
         assert "203.0.113.10" in text
         assert "198.51.100.10" not in text
         assert window.session_combo.count() == 1
@@ -419,9 +419,9 @@ def test_main_window_filters_saved_sessions(qt_app, tmp_path) -> None:
 
         window.session_filter_edit.setText("no-match")
         text = window.sessions_box.toPlainText()
-        assert text.splitlines()[0] == "Sessions: 0/2"
-        assert "Storage: targets 0 | target-month buckets 0 | segments 0" in text
-        assert "No saved sessions match filter." in text
+        assert text.splitlines()[0] == "세션: 0/2"
+        assert "저장소: 대상 0개 | 대상-월 버킷 0개 | 세그먼트 0개" in text
+        assert "필터와 일치하는 저장 세션이 없습니다." in text
         assert window.session_combo.count() == 0
     finally:
         window.close()
@@ -452,7 +452,7 @@ def test_main_window_recovers_stale_active_sessions_in_session_list(qt_app, tmp_
         recovered = store.find_session(record.session_id)
         assert recovered is not None
         assert recovered.state == SESSION_STATE_PAUSED
-        assert SESSION_STATE_PAUSED in window.sessions_box.toPlainText()
+        assert "일시중지" in window.sessions_box.toPlainText()
         assert window.session_combo.count() == 1
     finally:
         window.close()
@@ -480,7 +480,7 @@ def test_main_window_marks_missing_session_files_for_delete(qt_app, tmp_path) ->
         marked = store.find_session(record.session_id)
         assert marked is not None
         assert marked.state == SESSION_STATE_WILL_DELETE
-        assert SESSION_STATE_WILL_DELETE in window.sessions_box.toPlainText()
+        assert "삭제 예정" in window.sessions_box.toPlainText()
         assert window.session_combo.count() == 1
         assert window.delete_session_button.isEnabled() is True
     finally:
@@ -517,7 +517,7 @@ def test_main_window_refresh_sessions_recovers_missing_saved_logs(qt_app, tmp_pa
 
         assert window.session_combo.count() == 2
         assert "203.0.113.20" in window.sessions_box.toPlainText()
-        assert window.status_label.text() == "Session list refreshed from saved logs"
+        assert window.status_label.text() == "저장된 로그 기준으로 세션 목록을 새로고침했습니다."
     finally:
         window.close()
 
@@ -548,15 +548,15 @@ def test_main_window_refresh_sessions_reconciles_existing_log_metadata(qt_app, t
     try:
         window.session_index_store = store
         window._sync_sessions_box()
-        assert "samples 0" in window.sessions_box.toPlainText()
+        assert "샘플 0" in window.sessions_box.toPlainText()
 
         window.refresh_saved_sessions()
 
         refreshed = store.find_session(record.session_id)
         assert refreshed is not None
         assert refreshed.samples == 2
-        assert "samples 2" in window.sessions_box.toPlainText()
-        assert window.status_label.text() == "Session list refreshed from saved logs"
+        assert "샘플 2" in window.sessions_box.toPlainText()
+        assert window.status_label.text() == "저장된 로그 기준으로 세션 목록을 새로고침했습니다."
     finally:
         window.close()
 
@@ -600,7 +600,7 @@ def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) 
         assert window.target_snapshot.loss_percent == 50.0
         assert window.graph._points == window.target_history
         assert window.csv_button.isEnabled() is True
-        assert "Loaded session" in window.status_label.text()
+        assert "세션 불러오기 완료" in window.status_label.text()
     finally:
         window.close()
 
@@ -696,7 +696,7 @@ def test_main_window_prepares_saved_session_resume_controls(qt_app, tmp_path) ->
         assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
         assert window.tcp_port_spin.value() == 8443
         assert window.tcp_port_spin.isEnabled() is True
-        assert "Resume prepared: 2 target(s)" in window.status_label.text()
+        assert "재개 준비 완료: IP 2개" in window.status_label.text()
     finally:
         window.close()
 
@@ -870,7 +870,7 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         assert "previous-session" in manifest
         assert any(name.endswith("/second.samples.csv") for name in names)
         assert not any(name.endswith("/first.samples.csv") for name in names)
-        assert "Visible sessions ZIP saved" in window.status_label.text()
+        assert "표시 세션 ZIP 저장 완료" in window.status_label.text()
     finally:
         window.close()
 
@@ -915,7 +915,7 @@ def test_main_window_deletes_selected_saved_session(qt_app, tmp_path, monkeypatc
 
         assert store.list_sessions() == []
         assert window.session_combo.count() == 0
-        assert "Deleted session" in window.status_label.text()
+        assert "세션 삭제 완료" in window.status_label.text()
         assert not sample_path.exists()
         assert not route_path.exists()
         assert not alert_path.exists()
@@ -972,7 +972,7 @@ def test_main_window_prunes_old_saved_sessions(qt_app, tmp_path, monkeypatch) ->
         assert recent_path.exists()
         assert window.session_combo.count() == 1
         assert "198.51.100.20" in window.sessions_box.toPlainText()
-        assert "Pruned 1 saved session(s) older than 30 day(s)" in window.status_label.text()
+        assert "30일보다 오래된 저장 세션 1개를 정리했습니다." in window.status_label.text()
     finally:
         window.close()
 
@@ -1079,7 +1079,7 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert window.stop_button.isEnabled() is True
         assert window.target_input.isHidden() is True
         assert window.running_target_summary_label.isHidden() is False
-        assert window.running_target_summary_label.text() == "측정 IP 2개 | 기준 IP 8.8.8.8"
+        assert window.running_target_summary_label.text() == "측정 IP 2개"
         assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
         assert window.graph_range_recent_button.isChecked() is True
         assert window.graph_range_all_button.isChecked() is False
@@ -1226,7 +1226,7 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
         assert window.tcp_port_spin.value() == 8443
         assert window.tcp_port_spin.isEnabled() is True
         assert window.target_interval_overrides == {"203.0.113.20": 10}
-        assert window.status_label.text() == "Target group loaded: 2 target(s) | target_group | interval overrides 1"
+        assert window.status_label.text() == "대상 그룹 불러오기 완료: IP 2개 | target_group | 개별 주기 1개"
     finally:
         window.close()
 
@@ -1270,7 +1270,7 @@ def test_main_window_loads_legacy_target_group_preset(qt_app, tmp_path, monkeypa
         assert window.probe_engine_combo.currentData() == PROBE_ENGINE_TCP_CONNECT
         assert window.tcp_port_spin.value() == 8443
         assert window.target_interval_overrides == {}
-        assert window.status_label.text() == "Target group loaded: 2 target(s)"
+        assert window.status_label.text() == "대상 그룹 불러오기 완료: IP 2개"
     finally:
         window.close()
 
@@ -1303,8 +1303,8 @@ def test_main_window_rejects_target_group_summary_count_mismatch(qt_app, tmp_pat
     try:
         window.load_target_group_preset()
 
-        assert "target_count does not match" in warnings[-1]
-        assert "target_count does not match" in window.status_label.text()
+        assert "대상 수가 실제 대상 목록과 일치하지 않습니다" in warnings[-1]
+        assert "대상 수가 실제 대상 목록과 일치하지 않습니다" in window.status_label.text()
         assert window.target_input.toPlainText() == ""
     finally:
         window.close()
@@ -1343,8 +1343,8 @@ def test_main_window_rejects_target_group_interval_override_count_mismatch(qt_ap
         window.target_input.setPlainText("8.8.8.8")
         window.load_target_group_preset()
 
-        assert "target_interval_override_count does not match" in warnings[-1]
-        assert "target_interval_override_count does not match" in window.status_label.text()
+        assert "개별 주기 개수가 실제 설정과 일치하지 않습니다" in warnings[-1]
+        assert "개별 주기 개수가 실제 설정과 일치하지 않습니다" in window.status_label.text()
         assert window.target_interval_overrides == {}
         assert window.target_input.toPlainText() == "8.8.8.8"
     finally:
@@ -1456,7 +1456,7 @@ def test_main_window_saves_selected_target_group_from_summary(qt_app, tmp_path, 
         assert data["targets"] == ["203.0.113.20", "203.0.113.30"]
         assert data["trace_target"] == "203.0.113.20"
         assert data["target_interval_overrides"] == {}
-        assert window.status_label.text() == f"Target group saved: {preset_path} (2 target(s))"
+        assert window.status_label.text() == f"대상 그룹 저장 완료: {preset_path} (IP 2개)"
     finally:
         window.close()
 
@@ -1515,7 +1515,7 @@ def test_main_window_batch_target_controls_drive_worker(qt_app) -> None:
         interval_column = TARGET_HEADERS.index("Interval")
         interval_source_column = TARGET_HEADERS.index("Interval Source")
         assert window.target_table.item(1, interval_column).text() == "5s"
-        assert window.target_table.item(1, interval_source_column).text() == "target"
+        assert window.target_table.item(1, interval_source_column).text() == "개별"
         window.target_table.clearSelection()
         window.interval_combo.setCurrentText("2")
         window.apply_runtime_interval()
@@ -1614,7 +1614,7 @@ def test_main_window_filters_visible_targets_for_batch_controls(qt_app) -> None:
         assert window.target_table.rowCount() == 1
         assert window.target_table.item(0, 0).text() == "203.0.113.20"
         assert window.target_table.item(0, TARGET_HEADERS.index("Interval")).text() == "5s"
-        assert window.target_table.item(0, TARGET_HEADERS.index("Interval Source")).text() == "target"
+        assert window.target_table.item(0, TARGET_HEADERS.index("Interval Source")).text() == "개별"
         assert window.export_target_summary_button.isEnabled() is True
 
         window.target_filter_edit.setText("no-match")
@@ -1711,6 +1711,16 @@ def test_main_window_removes_target_from_graph_row_while_running(qt_app) -> None
         window.start_measurement()
         worker = created_workers[0]
         window.on_measurement_updated([], first, [first, second], ["live"], observations, observations[:1])
+
+        window.target_graph_pause_buttons["198.51.100.10"].click()
+
+        assert worker.paused_calls == [["198.51.100.10"]]
+        assert window.target_graph_pause_buttons["198.51.100.10"].text() == "재개"
+
+        window.target_graph_pause_buttons["198.51.100.10"].click()
+
+        assert worker.resumed_calls == [["198.51.100.10"]]
+        assert window.target_graph_pause_buttons["198.51.100.10"].text() == "일시중지"
 
         window.target_graph_remove_buttons["198.51.100.10"].click()
 
@@ -1956,7 +1966,7 @@ def test_main_window_problem_target_batch_controls(qt_app) -> None:
             "203.0.113.10": 5,
             "203.0.113.20": 5,
         }
-        assert "Runtime interval applied to problem 2 target(s): 5s" in window.status_label.text()
+        assert "문제 IP 2개에 측정 주기 5초를 적용했습니다." in window.status_label.text()
     finally:
         window.close()
 
@@ -2101,7 +2111,7 @@ def test_main_window_renders_trace_metrics_and_exports(qt_app) -> None:
         )
 
         assert window.table.rowCount() == 2
-        assert window.table.item(1, 3).text() == "CRITICAL"
+        assert window.table.item(1, 3).text() == "장애"
         assert window.table.item(1, 8).text() == "25.0"
         assert window.target_table.rowCount() == 2
         assert window.target_table.item(1, 0).text() == "192.168.0.1"
@@ -2241,7 +2251,7 @@ def test_main_window_target_double_click_switches_summary_target(qt_app) -> None
         assert window.trace_target_combo.currentText() == "203.0.113.10"
         assert window.target_snapshot is second
         assert window.graph._points[0].address == "203.0.113.10"
-        assert "Summary target selected" in window.status_label.text()
+        assert "요약 대상 선택" in window.status_label.text()
     finally:
         window.close()
 
@@ -2299,7 +2309,7 @@ def test_main_window_exports_target_summary_csv(qt_app, tmp_path, monkeypatch) -
         assert rows[0]["interval_source"] == "target"
         assert rows[1]["interval_seconds"] == "1"
         assert rows[1]["interval_source"] == "global"
-        assert "Target summary CSV saved" in window.status_label.text()
+        assert "IP 요약 CSV 저장 완료" in window.status_label.text()
     finally:
         window.close()
 
@@ -2466,7 +2476,7 @@ def test_main_window_saves_graph_png_from_export_panel(qt_app, tmp_path, monkeyp
         window.save_graph_png()
 
         assert saved_paths == [(export_path, GRAPH_PNG_SCOPE_TIMELINE)]
-        assert window.status_label.text() == f"PNG saved: {export_path.with_suffix('.png')}"
+        assert window.status_label.text() == f"PNG 저장 완료: {export_path.with_suffix('.png')}"
     finally:
         window.close()
 
@@ -2673,13 +2683,13 @@ def test_main_window_renders_worker_diagnostics(qt_app) -> None:
         )
 
         text = window.diagnostics_box.toPlainText()
-        assert "target probe: TCP Connect:8443" in text
-        assert "route probe: tracert/ICMP" in text
-        assert "tcp port: 8443" in text
-        assert "active ping: 7" in text
-        assert "pending ping: 3" in text
-        assert "backoff targets: 1" in text
-        assert "avg loop delay: 12.5 ms" in text
+        assert "대상 엔진: TCP 연결:8443" in text
+        assert "경로 엔진: tracert/ICMP" in text
+        assert "TCP 포트: 8443" in text
+        assert "실행 중 ping: 7" in text
+        assert "대기 중 ping: 3" in text
+        assert "대기 조정 IP: 1" in text
+        assert "평균 루프 지연: 12.5 ms" in text
         assert "tracert: done" in text
     finally:
         window.close()
@@ -2690,13 +2700,13 @@ def test_main_window_probe_engine_note_and_tcp_port_state(qt_app) -> None:
 
     try:
         assert window.tcp_port_spin.isEnabled() is False
-        assert "ICMP uses Windows ICMP echo" in window.engine_note_label.text()
+        assert "ICMP는 대상 확인에 Windows ICMP echo를 사용" in window.engine_note_label.text()
 
         probe_index = window.probe_engine_combo.findData(PROBE_ENGINE_TCP_CONNECT)
         window.probe_engine_combo.setCurrentIndex(probe_index)
 
         assert window.tcp_port_spin.isEnabled() is True
-        assert "TCP Connect measures the final target service port" in window.engine_note_label.text()
+        assert "TCP 연결은 최종 IP의 실제 서비스 포트를 측정" in window.engine_note_label.text()
         assert "tracert/ICMP" in window.engine_note_label.text()
     finally:
         window.close()
@@ -2774,13 +2784,13 @@ def test_main_window_focus_range_recalculates_tables_analysis_and_export(qt_app)
         assert window.target_table.item(0, 0).text() == "198.51.100.10"
         assert window.target_table.item(0, 6).text() == "50.0"
         assert window.metric_value_labels["loss"].text() == "50.0%"
-        assert window.analysis_for_export()[0].startswith("Focus period:")
+        assert window.analysis_for_export()[0].startswith("포커스:")
         assert window.snapshots_for_export()[0].loss_percent == 50.0
 
         window.clear_focus_range()
 
         assert window.focus_range is None
-        assert window.focus_label.text() == "Live"
+        assert window.focus_label.text() == "실시간"
         assert window.table.item(0, 8).text() == "0.0"
     finally:
         window.close()
@@ -2809,21 +2819,21 @@ def test_main_window_loads_graph_timeline_from_session_log_and_focuses_it(qt_app
         assert window.timeline_range is not None
         assert len(window.timeline_observations) == 4
         assert len(window.graph_detail_window.graph._series[0].points) == 2
-        assert window.timeline_label.text().startswith("Timeline: ")
-        assert window.timeline_label.text() != "Timeline: Live"
-        assert "10m" in window.timeline_label.toolTip()
-        assert "10m" in window.graph_detail_window.timeline_status_label.text()
+        assert window.timeline_label.text().startswith("그래프: ")
+        assert window.timeline_label.text() != "그래프: 실시간"
+        assert "10분" in window.timeline_label.toolTip()
+        assert "10분" in window.graph_detail_window.timeline_status_label.text()
         window.load_timeline_range(172800)
-        assert "48h" in window.timeline_label.toolTip()
-        assert "48h" in window.graph_detail_window.timeline_status_label.text()
+        assert "48시간" in window.timeline_label.toolTip()
+        assert "48시간" in window.graph_detail_window.timeline_status_label.text()
 
         window.apply_focus_range((now, now + timedelta(seconds=3)))
 
         assert window.table.item(0, 8).text() == "50.0"
         assert window.target_table.item(0, 6).text() == "50.0"
-        assert window.analysis_for_export()[0].startswith("Focus period:")
+        assert window.analysis_for_export()[0].startswith("포커스:")
         window.clear_timeline_range()
-        assert window.timeline_label.text() == "Timeline: Live"
+        assert window.timeline_label.text() == "그래프: 실시간"
     finally:
         window.close()
 
@@ -2854,9 +2864,9 @@ def test_main_window_loads_timeline_range_from_main_controls(qt_app, tmp_path) -
             now - timedelta(minutes=5),
             now,
         ]
-        assert window.timeline_label.text().startswith("Timeline: ")
-        assert "10m" in window.timeline_label.toolTip()
-        assert "Timeline: last 10m" in window.status_label.text()
+        assert window.timeline_label.text().startswith("그래프: ")
+        assert "10분" in window.timeline_label.toolTip()
+        assert "그래프: 최근 10분" in window.status_label.text()
     finally:
         window.close()
 
@@ -2882,11 +2892,11 @@ def test_main_window_reset_focus_to_current_clears_timeline_and_focus(qt_app) ->
 
         assert window.focus_range is None
         assert window.timeline_range is None
-        assert window.focus_label.text() == "Live"
-        assert window.timeline_label.text() == "Timeline: Live"
+        assert window.focus_label.text() == "실시간"
+        assert window.timeline_label.text() == "그래프: 실시간"
         assert window.graph.visible_datetime_range() is not None
         assert window.graph.visible_datetime_range()[1] == history[-1].timestamp
-        assert window.status_label.text() == "Focus and timeline reset to current"
+        assert window.status_label.text() == "포커스와 그래프 범위를 현재 시점으로 되돌렸습니다."
     finally:
         window.close()
 
@@ -2923,8 +2933,8 @@ def test_main_window_displays_route_change_history_and_graph_marker(qt_app) -> N
         window.on_route_changed(change)
 
         assert "Hop 1" in window.route_changes_box.toPlainText()
-        assert "Impact: before loss 0.0% avg 10.0 ms" in window.route_changes_box.toPlainText()
-        assert "after loss 0.0% avg 12.0 ms" in window.route_changes_box.toPlainText()
+        assert "영향: 변경 전 손실 0.0% 평균 10.0 ms" in window.route_changes_box.toPlainText()
+        assert "변경 후 손실 0.0% 평균 12.0 ms" in window.route_changes_box.toPlainText()
         assert "경로 변경" in window.alerts_box.toPlainText()
         assert len(window.graph._annotations) == 1
         assert window.graph._annotations[0].label == "경로 변경"
@@ -2973,8 +2983,8 @@ def test_main_window_loads_persisted_route_changes_with_timeline_range(qt_app, t
         window.load_timeline_range(600)
 
         assert "Hop 1" in window.route_changes_box.toPlainText()
-        assert "Impact: before loss 0.0% avg 10.0 ms" in window.route_changes_box.toPlainText()
-        assert "after loss 0.0% avg 12.0 ms" in window.route_changes_box.toPlainText()
+        assert "영향: 변경 전 손실 0.0% 평균 10.0 ms" in window.route_changes_box.toPlainText()
+        assert "변경 후 손실 0.0% 평균 12.0 ms" in window.route_changes_box.toPlainText()
         assert "경로 변경" in window.alerts_box.toPlainText()
         assert [annotation.label for annotation in window.graph_detail_window.graph._annotations] == [
             "경로 변경"
@@ -3085,7 +3095,7 @@ def test_main_window_records_metric_alerts_and_graph_annotations(qt_app) -> None
         assert alert_titles == {"손실 경고", "지연 경고"}
         first_row_actions = window.alert_table.item(0, 6).text()
         second_row_actions = window.alert_table.item(1, 6).text()
-        assert {first_row_actions, second_row_actions} == {"timeline_annotation, comment"}
+        assert {first_row_actions, second_row_actions} == {"타임라인, 코멘트"}
         assert [annotation.label for annotation in window.graph._annotations] == ["손실 경고", "지연 경고"]
         assert [annotation.label for annotation in window.graph_detail_window.graph._annotations] == [
             "손실 경고",
@@ -3343,7 +3353,7 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.alert_rest_url_edit.text() == "https://collector.example/alerts"
         assert window.alert_executable_action_check.isChecked() is True
         assert window.alert_executable_path_edit.text() == r"C:\Tools\alert.exe"
-        assert window.status_label.text() == f"Alert preset loaded: {preset_path} | voice_alerts | rules 4 | actions 7"
+        assert window.status_label.text() == f"알림 프리셋 불러오기 완료: {preset_path} | voice_alerts | 규칙 4개 | 동작 7개"
     finally:
         window.close()
 
@@ -3386,7 +3396,7 @@ def test_main_window_loads_legacy_alert_rule_preset(qt_app, tmp_path, monkeypatc
         assert window.latency_threshold_spin.value() == 250
         assert window.loss_alert_check.isChecked() is False
         assert window.alert_log_action_check.isChecked() is True
-        assert window.status_label.text() == f"Alert preset loaded: {preset_path} | rules 1 | actions 1"
+        assert window.status_label.text() == f"알림 프리셋 불러오기 완료: {preset_path} | 규칙 1개 | 동작 1개"
     finally:
         window.close()
 
@@ -3432,8 +3442,8 @@ def test_main_window_rejects_alert_preset_summary_count_mismatch(qt_app, tmp_pat
 
         window.load_alert_rule_preset()
 
-        assert "active_rule_count does not match" in warnings[-1]
-        assert "active_rule_count does not match" in window.status_label.text()
+        assert "active_rule_count 값이 규칙/동작과 일치하지 않습니다" in warnings[-1]
+        assert "active_rule_count 값이 규칙/동작과 일치하지 않습니다" in window.status_label.text()
         assert window.latency_alert_check.isChecked() is False
     finally:
         window.close()
@@ -3765,7 +3775,7 @@ def test_main_window_marks_failed_external_alert_actions_in_log(qt_app, tmp_path
 
         rows = read_alert_actions(window.alert_action_log_path)
         assert [row["actions"] for row in rows] == ["rest_failed", "email_failed", "executable_failed"]
-        assert window.status_label.text().startswith("Alert executable action failed:")
+        assert window.status_label.text().startswith("알림 실행파일 동작 실패:")
     finally:
         window.close()
 
@@ -4032,7 +4042,7 @@ def test_main_window_alert_image_action_saves_graph_after_render(qt_app, tmp_pat
         assert rows[0]["actions"] == "timeline_annotation;comment;image"
         assert rows[0]["title"] == "지연 경고"
         assert window.pending_alert_image_keys == set()
-        assert window.status_label.text() == f"Alert image saved: {saved_paths[0]}"
+        assert window.status_label.text() == f"알림 이미지 저장 완료: {saved_paths[0]}"
     finally:
         window.close()
 
@@ -4066,7 +4076,7 @@ def test_main_window_exports_alert_route_and_manual_annotations(qt_app) -> None:
                 end=now + timedelta(seconds=20),
                 severity="warning",
                 title="경로 변경",
-                message="changed Hop 1",
+                message="변경 Hop 1",
                 series_key=None,
             ),
             AlertEvent(

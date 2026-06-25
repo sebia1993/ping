@@ -34,7 +34,7 @@ class HopInfo:
     def display_name(self) -> str:
         if self.hostname and self.address:
             return f"{self.hostname} ({self.address})"
-        return self.address or self.hostname or "Timeout"
+        return self.address or self.hostname or "응답 없음"
 
 
 @dataclass(frozen=True)

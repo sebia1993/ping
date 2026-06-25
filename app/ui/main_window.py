@@ -51,7 +51,7 @@ from app.core.alerts import (
     route_change_alert,
 )
 from app.core.analyzer import analyze_path
-from app.core.models import HopObservation, MetricSnapshot
+from app.core.models import STATUS_PAUSED, HopObservation, MetricSnapshot
 from app.core.observation_stats import build_focus_snapshots, observations_in_range
 from app.core.route_history import RouteChange, route_path
 from app.ui.control_panel import build_controls_panel
@@ -202,7 +202,7 @@ class MainWindow(QMainWindow):
         self.timeline_target_history: list[HopObservation] = []
         self.timeline_snapshots: list[MetricSnapshot] = []
         self.timeline_target_snapshot: MetricSnapshot | None = None
-        self.timeline_status = "Timeline source: live buffer"
+        self.timeline_status = "그래프 데이터: 실시간 버퍼"
 
         # 알림과 경로 변경은 화면 표시뿐 아니라 export/report에 같이 쓰입니다.
         self.route_changes: list[RouteChange] = []
@@ -216,8 +216,10 @@ class MainWindow(QMainWindow):
         self.target_graph_widgets: dict[str, LatencyGraphWidget] = {}
         self.target_graph_title_labels: dict[str, QLabel] = {}
         self.target_graph_metric_labels: dict[str, QLabel] = {}
+        self.target_graph_pause_buttons: dict[str, QPushButton] = {}
         self.target_graph_remove_buttons: dict[str, QPushButton] = {}
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
+        self.paused_target_addresses: set[str] = set()
         self.main_graph_range_mode = MAIN_GRAPH_RANGE_RECENT
         self._last_graph_render_monotonic = 0.0
         self._pending_graph_render = False
@@ -308,7 +310,7 @@ class MainWindow(QMainWindow):
         table_layout.setContentsMargins(12, 10, 12, 12)
         table_layout.setSpacing(8)
         table_header = QHBoxLayout()
-        heading = QLabel("Hop Quality Table")
+        heading = QLabel("경로 품질 표")
         heading.setObjectName("panelTitle")
         hint = QLabel("손실률과 평균 지연이 높은 Hop은 자동 강조")
         hint.setObjectName("muted")
@@ -328,17 +330,17 @@ class MainWindow(QMainWindow):
         graph_title.setObjectName("panelTitle")
         graph_hint = QLabel("측정 중인 모든 IP를 대상별 그래프 행으로 표시합니다.")
         graph_hint.setObjectName("muted")
-        self.focus_label = _chip("Live", "neutral")
-        self.timeline_label = _chip("Timeline: Live", "neutral")
+        self.focus_label = _chip("실시간", "neutral")
+        self.timeline_label = _chip("그래프: 실시간", "neutral")
         self.timeline_range_combo = QComboBox()
-        self.timeline_range_combo.setToolTip("Visible timeline range")
+        self.timeline_range_combo.setToolTip("그래프에 표시할 시간 범위")
         for label, seconds in [
-            ("60s", 60),
-            ("10m", 600),
-            ("1h", 3600),
-            ("6h", 21600),
-            ("24h", 86400),
-            ("48h", 172800),
+            ("60초", 60),
+            ("10분", 600),
+            ("1시간", 3600),
+            ("6시간", 21600),
+            ("24시간", 86400),
+            ("48시간", 172800),
         ]:
             self.timeline_range_combo.addItem(label, seconds)
         self.timeline_range_combo.setCurrentIndex(self.timeline_range_combo.findData(600))
@@ -432,8 +434,8 @@ class MainWindow(QMainWindow):
         self.target_status_filter_combo.addItem("문제", "problem")
         self.target_status_filter_combo.addItem("장애", "CRITICAL")
         self.target_status_filter_combo.addItem("주의", "WARNING")
-        self.target_status_filter_combo.addItem("OK", "OK")
-        self.target_status_filter_combo.addItem("중지", "PAUSED")
+        self.target_status_filter_combo.addItem("정상", "OK")
+        self.target_status_filter_combo.addItem("일시중지", "PAUSED")
         self.target_status_filter_combo.currentIndexChanged.connect(lambda *_args: self._sync_target_filter())
         self.pause_selected_targets_button = QPushButton("선택 중지")
         self.pause_selected_targets_button.clicked.connect(self.pause_selected_targets)
@@ -552,7 +554,7 @@ class MainWindow(QMainWindow):
         self.states_box.setPlainText(
             "정상: 최종 대상 응답 정상, 손실률 0-5%\n"
             "주의: 손실률 5-20% 또는 지연 변동 30ms 이상\n"
-            "심각: 손실률 20% 이상 또는 연속 timeout"
+            "심각: 손실률 20% 이상 또는 연속 응답 없음"
         )
 
         diagnostics_title = QLabel("측정 엔진 상태")
@@ -576,7 +578,7 @@ class MainWindow(QMainWindow):
         self.loss_window_spin = QSpinBox()
         self.loss_window_spin.setRange(1, 60)
         self.loss_window_spin.setValue(3)
-        self.loss_window_spin.setSuffix("m")
+        self.loss_window_spin.setSuffix("분")
         self.latency_alert_check = QCheckBox("지연")
         self.latency_alert_check.setChecked(True)
         self.latency_threshold_spin = QSpinBox()
@@ -599,7 +601,7 @@ class MainWindow(QMainWindow):
         self.mos_window_spin = QSpinBox()
         self.mos_window_spin.setRange(1, 240)
         self.mos_window_spin.setValue(5)
-        self.mos_window_spin.setSuffix("m")
+        self.mos_window_spin.setSuffix("분")
         self.route_ip_alert_check = QCheckBox("경로 IP")
         self.route_ip_alert_check.setToolTip("감시 중인 IPv4 주소가 현재 경로에 나타나면 알림을 발생시킵니다.")
         self.route_ip_alert_edit = QLineEdit()
@@ -620,7 +622,7 @@ class MainWindow(QMainWindow):
         self.timer_window_spin = QSpinBox()
         self.timer_window_spin.setRange(1, 240)
         self.timer_window_spin.setValue(5)
-        self.timer_window_spin.setSuffix("m")
+        self.timer_window_spin.setSuffix("분")
         self.alert_start_action_check = QCheckBox("시작")
         self.alert_start_action_check.setChecked(True)
         self.alert_start_action_check.setToolTip("새 알림이 시작될 때 선택한 동작을 실행합니다.")
@@ -630,7 +632,7 @@ class MainWindow(QMainWindow):
         self.alert_route_adjust_action_check = QCheckBox("경로 조정")
         self.alert_route_adjust_action_check.setChecked(False)
         self.alert_route_adjust_action_check.setToolTip(
-            "Final Hop Only 상태에서 대상 알림이 발생하면 Full Route로 전환합니다."
+            "최종 IP만 측정 중 대상 알림이 발생하면 전체 경로 측정으로 전환합니다."
         )
         self.alert_timeline_action_check = QCheckBox("타임라인")
         self.alert_timeline_action_check.setChecked(True)
@@ -650,7 +652,7 @@ class MainWindow(QMainWindow):
         self.alert_email_from_edit.setPlaceholderText("from@example.com")
         self.alert_email_from_edit.setMinimumWidth(140)
         self.alert_email_security_combo = QComboBox()
-        self.alert_email_security_combo.addItem("Plain", ALERT_EMAIL_SECURITY_PLAIN)
+        self.alert_email_security_combo.addItem("일반", ALERT_EMAIL_SECURITY_PLAIN)
         self.alert_email_security_combo.addItem("STARTTLS", ALERT_EMAIL_SECURITY_STARTTLS)
         self.alert_email_security_combo.addItem("SSL", ALERT_EMAIL_SECURITY_SSL)
         self.alert_email_user_edit = QLineEdit()
@@ -732,7 +734,7 @@ class MainWindow(QMainWindow):
         self.session_combo = QComboBox()
         self.session_combo.setMinimumWidth(170)
         self.session_filter_edit = QLineEdit()
-        self.session_filter_edit.setPlaceholderText("세션 필터 예: month:2026-01")
+        self.session_filter_edit.setPlaceholderText("세션 필터 예: 월:2026-01")
         self.session_filter_edit.setClearButtonEnabled(True)
         self.session_filter_edit.setMinimumWidth(160)
         self.session_filter_edit.textChanged.connect(lambda *_args: self._sync_sessions_box())
@@ -751,7 +753,7 @@ class MainWindow(QMainWindow):
         self.session_retention_days_spin = QSpinBox()
         self.session_retention_days_spin.setRange(1, 3650)
         self.session_retention_days_spin.setValue(90)
-        self.session_retention_days_spin.setSuffix("d")
+        self.session_retention_days_spin.setSuffix("일")
         self.prune_sessions_button = QPushButton("오래된 세션 정리")
         self.prune_sessions_button.clicked.connect(self.prune_old_sessions)
         sessions_header.addWidget(sessions_title)
@@ -793,10 +795,10 @@ class MainWindow(QMainWindow):
         export_row.addStretch(1)
 
         self.statistics_group_combo = QComboBox()
-        self.statistics_group_combo.addItem("5m", 300)
-        self.statistics_group_combo.addItem("1h", 3600)
-        self.statistics_group_combo.addItem("1d", 86400)
-        self.statistics_group_combo.addItem("1w", 604800)
+        self.statistics_group_combo.addItem("5분", 300)
+        self.statistics_group_combo.addItem("1시간", 3600)
+        self.statistics_group_combo.addItem("1일", 86400)
+        self.statistics_group_combo.addItem("1주", 604800)
         self.statistics_timezone_combo = QComboBox()
         self.statistics_timezone_combo.addItem("로컬", TIMEZONE_LOCAL)
         self.statistics_timezone_combo.addItem("UTC", TIMEZONE_UTC)
@@ -899,22 +901,22 @@ class MainWindow(QMainWindow):
     def save_target_group_preset(self) -> None:
         targets, invalid = parse_ipv4_targets(self.target_input.toPlainText())
         if invalid:
-            QMessageBox.warning(self, "Target group", f"{IPV4_ONLY_MESSAGE}\n\n제외된 입력: {', '.join(invalid[:8])}")
+            QMessageBox.warning(self, "대상 그룹", f"{IPV4_ONLY_MESSAGE}\n\n제외된 입력: {', '.join(invalid[:8])}")
             return
         if not targets:
-            QMessageBox.warning(self, "Target group", "저장할 대상 IPv4 주소를 입력하세요.")
+            QMessageBox.warning(self, "대상 그룹", "저장할 대상 IPv4 주소를 입력하세요.")
             return
         self._save_target_group_preset(targets, source="all")
 
     def save_selected_target_group_preset(self) -> None:
         targets = self._selected_target_addresses()
         if not targets:
-            self.status_label.setText("No selected targets to save")
+            self.status_label.setText("저장할 선택 IP가 없습니다.")
             return
         self._save_target_group_preset(targets, source="selected")
 
     def _save_target_group_preset(self, targets: list[str], *, source: str) -> None:
-        path = self._select_save_path("target_group.json", "JSON Files (*.json)", target="target_group")
+        path = self._select_save_path("target_group.json", "JSON 파일 (*.json)", target="target_group")
         if not path:
             return
         if path.suffix.lower() != ".json":
@@ -924,17 +926,17 @@ class MainWindow(QMainWindow):
             preset = self._target_group_preset(targets, name=path.stem, source=source)
             path.write_text(json.dumps(preset, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
-            QMessageBox.warning(self, "Target group", str(exc))
+            QMessageBox.warning(self, "대상 그룹", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"Target group saved: {path} ({len(targets)} target(s))")
+        self.status_label.setText(f"대상 그룹 저장 완료: {path} (IP {len(targets)}개)")
 
     def load_target_group_preset(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
             self,
             "불러오기",
             str(Path.cwd() / "exports"),
-            "JSON Files (*.json)",
+            "JSON 파일 (*.json)",
         )
         if not selected:
             return
@@ -942,21 +944,21 @@ class MainWindow(QMainWindow):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                raise ValueError("Target group JSON must contain an object.")
+                raise ValueError("대상 그룹 JSON은 객체 형식이어야 합니다.")
             targets = _target_group_targets(data)
             target_interval_overrides = _target_group_interval_overrides(data, targets)
             targets = self._apply_target_group_preset(data)
             self.target_interval_overrides = target_interval_overrides
             self._refresh_target_interval_view()
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            QMessageBox.warning(self, "Target group", str(exc))
+            QMessageBox.warning(self, "대상 그룹", str(exc))
             self.status_label.setText(str(exc))
             return
         group_name = _target_group_display_name(data)
         label = f" | {group_name}" if group_name else ""
         overrides = len(self.target_interval_overrides)
-        override_label = f" | interval overrides {overrides}" if overrides else ""
-        self.status_label.setText(f"Target group loaded: {len(targets)} target(s){label}{override_label}")
+        override_label = f" | 개별 주기 {overrides}개" if overrides else ""
+        self.status_label.setText(f"대상 그룹 불러오기 완료: IP {len(targets)}개{label}{override_label}")
 
     def _target_group_preset(self, targets: list[str], *, name: str, source: str) -> dict[str, object]:
         trace_target = self.trace_target_combo.currentText().strip()
@@ -1003,7 +1005,7 @@ class MainWindow(QMainWindow):
         if settings is None:
             settings = {}
         if not isinstance(settings, dict):
-            raise ValueError("Target group JSON has invalid settings.")
+            raise ValueError("대상 그룹 JSON 설정 형식이 올바르지 않습니다.")
         self.target_input.setPlainText("\n".join(targets))
         self.refresh_trace_targets()
         trace_target = str(data.get("trace_target") or "")
@@ -1054,6 +1056,7 @@ class MainWindow(QMainWindow):
         self.current_target = target
         self.current_targets = targets
         self.target_interval_overrides = dict(initial_target_interval_overrides)
+        self.paused_target_addresses = set()
         self.session_log_path = None
         self.route_log_path = None
         self.alert_action_log_path = None
@@ -1219,6 +1222,14 @@ class MainWindow(QMainWindow):
         self._render_current_view(force_graph=True)
         self.status_label.setText(f"{address} 측정을 중단하고 그래프에서 삭제했습니다.")
 
+    def toggle_runtime_target_pause(self, address: str) -> None:
+        if not address or address not in self.current_targets:
+            return
+        if self._is_target_paused(address):
+            self._resume_targets([address])
+        else:
+            self._pause_targets([address])
+
     def _sync_runtime_target_inputs(self) -> None:
         if hasattr(self, "target_input"):
             was_blocked = self.target_input.blockSignals(True)
@@ -1237,14 +1248,14 @@ class MainWindow(QMainWindow):
     def pause_selected_targets(self) -> None:
         targets = self._selected_target_addresses()
         if not targets:
-            self.status_label.setText("No selected targets to pause")
+            self.status_label.setText("일시중지할 선택 IP가 없습니다.")
             return
         self._pause_targets(targets)
 
     def resume_selected_targets(self) -> None:
         targets = self._selected_target_addresses()
         if not targets:
-            self.status_label.setText("No selected targets to resume")
+            self.status_label.setText("재개할 선택 IP가 없습니다.")
             return
         self._resume_targets(targets)
 
@@ -1257,28 +1268,28 @@ class MainWindow(QMainWindow):
     def pause_visible_targets(self) -> None:
         targets = self._visible_target_addresses()
         if not targets:
-            self.status_label.setText("No visible targets to pause")
+            self.status_label.setText("일시중지할 표시 IP가 없습니다.")
             return
         self._pause_targets(targets)
 
     def resume_visible_targets(self) -> None:
         targets = self._visible_target_addresses()
         if not targets:
-            self.status_label.setText("No visible targets to resume")
+            self.status_label.setText("재개할 표시 IP가 없습니다.")
             return
         self._resume_targets(targets)
 
     def pause_problem_targets(self) -> None:
         targets = self._problem_target_addresses()
         if not targets:
-            self.status_label.setText("No problem targets to pause")
+            self.status_label.setText("일시중지할 문제 IP가 없습니다.")
             return
         self._pause_targets(targets)
 
     def resume_problem_targets(self) -> None:
         targets = self._problem_target_addresses()
         if not targets:
-            self.status_label.setText("No problem targets to resume")
+            self.status_label.setText("재개할 문제 IP가 없습니다.")
             return
         self._resume_targets(targets)
 
@@ -1290,36 +1301,36 @@ class MainWindow(QMainWindow):
         if targets and hasattr(self.worker, "set_target_interval_seconds"):
             self.worker.set_target_interval_seconds(targets, interval)
             self._record_target_interval_overrides(targets, interval)
-            self.status_label.setText(f"Runtime interval applied to {len(targets)} target(s): {interval}s")
+            self.status_label.setText(f"선택 IP {len(targets)}개에 측정 주기 {interval}초를 적용했습니다.")
             return
         self.worker.set_interval_seconds(interval)
         self.target_interval_overrides.clear()
         self._refresh_target_interval_view()
-        self.status_label.setText(f"Runtime interval applied: {interval}s")
+        self.status_label.setText(f"전체 측정 주기를 {interval}초로 적용했습니다.")
 
     def apply_visible_interval(self) -> None:
         if not self.worker or not hasattr(self.worker, "set_target_interval_seconds"):
             return
         targets = self._visible_target_addresses()
         if not targets:
-            self.status_label.setText("No visible targets for interval update")
+            self.status_label.setText("측정 주기를 적용할 표시 IP가 없습니다.")
             return
         interval = int(self.interval_combo.currentText())
         self.worker.set_target_interval_seconds(targets, interval)
         self._record_target_interval_overrides(targets, interval)
-        self.status_label.setText(f"Runtime interval applied to visible {len(targets)} target(s): {interval}s")
+        self.status_label.setText(f"표시 IP {len(targets)}개에 측정 주기 {interval}초를 적용했습니다.")
 
     def apply_problem_interval(self) -> None:
         if not self.worker or not hasattr(self.worker, "set_target_interval_seconds"):
             return
         targets = self._problem_target_addresses()
         if not targets:
-            self.status_label.setText("No problem targets for interval update")
+            self.status_label.setText("측정 주기를 적용할 문제 IP가 없습니다.")
             return
         interval = int(self.interval_combo.currentText())
         self.worker.set_target_interval_seconds(targets, interval)
         self._record_target_interval_overrides(targets, interval)
-        self.status_label.setText(f"Runtime interval applied to problem {len(targets)} target(s): {interval}s")
+        self.status_label.setText(f"문제 IP {len(targets)}개에 측정 주기 {interval}초를 적용했습니다.")
 
     def _record_target_interval_overrides(self, targets: list[str], interval_seconds: int) -> None:
         for target in targets:
@@ -1344,13 +1355,24 @@ class MainWindow(QMainWindow):
         if not targets or not self.worker or not hasattr(self.worker, "pause_targets"):
             return
         self.worker.pause_targets(targets)
-        self.status_label.setText(f"Paused {len(targets)} target(s)")
+        self.paused_target_addresses.update(target for target in targets if target in self.current_targets)
+        for target in targets:
+            self._sync_target_graph_action_buttons(target, self._target_snapshot_for_address(target))
+        self.status_label.setText(f"IP {len(targets)}개를 일시중지했습니다.")
 
     def _resume_targets(self, targets: list[str]) -> None:
         if not targets or not self.worker or not hasattr(self.worker, "resume_targets"):
             return
         self.worker.resume_targets(targets)
-        self.status_label.setText(f"Resumed {len(targets)} target(s)")
+        for target in targets:
+            self.paused_target_addresses.discard(target)
+            self._sync_target_graph_action_buttons(target, self._target_snapshot_for_address(target))
+        self.status_label.setText(f"IP {len(targets)}개를 재개했습니다.")
+
+    def _is_target_paused(self, address: str, snapshot: MetricSnapshot | None = None) -> bool:
+        if snapshot is not None and snapshot.status == STATUS_PAUSED:
+            return True
+        return address in self.paused_target_addresses
 
     def _selected_target_addresses(self) -> list[str]:
         selection_model = self.target_table.selectionModel()
@@ -1399,7 +1421,7 @@ class MainWindow(QMainWindow):
             self._rebuild_focus_view(show_status=True)
         else:
             self._render_current_view(force_graph=True)
-        self.status_label.setText(f"Summary target selected: {target}")
+        self.status_label.setText(f"요약 대상 선택: {target}")
 
     def _target_snapshot_for_address(self, target: str) -> MetricSnapshot | None:
         return next((snapshot for snapshot in self.target_snapshots if snapshot.address == target), None)
@@ -1552,6 +1574,21 @@ class MainWindow(QMainWindow):
         self,
         snapshots: list[MetricSnapshot],
     ) -> tuple[dict[str, int | None], dict[str, str]]:
+        return self._target_interval_maps(snapshots, override_label="개별", global_label="전체")
+
+    def _target_interval_export_maps(
+        self,
+        snapshots: list[MetricSnapshot],
+    ) -> tuple[dict[str, int | None], dict[str, str]]:
+        return self._target_interval_maps(snapshots, override_label="target", global_label="global")
+
+    def _target_interval_maps(
+        self,
+        snapshots: list[MetricSnapshot],
+        *,
+        override_label: str,
+        global_label: str,
+    ) -> tuple[dict[str, int | None], dict[str, str]]:
         intervals: dict[str, int | None] = {}
         sources: dict[str, str] = {}
         base_interval = self._runtime_base_interval_seconds()
@@ -1561,10 +1598,10 @@ class MainWindow(QMainWindow):
                 continue
             if address in self.target_interval_overrides:
                 intervals[address] = self.target_interval_overrides[address]
-                sources[address] = "target"
+                sources[address] = override_label
             else:
                 intervals[address] = base_interval
-                sources[address] = "global" if base_interval is not None else ""
+                sources[address] = global_label if base_interval is not None else ""
         return intervals, sources
 
     def _runtime_base_interval_seconds(self) -> int | None:
@@ -1628,7 +1665,7 @@ class MainWindow(QMainWindow):
         self.route_log_path = route_log_path_for_session(self.session_log_path)
         self.alert_action_log_path = alert_action_log_path_for_session(self.session_log_path)
         self.session_index_store = SessionIndexStore.create(session_index_root_for_sample_path(self.session_log_path))
-        self.timeline_status = "Timeline source: session log ready"
+        self.timeline_status = "그래프 데이터: 세션 로그 준비됨"
         self._sync_timeline_controls()
         self._update_graph_detail()
         self._sync_sessions_box()
@@ -1636,17 +1673,17 @@ class MainWindow(QMainWindow):
 
     def on_diagnostics_updated(self, diagnostics: object) -> None:
         lines = [
-            f"target probe: {getattr(diagnostics, 'target_probe_engine', 'ICMP')}",
-            f"route probe: {getattr(diagnostics, 'route_probe_engine', 'tracert/ICMP')}",
-            f"tcp port: {getattr(diagnostics, 'tcp_port', '-') or '-'}",
-            f"active ping: {getattr(diagnostics, 'active_ping_count', 0)}",
-            f"pending ping: {getattr(diagnostics, 'pending_ping_count', 0)}",
-            f"timeout targets: {getattr(diagnostics, 'timeout_target_count', 0)}",
-            f"backoff targets: {getattr(diagnostics, 'backoff_target_count', 0)}",
-            f"paused targets: {getattr(diagnostics, 'paused_target_count', 0)}",
-            f"log queue: {getattr(diagnostics, 'log_queue_depth', 0)}",
-            f"avg loop delay: {getattr(diagnostics, 'average_loop_delay_ms', 0.0):.1f} ms",
-            f"last update: {getattr(diagnostics, 'last_update_iso', '-')}",
+            f"대상 엔진: {_probe_status_text(getattr(diagnostics, 'target_probe_engine', 'ICMP'))}",
+            f"경로 엔진: {_probe_status_text(getattr(diagnostics, 'route_probe_engine', 'tracert/ICMP'))}",
+            f"TCP 포트: {getattr(diagnostics, 'tcp_port', '-') or '-'}",
+            f"실행 중 ping: {getattr(diagnostics, 'active_ping_count', 0)}",
+            f"대기 중 ping: {getattr(diagnostics, 'pending_ping_count', 0)}",
+            f"응답 없음 IP: {getattr(diagnostics, 'timeout_target_count', 0)}",
+            f"대기 조정 IP: {getattr(diagnostics, 'backoff_target_count', 0)}",
+            f"일시중지 IP: {getattr(diagnostics, 'paused_target_count', 0)}",
+            f"로그 대기열: {getattr(diagnostics, 'log_queue_depth', 0)}",
+            f"평균 루프 지연: {getattr(diagnostics, 'average_loop_delay_ms', 0.0):.1f} ms",
+            f"마지막 갱신: {getattr(diagnostics, 'last_update_iso', '-')}",
             f"tracert: {getattr(diagnostics, 'tracert_status', '-')}",
         ]
         self.diagnostics_box.setPlainText("\n".join(lines))
@@ -1691,10 +1728,10 @@ class MainWindow(QMainWindow):
     def load_timeline_range(self, seconds: int) -> None:
         end = self._timeline_end_time()
         if end is None:
-            self.timeline_status = "Timeline source: no samples yet"
+            self.timeline_status = "그래프 데이터: 아직 샘플 없음"
             self._sync_timeline_controls()
             self._update_graph_detail()
-            self.status_label.setText("No timeline samples are available yet")
+            self.status_label.setText("아직 표시할 그래프 샘플이 없습니다.")
             return
         start = end - timedelta(seconds=seconds)
         observations = self._observations_for_range(start, end)
@@ -1705,10 +1742,10 @@ class MainWindow(QMainWindow):
         self.timeline_snapshots = focus_set.hop_snapshots
         self.timeline_target_snapshot = focus_set.target_snapshot
         self._load_route_changes_for_range(start, end)
-        source = "session log" if self.session_log_path else "live buffer"
+        source = "세션 로그" if self.session_log_path else "실시간 버퍼"
         self.timeline_status = (
-            f"Timeline: last {_format_duration(seconds)} from {source}, "
-            f"{len(observations)} samples"
+            f"그래프: 최근 {_format_duration(seconds)} | 데이터 {source} | "
+            f"샘플 {len(observations)}개"
         )
         self._sync_timeline_controls()
         self._render_current_view(force_graph=True)
@@ -1722,7 +1759,7 @@ class MainWindow(QMainWindow):
         self._clear_timeline_state()
         self._reset_target_graphs_to_current()
         self._render_current_view(force_graph=True)
-        self.status_label.setText("Timeline restored to live buffer")
+        self.status_label.setText("그래프를 실시간 데이터로 되돌렸습니다.")
 
     def reset_focus_to_current(self) -> None:
         self._clear_focus_state()
@@ -1733,7 +1770,7 @@ class MainWindow(QMainWindow):
         self._sync_focus_controls()
         self._sync_timeline_controls()
         self._render_current_view(force_graph=True)
-        self.status_label.setText("Focus and timeline reset to current")
+        self.status_label.setText("포커스와 그래프 범위를 현재 시점으로 되돌렸습니다.")
 
     def _timeline_end_time(self) -> datetime | None:
         bounds = session_log_bounds(self.session_log_path)
@@ -1867,6 +1904,7 @@ class MainWindow(QMainWindow):
                     self._target_graph_metric_text(snapshot_by_address.get(address), history)
                 )
                 self.target_graph_render_keys[address] = render_key
+            self._sync_target_graph_action_buttons(address, snapshot_by_address.get(address))
             self._apply_main_graph_time_range_to_widget(graph, visible_range)
             if graph is not self.graph:
                 graph.set_annotations([])
@@ -1908,13 +1946,22 @@ class MainWindow(QMainWindow):
         metric = QLabel("대기")
         metric.setObjectName("targetGraphMeta")
         metric.setWordWrap(True)
+        pause_button = QPushButton("일시중지")
+        pause_button.setObjectName("targetGraphPauseButton")
+        pause_button.setToolTip("이 IP만 잠시 측정을 멈춥니다.")
+        pause_button.clicked.connect(lambda _checked=False, target=address: self.toggle_runtime_target_pause(target))
         remove_button = QPushButton("삭제")
         remove_button.setObjectName("targetGraphRemoveButton")
         remove_button.setToolTip("이 IP 측정을 중단하고 그래프 행을 삭제합니다.")
         remove_button.clicked.connect(lambda _checked=False, target=address: self.remove_runtime_target(target))
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(6)
+        action_row.addWidget(pause_button)
+        action_row.addWidget(remove_button)
         info.addWidget(title)
         info.addWidget(metric)
-        info.addWidget(remove_button)
+        info.addLayout(action_row)
         info.addStretch(1)
 
         graph = self.graph if use_primary_graph else LatencyGraphWidget()
@@ -1927,7 +1974,23 @@ class MainWindow(QMainWindow):
         self.target_graph_widgets[address] = graph
         self.target_graph_title_labels[address] = title
         self.target_graph_metric_labels[address] = metric
+        self.target_graph_pause_buttons[address] = pause_button
         self.target_graph_remove_buttons[address] = remove_button
+
+    def _sync_target_graph_action_buttons(self, address: str, snapshot: MetricSnapshot | None = None) -> None:
+        button = self.target_graph_pause_buttons.get(address)
+        if button is None:
+            return
+        paused = self._is_target_paused(address, snapshot)
+        if paused:
+            self.paused_target_addresses.add(address)
+            button.setText("재개")
+            button.setToolTip("이 IP 측정을 다시 시작합니다.")
+        else:
+            self.paused_target_addresses.discard(address)
+            button.setText("일시중지")
+            button.setToolTip("이 IP만 잠시 측정을 멈춥니다.")
+        button.setEnabled(bool(self.worker and self.worker.isRunning()))
 
     def _configure_main_graph_widget(self, graph: LatencyGraphWidget) -> None:
         graph.set_main_graph_mode(True)
@@ -1996,8 +2059,10 @@ class MainWindow(QMainWindow):
         graph = self.target_graph_widgets.pop(address, None)
         self.target_graph_title_labels.pop(address, None)
         self.target_graph_metric_labels.pop(address, None)
+        self.target_graph_pause_buttons.pop(address, None)
         self.target_graph_remove_buttons.pop(address, None)
         self.target_graph_render_keys.pop(address, None)
+        self.paused_target_addresses.discard(address)
         if graph is self.graph:
             self.graph.setParent(None)
         if row is not None:
@@ -2018,14 +2083,14 @@ class MainWindow(QMainWindow):
         if snapshot is not None and snapshot.sent:
             current = f"{fmt_ms(snapshot.current_latency_ms)} ms" if snapshot.current_latency_ms is not None else "-"
             return (
-                f"{display_status(snapshot)} | 현재 {current} | "
+                f"{_status_display_text(display_status(snapshot))} | 현재 {current} | "
                 f"손실 {snapshot.loss_percent:.1f}% | 샘플 {snapshot.samples}"
             )
         if history:
             latest = history[-1]
             current = f"{fmt_ms(latest.latency_ms)} ms" if latest.latency_ms is not None else "-"
             status = latest.status if latest.status else ("OK" if latest.success else "TIMEOUT")
-            return f"{status} | 최근 {current} | 샘플 {len(history)}"
+            return f"{_status_display_text(status)} | 최근 {current} | 샘플 {len(history)}"
         return "대기 | 샘플 0"
 
     def _reset_target_graphs_to_current(self) -> None:
@@ -2053,7 +2118,7 @@ class MainWindow(QMainWindow):
         self._sync_focus_controls()
         if render:
             self._render_current_view(force_graph=True)
-            self.status_label.setText("Live view restored")
+            self.status_label.setText("실시간 보기로 되돌렸습니다.")
 
     def _rebuild_focus_view(self, *, show_status: bool) -> None:
         if self.focus_range is None:
@@ -2069,7 +2134,7 @@ class MainWindow(QMainWindow):
         self._render_current_view(force_graph=show_status)
         if show_status:
             self.status_label.setText(
-                f"Focus period applied: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
+                f"포커스 구간 적용: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
             )
 
     def _clear_focus_state(self) -> None:
@@ -2086,7 +2151,7 @@ class MainWindow(QMainWindow):
         self.timeline_target_history = []
         self.timeline_snapshots = []
         self.timeline_target_snapshot = None
-        self.timeline_status = "Timeline source: live buffer"
+        self.timeline_status = "그래프 데이터: 실시간 버퍼"
         self._sync_timeline_controls()
 
     def _timeline_annotations(self) -> list[TimelineAnnotation]:
@@ -2221,7 +2286,7 @@ class MainWindow(QMainWindow):
         )
 
     def save_alert_rule_preset(self) -> None:
-        path = self._select_save_path("alert_preset.json", "JSON Files (*.json)", target="alert_rules")
+        path = self._select_save_path("alert_preset.json", "JSON 파일 (*.json)", target="alert_rules")
         if not path:
             return
         if path.suffix.lower() != ".json":
@@ -2231,17 +2296,17 @@ class MainWindow(QMainWindow):
             preset = self._alert_rule_preset(name=path.stem)
             path.write_text(json.dumps(preset, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
-            QMessageBox.warning(self, "Alert preset", str(exc))
+            QMessageBox.warning(self, "알림 프리셋", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"Alert preset saved: {path}")
+        self.status_label.setText(f"알림 프리셋 저장 완료: {path}")
 
     def load_alert_rule_preset(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
             self,
             "불러오기",
             str(Path.cwd() / "exports"),
-            "JSON Files (*.json)",
+            "JSON 파일 (*.json)",
         )
         if not selected:
             return
@@ -2249,19 +2314,19 @@ class MainWindow(QMainWindow):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                raise ValueError("Alert preset JSON must contain an object.")
+                raise ValueError("알림 프리셋 JSON은 객체 형식이어야 합니다.")
             _validate_alert_rule_preset(data)
             self._apply_alert_rule_preset(data)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            QMessageBox.warning(self, "Alert preset", str(exc))
+            QMessageBox.warning(self, "알림 프리셋", str(exc))
             self.status_label.setText(str(exc))
             return
         preset_name = _alert_preset_display_name(data)
         label = f" | {preset_name}" if preset_name else ""
         summary = _alert_preset_summary(data.get("rules", {}), data.get("actions", {}))
         self.status_label.setText(
-            f"Alert preset loaded: {path}{label} | rules {summary['active_rule_count']} | "
-            f"actions {summary['active_action_count']}"
+            f"알림 프리셋 불러오기 완료: {path}{label} | 규칙 {summary['active_rule_count']}개 | "
+            f"동작 {summary['active_action_count']}개"
         )
 
     def _alert_rule_preset(self, *, name: str) -> dict[str, object]:
@@ -2526,7 +2591,7 @@ class MainWindow(QMainWindow):
                 password_env=config.password_env,
             )
         except (OSError, smtplib.SMTPException, ValueError) as exc:
-            self.status_label.setText(f"Alert email action failed: {exc}")
+            self.status_label.setText(f"알림 이메일 동작 실패: {exc}")
             return False
         return True
 
@@ -2554,10 +2619,10 @@ class MainWindow(QMainWindow):
                 smtp.starttls()
             if username:
                 if not password_env:
-                    raise ValueError("SMTP password environment variable is not configured.")
+                    raise ValueError("SMTP 비밀번호 환경변수가 설정되지 않았습니다.")
                 password = os.environ.get(password_env, "")
                 if not password:
-                    raise ValueError("SMTP password environment variable is not set.")
+                    raise ValueError("SMTP 비밀번호 환경변수 값을 찾을 수 없습니다.")
                 smtp.login(username, password)
             smtp.send_message(message)
 
@@ -2584,7 +2649,7 @@ class MainWindow(QMainWindow):
         try:
             self._post_alert_webhook(url, payload)
         except (OSError, ValueError, urllib.error.URLError):
-            self.status_label.setText("Alert REST action failed")
+            self.status_label.setText("알림 REST 동작 실패")
             return False
         return True
 
@@ -2624,7 +2689,7 @@ class MainWindow(QMainWindow):
         try:
             self._launch_alert_executable(path, event, env)
         except (OSError, ValueError) as exc:
-            self.status_label.setText(f"Alert executable action failed: {exc}")
+            self.status_label.setText(f"알림 실행파일 동작 실패: {exc}")
             return False
         return True
 
@@ -2651,9 +2716,9 @@ class MainWindow(QMainWindow):
             try:
                 saved_path = self._save_graph_png(self._alert_image_path(event))
             except (OSError, RuntimeError) as exc:
-                self.status_label.setText(f"Alert image save failed: {exc}")
+                self.status_label.setText(f"알림 이미지 저장 실패: {exc}")
             else:
-                self.status_label.setText(f"Alert image saved: {saved_path}")
+                self.status_label.setText(f"알림 이미지 저장 완료: {saved_path}")
             finally:
                 self.pending_alert_image_keys.discard(key)
 
@@ -2694,7 +2759,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "route_changes_box"):
             return
         if not self.route_changes:
-            self.route_changes_box.setPlainText("No route changes detected.")
+            self.route_changes_box.setPlainText("감지된 경로 변경이 없습니다.")
             return
         blocks: list[str] = []
         for change in reversed(self.route_changes[-5:]):
@@ -2702,8 +2767,8 @@ class MainWindow(QMainWindow):
                 "\n".join(
                     [
                         f"{change.timestamp.strftime('%H:%M:%S')} | {change.summary}",
-                        f"Before: {route_path(change.previous)}",
-                        f"After:  {route_path(change.current)}",
+                        f"변경 전: {route_path(change.previous)}",
+                        f"변경 후: {route_path(change.current)}",
                         self._route_change_impact_line(change),
                     ]
                 )
@@ -2725,22 +2790,22 @@ class MainWindow(QMainWindow):
         visible_sessions = filtered_sessions[:SESSION_MANAGER_DISPLAY_LIMIT]
         self._sync_session_combo(visible_sessions)
         if not sessions:
-            self.sessions_box.setPlainText("No saved sessions.")
+            self.sessions_box.setPlainText("저장된 세션이 없습니다.")
             return
         lines = [self._session_manager_summary(sessions, filtered_sessions, visible_sessions)]
         lines.append(_session_storage_summary(filtered_sessions if self._session_filter_text() else sessions))
         if not filtered_sessions:
-            lines.append("No saved sessions match filter.")
+            lines.append("필터와 일치하는 저장 세션이 없습니다.")
             self.sessions_box.setPlainText("\n".join(lines))
             return
         for session in visible_sessions:
-            end = session.end.strftime("%H:%M:%S") if session.end is not None else "running"
+            end = session.end.strftime("%H:%M:%S") if session.end is not None else "실행 중"
             row_parts = [
-                session.state,
+                _session_state_label(session.state),
                 session.start.strftime("%Y-%m-%d %H:%M:%S"),
-                f"end {end}",
+                f"종료 {end}",
                 session.target,
-                f"samples {session.samples}",
+                f"샘플 {session.samples}",
                 _session_probe_summary(session),
             ]
             resume_summary = _session_resume_summary(session)
@@ -2760,14 +2825,14 @@ class MainWindow(QMainWindow):
         summary_sessions = filtered_sessions if filter_text else sessions
         for session in summary_sessions:
             state_counts[session.state] = state_counts.get(session.state, 0) + 1
-        state_summary = ", ".join(f"{state} {count}" for state, count in sorted(state_counts.items()))
+        state_summary = ", ".join(f"{_session_state_label(state)} {count}" for state, count in sorted(state_counts.items()))
         shown = len(visible_sessions)
         filtered_total = len(filtered_sessions)
         total = len(sessions)
-        label = f"Sessions: {filtered_total}/{total}" if filter_text else f"Sessions: {total}"
+        label = f"세션: {filtered_total}/{total}" if filter_text else f"세션: {total}"
         suffix = f" | {state_summary}" if state_summary else ""
         if shown < filtered_total:
-            return f"{label} | showing latest {shown}{suffix}"
+            return f"{label} | 최근 {shown}개 표시{suffix}"
         return f"{label}{suffix}"
 
     def _filtered_session_records(self, sessions: list[TraceSessionRecord]) -> list[TraceSessionRecord]:
@@ -2789,7 +2854,7 @@ class MainWindow(QMainWindow):
         self.session_index_store.recover_missing_sessions()
         self.session_index_store.reconcile_session_log_metadata()
         self._sync_sessions_box()
-        self.status_label.setText("Session list refreshed from saved logs")
+        self.status_label.setText("저장된 로그 기준으로 세션 목록을 새로고침했습니다.")
 
     def _sync_session_combo(self, sessions: list[TraceSessionRecord]) -> None:
         if not hasattr(self, "session_combo"):
@@ -2866,7 +2931,7 @@ class MainWindow(QMainWindow):
 
     def open_selected_session(self) -> None:
         if self.worker and self.worker.isRunning():
-            QMessageBox.information(self, "Session", "Stop the current measurement before opening a saved session.")
+            QMessageBox.information(self, "세션", "저장된 세션을 열기 전에 현재 측정을 중지하세요.")
             return
         record = self._selected_session_record()
         if record is None:
@@ -2875,7 +2940,7 @@ class MainWindow(QMainWindow):
 
     def resume_selected_session(self) -> None:
         if self.worker and self.worker.isRunning():
-            QMessageBox.information(self, "Session", "Stop the current measurement before resuming a saved session.")
+            QMessageBox.information(self, "세션", "저장된 세션을 재개하기 전에 현재 측정을 중지하세요.")
             return
         record = self._selected_session_record()
         if record is None:
@@ -2884,15 +2949,15 @@ class MainWindow(QMainWindow):
 
     def export_selected_session(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
-            QMessageBox.information(self, "Export", "An export is already running.")
+            QMessageBox.information(self, "내보내기", "이미 내보내기 작업이 진행 중입니다.")
             return
         record = self._selected_session_record()
         if record is None:
             return
         if not record.sample_path.exists():
-            self.status_label.setText(f"Session log missing: {record.sample_path}")
+            self.status_label.setText(f"세션 로그를 찾을 수 없습니다: {record.sample_path}")
             return
-        path = self._select_save_path("session.csv", "CSV Files (*.csv)", target=record.target)
+        path = self._select_save_path("session.csv", "CSV 파일 (*.csv)", target=record.target)
         if not path:
             return
         observations = list(iter_observations(record.sample_path))
@@ -2918,22 +2983,22 @@ class MainWindow(QMainWindow):
 
     def export_visible_sessions(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
-            QMessageBox.information(self, "Export", "An export is already running.")
+            QMessageBox.information(self, "내보내기", "이미 내보내기 작업이 진행 중입니다.")
             return
         records = self._visible_session_records()
         if not records:
-            self.status_label.setText("No visible saved sessions to export")
+            self.status_label.setText("내보낼 표시 세션이 없습니다.")
             return
-        path = self._select_save_path("visible_sessions.zip", "ZIP Files (*.zip)", target="visible_sessions")
+        path = self._select_save_path("visible_sessions.zip", "ZIP 파일 (*.zip)", target="visible_sessions")
         if not path:
             return
         try:
             saved_path, file_count = self._write_visible_sessions_zip(path, records)
         except OSError as exc:
-            QMessageBox.warning(self, "Export error", str(exc))
+            QMessageBox.warning(self, "내보내기 오류", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"Visible sessions ZIP saved: {saved_path} ({len(records)} session(s), {file_count} file(s))")
+        self.status_label.setText(f"표시 세션 ZIP 저장 완료: {saved_path} (세션 {len(records)}개, 파일 {file_count}개)")
 
     def _write_visible_sessions_zip(
         self,
@@ -3002,18 +3067,18 @@ class MainWindow(QMainWindow):
 
     def delete_selected_session(self) -> None:
         if self.worker and self.worker.isRunning():
-            QMessageBox.information(self, "Session", "Stop the current measurement before deleting a saved session.")
+            QMessageBox.information(self, "세션", "저장된 세션을 삭제하기 전에 현재 측정을 중지하세요.")
             return
         if self.export_worker and self.export_worker.isRunning():
-            QMessageBox.information(self, "Session", "Wait for the current export to finish before deleting a session.")
+            QMessageBox.information(self, "세션", "세션을 삭제하기 전에 현재 내보내기 작업이 끝날 때까지 기다리세요.")
             return
         record = self._selected_session_record()
         if record is None:
             return
         reply = QMessageBox.question(
             self,
-            "Delete Session",
-            f"Delete saved session for {record.target}?\n\nThis removes the session log, route log, and alert log files.",
+            "세션 삭제",
+            f"{record.target} 저장 세션을 삭제할까요?\n\n세션 로그, 경로 로그, 알림 로그 파일이 함께 삭제됩니다.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -3021,27 +3086,27 @@ class MainWindow(QMainWindow):
             return
         deleted = self.session_index_store.delete_session(record.session_id)
         if deleted is None:
-            self.status_label.setText("Selected session is no longer available")
+            self.status_label.setText("선택한 세션을 더 이상 사용할 수 없습니다.")
         else:
             self._clear_deleted_session_paths(deleted)
-            self.status_label.setText(f"Deleted session: {deleted.target}")
+            self.status_label.setText(f"세션 삭제 완료: {deleted.target}")
         self._sync_sessions_box()
         self._set_export_enabled(self._has_export_data())
 
     def prune_old_sessions(self) -> None:
         if self.worker and self.worker.isRunning():
-            QMessageBox.information(self, "Session", "Stop the current measurement before pruning saved sessions.")
+            QMessageBox.information(self, "세션", "오래된 세션을 정리하기 전에 현재 측정을 중지하세요.")
             return
         if self.export_worker and self.export_worker.isRunning():
-            QMessageBox.information(self, "Session", "Wait for the current export to finish before pruning sessions.")
+            QMessageBox.information(self, "세션", "오래된 세션을 정리하기 전에 현재 내보내기 작업이 끝날 때까지 기다리세요.")
             return
         days = int(self.session_retention_days_spin.value()) if hasattr(self, "session_retention_days_spin") else 90
         reply = QMessageBox.question(
             self,
-            "Prune Old Sessions",
+            "오래된 세션 정리",
             (
-                f"Delete saved sessions older than {days} day(s)?\n\n"
-                "Active sessions are never pruned."
+                f"{days}일보다 오래된 저장 세션을 삭제할까요?\n\n"
+                "실행 중인 세션은 정리하지 않습니다."
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -3053,16 +3118,16 @@ class MainWindow(QMainWindow):
             self._clear_deleted_session_paths(record)
         self._sync_sessions_box()
         self._set_export_enabled(self._has_export_data())
-        self.status_label.setText(f"Pruned {len(pruned)} saved session(s) older than {days} day(s)")
+        self.status_label.setText(f"{days}일보다 오래된 저장 세션 {len(pruned)}개를 정리했습니다.")
 
     def _selected_session_record(self) -> TraceSessionRecord | None:
         session_id = self.session_combo.currentData() if hasattr(self, "session_combo") else None
         if not session_id:
-            self.status_label.setText("No saved session selected")
+            self.status_label.setText("선택된 저장 세션이 없습니다.")
             return None
         record = self.session_index_store.find_session(str(session_id))
         if record is None:
-            self.status_label.setText("Selected session is no longer available")
+            self.status_label.setText("선택한 세션을 더 이상 사용할 수 없습니다.")
             self._sync_sessions_box()
             return None
         return record
@@ -3073,12 +3138,12 @@ class MainWindow(QMainWindow):
         self.session_log_path = None
         self.route_log_path = None
         self.alert_action_log_path = None
-        self.timeline_status = "Timeline source: live buffer"
+        self.timeline_status = "그래프 데이터: 실시간 버퍼"
         self._sync_timeline_controls()
 
     def _open_session_record(self, record: TraceSessionRecord) -> None:
         if not record.sample_path.exists():
-            self.status_label.setText(f"Session log missing: {record.sample_path}")
+            self.status_label.setText(f"세션 로그를 찾을 수 없습니다: {record.sample_path}")
             return
         observations = list(iter_observations(record.sample_path))
         self.current_target = record.target
@@ -3108,20 +3173,20 @@ class MainWindow(QMainWindow):
         if bounds is not None:
             self._load_route_changes_for_range(*bounds)
         self._load_saved_alert_actions()
-        self.timeline_status = f"Timeline source: opened session, {len(observations)} samples"
+        self.timeline_status = f"그래프 데이터: 열린 세션, 샘플 {len(observations)}개"
         self._sync_timeline_controls()
         self._sync_alerts_box()
         self._sync_route_changes_box()
         self._sync_focus_controls()
         self._render_current_view(force_graph=True)
-        self._set_state_chip("Loaded", "active")
-        self.status_label.setText(f"Loaded session: {record.target}, samples {len(observations)}")
+        self._set_state_chip("불러옴", "active")
+        self.status_label.setText(f"세션 불러오기 완료: {record.target}, 샘플 {len(observations)}개")
         self._sync_sessions_box()
 
     def _prepare_session_resume(self, record: TraceSessionRecord) -> None:
         targets = self._targets_for_session_resume(record)
         if not targets:
-            self.status_label.setText("No saved session target is available")
+            self.status_label.setText("재개할 저장 세션 대상이 없습니다.")
             return
         self.current_target = record.target if record.target in targets else targets[0]
         self.current_targets = targets
@@ -3133,7 +3198,7 @@ class MainWindow(QMainWindow):
             self.trace_target_combo.setCurrentText(self.current_target)
         self._restore_session_runtime_controls(record)
         self.status_label.setText(
-            f"Resume prepared: {len(targets)} target(s), press Start to create a new session"
+            f"재개 준비 완료: IP {len(targets)}개, 시작을 누르면 새 세션으로 측정합니다."
         )
 
     def _consume_resume_source_for_targets(self, targets: list[str]) -> str:
@@ -3202,7 +3267,7 @@ class MainWindow(QMainWindow):
     def _route_change_impact_line(self, change: RouteChange) -> str:
         points = self._target_points_for_route_impact()
         if not points:
-            return "Impact: target samples not available"
+            return "영향: 대상 샘플 없음"
         window = timedelta(seconds=120)
         before = [
             point
@@ -3214,7 +3279,7 @@ class MainWindow(QMainWindow):
             for point in points
             if change.timestamp <= point.timestamp <= change.timestamp + window
         ]
-        return f"Impact: before {self._format_impact_points(before)} | after {self._format_impact_points(after)}"
+        return f"영향: 변경 전 {self._format_impact_points(before)} | 변경 후 {self._format_impact_points(after)}"
 
     def _target_points_for_route_impact(self) -> list[HopObservation]:
         source = self.timeline_target_history if self.timeline_range is not None else self.target_history
@@ -3225,23 +3290,23 @@ class MainWindow(QMainWindow):
 
     def _format_impact_points(self, points: list[HopObservation]) -> str:
         if not points:
-            return "no samples"
+            return "샘플 없음"
         failures = sum(1 for point in points if not point.success)
         loss_percent = failures / len(points) * 100
         latencies = [point.latency_ms for point in points if point.success and point.latency_ms is not None]
         avg_latency = (sum(latencies) / len(latencies)) if latencies else None
         max_latency = max(latencies) if latencies else None
         return (
-            f"loss {loss_percent:.1f}% "
-            f"avg {fmt_ms(avg_latency) or '-'} ms "
-            f"max {fmt_ms(max_latency) or '-'} ms"
+            f"손실 {loss_percent:.1f}% "
+            f"평균 {fmt_ms(avg_latency) or '-'} ms "
+            f"최대 {fmt_ms(max_latency) or '-'} ms"
         )
 
     def _sync_focus_controls(self) -> None:
         if not hasattr(self, "focus_label"):
             return
         focused = self.focus_range is not None
-        self.focus_label.setText(self._focus_period_line() if focused else "Live")
+        self.focus_label.setText(self._focus_period_line() if focused else "실시간")
         self.focus_label.setProperty("tone", "active" if focused else "neutral")
         self.focus_label.style().unpolish(self.focus_label)
         self.focus_label.style().polish(self.focus_label)
@@ -3251,7 +3316,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "timeline_label"):
             return
         visible = self.timeline_range is not None
-        self.timeline_label.setText(self._timeline_period_line() if visible else "Timeline: Live")
+        self.timeline_label.setText(self._timeline_period_line() if visible else "그래프: 실시간")
         self.timeline_label.setToolTip(self.timeline_status)
         self.timeline_label.setProperty("tone", "active" if visible else "neutral")
         self.timeline_label.style().unpolish(self.timeline_label)
@@ -3259,15 +3324,15 @@ class MainWindow(QMainWindow):
 
     def _focus_period_line(self) -> str:
         if self.focus_range is None:
-            return "Live"
+            return "실시간"
         start, end = self.focus_range
-        return f"Focus period: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
+        return f"포커스: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
 
     def _timeline_period_line(self) -> str:
         if self.timeline_range is None:
-            return "Timeline: Live"
+            return "그래프: 실시간"
         start, end = self.timeline_range
-        return f"Timeline: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
+        return f"그래프: {start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}"
 
     def open_graph_detail(self) -> None:
         if self.graph_detail_window is None:
@@ -3306,23 +3371,23 @@ class MainWindow(QMainWindow):
         self.graph_detail_window.set_timeline_status(self.timeline_status)
 
     def save_csv(self) -> None:
-        self._start_export("csv", "csv", "CSV Files (*.csv)")
+        self._start_export("csv", "csv", "CSV 파일 (*.csv)")
 
     def save_xlsx(self) -> None:
-        self._start_export("xlsx", "xlsx", "Excel Files (*.xlsx)")
+        self._start_export("xlsx", "xlsx", "Excel 파일 (*.xlsx)")
 
     def save_report(self) -> None:
         report_format = str(self.report_format_combo.currentData() or "txt") if hasattr(self, "report_format_combo") else "txt"
         if report_format == "html":
-            self._start_export("html", "html", "HTML Files (*.html)")
+            self._start_export("html", "html", "HTML 파일 (*.html)")
         else:
-            self._start_export("txt", "txt", "Text Files (*.txt)")
+            self._start_export("txt", "txt", "텍스트 파일 (*.txt)")
 
     def save_graph_png(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
-            QMessageBox.information(self, "Export", "An export is already running.")
+            QMessageBox.information(self, "내보내기", "이미 내보내기 작업이 진행 중입니다.")
             return
-        path = self._select_save_path("png", "PNG Files (*.png)")
+        path = self._select_save_path("png", "PNG 파일 (*.png)")
         if not path:
             return
         scope = (
@@ -3333,10 +3398,10 @@ class MainWindow(QMainWindow):
         try:
             saved_path = self._save_graph_png(path, scope=scope)
         except RuntimeError as exc:
-            QMessageBox.warning(self, "Export error", str(exc))
+            QMessageBox.warning(self, "내보내기 오류", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"PNG saved: {saved_path}")
+        self.status_label.setText(f"PNG 저장 완료: {saved_path}")
 
     def _save_graph_png(self, path: Path, *, scope: str = GRAPH_PNG_SCOPE_TIMELINE) -> Path:
         if path.suffix.lower() != ".png":
@@ -3344,9 +3409,9 @@ class MainWindow(QMainWindow):
         path.parent.mkdir(parents=True, exist_ok=True)
         pixmap = self._graph_png_pixmap(scope)
         if pixmap.isNull():
-            raise RuntimeError(f"PNG capture failed: {path}")
+            raise RuntimeError(f"PNG 캡처 실패: {path}")
         if not pixmap.save(str(path), "PNG"):
-            raise RuntimeError(f"PNG save failed: {path}")
+            raise RuntimeError(f"PNG 저장 실패: {path}")
         return path
 
     def _graph_png_pixmap(self, scope: str) -> QPixmap:
@@ -3363,28 +3428,28 @@ class MainWindow(QMainWindow):
 
     def save_target_summary_csv(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
-            QMessageBox.information(self, "Export", "An export is already running.")
+            QMessageBox.information(self, "내보내기", "이미 내보내기 작업이 진행 중입니다.")
             return
         snapshots = list(self._visible_target_snapshots())
         if not snapshots:
-            self.status_label.setText("No target summary data to export")
+            self.status_label.setText("내보낼 IP 요약 데이터가 없습니다.")
             return
         if getattr(self, "problem_sort_check", None) is not None and self.problem_sort_check.isChecked():
             snapshots.sort(key=target_problem_score, reverse=True)
-        path = self._select_save_path("target_summary.csv", "CSV Files (*.csv)", target="all_targets")
+        path = self._select_save_path("target_summary.csv", "CSV 파일 (*.csv)", target="all_targets")
         if not path:
             return
         try:
             saved_path = export_target_summary_csv(path, self._target_summary_export_rows(snapshots))
         except OSError as exc:
-            QMessageBox.warning(self, "Export error", str(exc))
+            QMessageBox.warning(self, "내보내기 오류", str(exc))
             self.status_label.setText(str(exc))
             return
-        self.status_label.setText(f"Target summary CSV saved: {saved_path}")
+        self.status_label.setText(f"IP 요약 CSV 저장 완료: {saved_path}")
 
     def _target_summary_export_rows(self, snapshots: list[MetricSnapshot]) -> list[TargetSummaryExportRow]:
         rows: list[TargetSummaryExportRow] = []
-        interval_seconds_by_target, interval_source_by_target = self._target_interval_display_maps(snapshots)
+        interval_seconds_by_target, interval_source_by_target = self._target_interval_export_maps(snapshots)
         for snapshot in snapshots:
             failed = snapshot.sent - snapshot.received
             address = snapshot.address or ""
@@ -3415,7 +3480,7 @@ class MainWindow(QMainWindow):
         self._start_export(
             "stats_csv",
             "stats.csv",
-            "CSV Files (*.csv)",
+            "CSV 파일 (*.csv)",
             statistics_options=self._statistics_export_options(),
             export_range=self._statistics_export_range(),
         )
@@ -3424,7 +3489,7 @@ class MainWindow(QMainWindow):
         self._start_export(
             "stats_xlsx",
             "stats.xlsx",
-            "Excel Files (*.xlsx)",
+            "Excel 파일 (*.xlsx)",
             statistics_options=self._statistics_export_options(),
             export_range=self._statistics_export_range(),
         )
@@ -3588,10 +3653,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "engine_note_label"):
             if tcp_selected:
                 self.engine_note_label.setText(
-                    "TCP Connect measures the final target service port. Full Route still uses Windows tracert/ICMP."
+                    "TCP 연결은 최종 IP의 실제 서비스 포트를 측정합니다. 전체 경로 측정은 Windows tracert/ICMP를 사용합니다."
                 )
             else:
-                self.engine_note_label.setText("ICMP uses Windows ICMP echo for target checks and tracert/ICMP for routes.")
+                self.engine_note_label.setText("ICMP는 대상 확인에 Windows ICMP echo를 사용하고, 경로 확인에는 tracert/ICMP를 사용합니다.")
 
     def _is_tcp_probe_selected(self) -> bool:
         return (
@@ -3603,8 +3668,7 @@ class MainWindow(QMainWindow):
         targets = list(self.current_targets)
         if not targets and hasattr(self, "target_input"):
             targets, _invalid = parse_ipv4_targets(self.target_input.toPlainText())
-        primary = self.current_target or (targets[0] if targets else "-")
-        return f"측정 IP {len(targets)}개 | 기준 IP {primary}"
+        return f"측정 IP {len(targets)}개"
 
     def _sync_running_target_summary(self) -> None:
         label = getattr(self, "running_target_summary_label", None)
@@ -3661,6 +3725,10 @@ class MainWindow(QMainWindow):
             button = getattr(self, button_name, None)
             if button is not None:
                 button.setEnabled(running)
+        for button in getattr(self, "target_graph_pause_buttons", {}).values():
+            button.setEnabled(running)
+        for button in getattr(self, "target_graph_remove_buttons", {}).values():
+            button.setEnabled(running)
         self._set_export_enabled(self._has_export_data())
 
     def _set_export_enabled(self, enabled: bool) -> None:
@@ -3824,12 +3892,12 @@ def _chip(text: str, tone: str) -> QLabel:
 
 def _format_duration(seconds: int) -> str:
     if seconds < 60:
-        return f"{seconds}s"
+        return f"{seconds}초"
     if seconds < 3600:
-        return f"{seconds // 60}m"
+        return f"{seconds // 60}분"
     if seconds <= 172800:
-        return f"{seconds // 3600}h"
-    return f"{seconds // 86400}d"
+        return f"{seconds // 3600}시간"
+    return f"{seconds // 86400}일"
 
 
 def _unique_addresses(values: object) -> list[str]:
@@ -3931,26 +3999,26 @@ def _session_matches_filter_term(session: TraceSessionRecord, term: str) -> bool
         value = value.strip().casefold()
         if not value:
             return True
-        if key in {"target", "ip"}:
+        if key in {"target", "ip", "대상"}:
             return value in session.target.casefold()
-        if key in {"state", "status"}:
+        if key in {"state", "status", "상태"}:
             return value in _filter_value(session.state)
-        if key in {"month", "ym"}:
+        if key in {"month", "ym", "월"}:
             return any(value in bucket.month.casefold() for bucket in session_storage_buckets([session]))
-        if key == "bucket":
+        if key in {"bucket", "버킷"}:
             return any(
                 value in _filter_value(f"{bucket.target}/{bucket.month}")
                 for bucket in session_storage_buckets([session])
             )
-        if key in {"engine", "probe"}:
+        if key in {"engine", "probe", "엔진"}:
             return value in _filter_value(session.probe_engine) or value in _filter_value(_session_probe_summary(session))
-        if key == "mode":
+        if key in {"mode", "방식"}:
             return value in _filter_value(session.measurement_mode) or value in _filter_value(_session_probe_summary(session))
-        if key == "port":
+        if key in {"port", "포트"}:
             return value in str(session.tcp_port or "").casefold()
-        if key == "resume":
+        if key in {"resume", "재개"}:
             return value in _filter_value(session.resumed_from_session_id)
-        if key == "error":
+        if key in {"error", "오류"}:
             return value in _filter_value(session.last_error)
     return term in _session_filter_haystack(session)
 
@@ -3992,26 +4060,35 @@ def _session_export_folder(record: TraceSessionRecord, index: int) -> str:
 def _session_storage_summary(sessions: list[TraceSessionRecord]) -> str:
     summary = session_storage_summary(sessions)
     line = (
-        f"Storage: targets {summary.target_count} | "
-        f"target-month buckets {summary.bucket_count} | segments {summary.segment_count} | "
-        f"indexed samples {summary.sample_count}"
+        f"저장소: 대상 {summary.target_count}개 | "
+        f"대상-월 버킷 {summary.bucket_count}개 | 세그먼트 {summary.segment_count}개 | "
+        f"인덱스 샘플 {summary.sample_count}개"
     )
     buckets = session_storage_buckets(sessions)
     if not buckets:
         return line
     bucket_parts = [_session_storage_bucket_summary(bucket) for bucket in buckets[:3]]
     if len(buckets) > 3:
-        bucket_parts.append(f"+{len(buckets) - 3} more")
-    return f"{line}\nRecent buckets: {', '.join(bucket_parts)}"
+        bucket_parts.append(f"외 {len(buckets) - 3}개")
+    return f"{line}\n최근 버킷: {', '.join(bucket_parts)}"
 
 
 def _session_storage_bucket_summary(bucket: SessionStorageBucket) -> str:
-    states = "; ".join(f"{state} {count}" for state, count in bucket.state_counts)
-    state_suffix = f" states {states}" if states else ""
+    states = "; ".join(f"{_session_state_label(state)} {count}" for state, count in bucket.state_counts)
+    state_suffix = f" 상태 {states}" if states else ""
     return (
-        f"{bucket.target}/{bucket.month} sessions {bucket.session_count} "
-        f"segments {bucket.segment_count} indexed samples {bucket.sample_count}{state_suffix}"
+        f"{bucket.target}/{bucket.month} 세션 {bucket.session_count}개 "
+        f"세그먼트 {bucket.segment_count}개 인덱스 샘플 {bucket.sample_count}개{state_suffix}"
     )
+
+
+def _session_state_label(state: str) -> str:
+    return {
+        "Active": "실행 중",
+        "Archived": "보관됨",
+        "Pause": "일시중지",
+        "Will Delete": "삭제 예정",
+    }.get(state, state or "-")
 
 
 ALERT_RULE_ENABLED_KEYS = (
@@ -4055,7 +4132,7 @@ def _validate_alert_rule_preset(data: dict[str, object]) -> None:
     rules = data.get("rules", {})
     actions = data.get("actions", {})
     if not isinstance(rules, dict) or not isinstance(actions, dict):
-        raise ValueError("Alert preset JSON has invalid rules/actions.")
+        raise ValueError("알림 프리셋 JSON의 규칙/동작 형식이 올바르지 않습니다.")
     if version >= ALERT_RULE_PRESET_VERSION:
         _validate_alert_preset_summary(data.get("summary"), rules=rules, actions=actions)
 
@@ -4066,27 +4143,27 @@ def _alert_rule_preset_version(value: object) -> int:
     try:
         version = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Alert preset JSON has an invalid version.") from exc
+        raise ValueError("알림 프리셋 JSON 버전이 올바르지 않습니다.") from exc
     if version < 1 or version > ALERT_RULE_PRESET_VERSION:
-        raise ValueError(f"Alert preset JSON version is not supported: {version}")
+        raise ValueError(f"지원하지 않는 알림 프리셋 JSON 버전입니다: {version}")
     return version
 
 
 def _validate_alert_preset_summary(summary: object, *, rules: dict[str, object], actions: dict[str, object]) -> None:
     if not isinstance(summary, dict):
-        raise ValueError("Alert preset JSON has invalid summary metadata.")
+        raise ValueError("알림 프리셋 JSON 요약 메타데이터가 올바르지 않습니다.")
     actual = _alert_preset_summary(rules, actions)
     for key in ("active_rule_count", "active_action_count", "action_phase_count", "external_action_count"):
         if key not in summary:
-            raise ValueError(f"Alert preset JSON summary is missing {key}.")
+            raise ValueError(f"알림 프리셋 JSON 요약에 {key} 값이 없습니다.")
         try:
             expected = int(summary[key])
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Alert preset JSON summary has invalid {key}.") from exc
+            raise ValueError(f"알림 프리셋 JSON 요약의 {key} 값이 올바르지 않습니다.") from exc
         if expected != actual[key]:
-            raise ValueError(f"Alert preset JSON {key} does not match rules/actions.")
+            raise ValueError(f"알림 프리셋 JSON {key} 값이 규칙/동작과 일치하지 않습니다.")
     if "route_adjustment_enabled" in summary and bool(summary["route_adjustment_enabled"]) != actual["route_adjustment_enabled"]:
-        raise ValueError("Alert preset JSON route_adjustment_enabled does not match actions.")
+        raise ValueError("알림 프리셋 JSON 경로 조정 요약이 동작 설정과 일치하지 않습니다.")
 
 
 def _alert_preset_display_name(data: dict[str, object]) -> str:
@@ -4103,18 +4180,18 @@ def _validate_target_group_preset_version(value: object) -> None:
     try:
         version = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Target group JSON has an invalid version.") from exc
+        raise ValueError("대상 그룹 JSON 버전이 올바르지 않습니다.") from exc
     if version < 1 or version > TARGET_GROUP_PRESET_VERSION:
-        raise ValueError(f"Target group JSON version is not supported: {version}")
+        raise ValueError(f"지원하지 않는 대상 그룹 JSON 버전입니다: {version}")
 
 
 def _target_group_targets(data: dict[str, object]) -> list[str]:
     target_values = data.get("targets")
     if not isinstance(target_values, list):
-        raise ValueError("Target group JSON must contain a targets list.")
+        raise ValueError("대상 그룹 JSON에는 대상 목록이 있어야 합니다.")
     targets, invalid = parse_ipv4_targets("\n".join(str(target) for target in target_values))
     if invalid or not targets:
-        raise ValueError("Target group JSON must contain valid IPv4 targets.")
+        raise ValueError("대상 그룹 JSON에는 올바른 IPv4 대상이 있어야 합니다.")
     _validate_target_group_summary(data.get("summary"), target_count=len(targets))
     return targets
 
@@ -4123,16 +4200,16 @@ def _validate_target_group_summary(summary: object, *, target_count: int) -> Non
     if summary in (None, ""):
         return
     if not isinstance(summary, dict):
-        raise ValueError("Target group JSON has invalid summary metadata.")
+        raise ValueError("대상 그룹 JSON 요약 메타데이터가 올바르지 않습니다.")
     expected_count = summary.get("target_count")
     if expected_count in (None, ""):
         return
     try:
         expected_count_int = int(expected_count)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Target group JSON has invalid target_count metadata.") from exc
+        raise ValueError("대상 그룹 JSON의 대상 수 메타데이터가 올바르지 않습니다.") from exc
     if expected_count_int != target_count:
-        raise ValueError("Target group JSON target_count does not match the targets list.")
+        raise ValueError("대상 그룹 JSON의 대상 수가 실제 대상 목록과 일치하지 않습니다.")
 
 
 def _target_group_interval_overrides(data: dict[str, object], targets: list[str]) -> dict[str, int]:
@@ -4140,7 +4217,7 @@ def _target_group_interval_overrides(data: dict[str, object], targets: list[str]
     if raw_overrides in (None, ""):
         return {}
     if not isinstance(raw_overrides, dict):
-        raise ValueError("Target group JSON has invalid target_interval_overrides.")
+        raise ValueError("대상 그룹 JSON의 개별 주기 설정이 올바르지 않습니다.")
     target_set = set(targets)
     overrides: dict[str, int] = {}
     for target, value in raw_overrides.items():
@@ -4150,9 +4227,9 @@ def _target_group_interval_overrides(data: dict[str, object], targets: list[str]
         try:
             interval = int(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError("Target group JSON has invalid target interval override.") from exc
+            raise ValueError("대상 그룹 JSON의 개별 주기 값이 올바르지 않습니다.") from exc
         if interval < 0:
-            raise ValueError("Target group JSON has invalid target interval override.")
+            raise ValueError("대상 그룹 JSON의 개별 주기 값이 올바르지 않습니다.")
         overrides[target_text] = interval
     _validate_target_group_interval_override_summary(data.get("summary"), override_count=len(overrides))
     return overrides
@@ -4167,9 +4244,9 @@ def _validate_target_group_interval_override_summary(summary: object, *, overrid
     try:
         expected_count_int = int(expected_count)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Target group JSON has invalid target_interval_override_count metadata.") from exc
+        raise ValueError("대상 그룹 JSON의 개별 주기 개수 메타데이터가 올바르지 않습니다.") from exc
     if expected_count_int != override_count:
-        raise ValueError("Target group JSON target_interval_override_count does not match the overrides list.")
+        raise ValueError("대상 그룹 JSON의 개별 주기 개수가 실제 설정과 일치하지 않습니다.")
 
 
 def _filtered_target_interval_overrides(
@@ -4274,30 +4351,54 @@ def _session_probe_summary(session: TraceSessionRecord) -> str:
     mode, probe_engine, tcp_port = _session_runtime_fields(session)
     parts = [_session_mode_label(mode), _probe_engine_label(probe_engine)]
     if tcp_port is not None:
-        parts.append(f"port {tcp_port}")
+        parts.append(f"포트 {tcp_port}")
     if session.route_probe_engine:
-        parts.append(f"route {session.route_probe_engine}")
+        parts.append(f"경로 {session.route_probe_engine}")
     return " / ".join(part for part in parts if part and part != "-")
 
 
 def _session_resume_summary(session: TraceSessionRecord) -> str:
     if not session.resumed_from_session_id:
         return ""
-    return f"resumed from {session.resumed_from_session_id}"
+    return f"원본 세션 {session.resumed_from_session_id}"
 
 
 def _session_mode_label(value: str) -> str:
     return {
-        MEASUREMENT_MODE_FULL_ROUTE: "Full Route",
-        MEASUREMENT_MODE_FINAL_HOP_ONLY: "Final Hop Only",
+        MEASUREMENT_MODE_FULL_ROUTE: "전체 경로",
+        MEASUREMENT_MODE_FINAL_HOP_ONLY: "최종 IP만",
     }.get(value, value or "-")
 
 
 def _probe_engine_label(value: str) -> str:
     return {
         PROBE_ENGINE_ICMP: "ICMP",
-        PROBE_ENGINE_TCP_CONNECT: "TCP Connect",
+        PROBE_ENGINE_TCP_CONNECT: "TCP 연결",
     }.get(value, value or "-")
+
+
+def _probe_status_text(value: object) -> str:
+    text = str(value or "-")
+    return (
+        text.replace("TCP Connect", "TCP 연결")
+        .replace("Final Hop Only", "최종 IP만")
+        .replace("Full Route", "전체 경로")
+    )
+
+
+def _status_display_text(status: object) -> str:
+    text = str(status or "")
+    return {
+        "OK": "정상",
+        "WARNING": "주의",
+        "CRITICAL": "장애",
+        "PAUSED": "일시중지",
+        "TIMEOUT": "응답 없음",
+        "UNREACHABLE": "도달 불가",
+        "ERROR": "오류",
+        "NO_PING_TARGET": "대상 없음",
+        "WAITING": "대기",
+    }.get(text, text or "-")
 
 
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:

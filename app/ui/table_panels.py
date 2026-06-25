@@ -20,7 +20,7 @@ TABLE_HEADERS = [
     "최대",
     "손실률 %",
     "최근 손실률 %",
-    "Timeout",
+    "응답 없음",
     "지연 변동",
     "샘플",
 ]
@@ -131,9 +131,9 @@ def populate_trace_table(table: QTableWidget, hops: object) -> None:
     for row, hop in enumerate(hop_list):
         values = [
             hop.index,
-            hop.address or "Timeout",
+            hop.address or "응답 없음",
             hop.hostname or "",
-            "TIMEOUT" if hop.timed_out else "WAITING",
+            "응답 없음" if hop.timed_out else "대기",
             "",
             "",
             "",
@@ -161,9 +161,9 @@ def update_hop_table(table: QTableWidget, snapshots: list[MetricSnapshot]) -> No
             continue
         values = [
             snapshot.hop_index,
-            snapshot.address or "Timeout",
+            snapshot.address or "응답 없음",
             snapshot.hostname or "",
-            display_status(snapshot),
+            _status_display_text(display_status(snapshot)),
             fmt_ms(snapshot.current_latency_ms),
             fmt_ms(snapshot.avg_latency_ms),
             fmt_ms(snapshot.min_latency_ms),
@@ -205,7 +205,7 @@ def update_target_table(
         interval_source = interval_source_by_target.get(address, "")
         values = [
             (address, address),
-            (display_status(snapshot), score),
+            (_status_display_text(display_status(snapshot)), score),
             (fmt_ms(snapshot.current_latency_ms), snapshot.current_latency_ms if snapshot.current_latency_ms is not None else -1),
             (fmt_ms(snapshot.avg_latency_ms), snapshot.avg_latency_ms if snapshot.avg_latency_ms is not None else -1),
             (fmt_ms(snapshot.min_latency_ms), snapshot.min_latency_ms if snapshot.min_latency_ms is not None else -1),
@@ -239,9 +239,9 @@ def update_session_table(table: QTableWidget, sessions: object) -> None:
     rows_changed = table.rowCount() != len(session_list)
     table.setRowCount(len(session_list))
     for row, session in enumerate(session_list):
-        end = session.end.strftime("%Y-%m-%d %H:%M:%S") if session.end is not None else "running"
+        end = session.end.strftime("%Y-%m-%d %H:%M:%S") if session.end is not None else "실행 중"
         values = [
-            (session.state, _session_state_sort_key(session.state)),
+            (_session_state_label(session.state), _session_state_sort_key(session.state)),
             (session.target, session.target),
             (session.start.strftime("%Y-%m-%d %H:%M:%S"), session.start.timestamp()),
             (end, session.end.timestamp() if session.end is not None else float("inf")),
@@ -280,7 +280,7 @@ def update_alert_table(
     table.setRowCount(len(event_list))
     for row, event in enumerate(event_list):
         actions = actions_by_key.get(event.key, [])
-        actions_text = ", ".join(actions) if actions else "-"
+        actions_text = ", ".join(_alert_action_text(action) for action in actions) if actions else "-"
         values = [
             (event.timestamp.strftime("%Y-%m-%d %H:%M:%S"), event.timestamp.timestamp()),
             (_alert_severity_text(event.severity), _alert_severity_sort_key(event.severity)),
@@ -316,11 +316,20 @@ def _session_state_sort_key(state: str) -> int:
     }.get(state, 99)
 
 
+def _session_state_label(state: str) -> str:
+    return {
+        "Active": "실행 중",
+        "Archived": "보관됨",
+        "Pause": "일시중지",
+        "Will Delete": "삭제 예정",
+    }.get(state, state or "-")
+
+
 def _session_mode_label(session: object) -> str:
     mode = _session_mode_value(session)
     return {
-        "full_route": "Full Route",
-        "final_hop_only": "Final Hop Only",
+        "full_route": "전체 경로",
+        "final_hop_only": "최종 IP만",
     }.get(mode, mode or "-")
 
 
@@ -328,7 +337,7 @@ def _session_probe_label(session: object) -> str:
     probe_engine = _session_probe_value(session)
     return {
         "icmp": "ICMP",
-        "tcp_connect": "TCP Connect",
+        "tcp_connect": "TCP 연결",
     }.get(probe_engine, probe_engine or "-")
 
 
@@ -385,7 +394,7 @@ def _session_tooltip(session: object) -> str:
         lines.append(last_error)
     resumed_from = str(getattr(session, "resumed_from_session_id", "") or "")
     if resumed_from:
-        lines.append(f"Resumed from: {resumed_from}")
+        lines.append(f"원본 세션: {resumed_from}")
     return "\n".join(lines)
 
 
@@ -405,6 +414,23 @@ def _alert_severity_text(severity: str) -> str:
     }.get(severity.casefold(), severity.upper())
 
 
+def _alert_action_text(action: str) -> str:
+    return {
+        "timeline_annotation": "타임라인",
+        "comment": "코멘트",
+        "log": "로그",
+        "beep": "소리",
+        "image": "이미지",
+        "email": "이메일",
+        "email_failed": "이메일 실패",
+        "rest": "REST",
+        "rest_failed": "REST 실패",
+        "executable": "실행파일",
+        "executable_failed": "실행파일 실패",
+        "route_adjustment": "경로 조정",
+    }.get(action, action)
+
+
 def fmt_ms(value: float | None) -> str:
     return "" if value is None else f"{value:.1f}"
 
@@ -417,6 +443,21 @@ def display_status(snapshot: MetricSnapshot) -> str:
     if snapshot.loss_percent >= 5 or (snapshot.jitter_ms is not None and snapshot.jitter_ms >= 30):
         return "WARNING"
     return snapshot.status
+
+
+def _status_display_text(status: object) -> str:
+    text = str(status or "")
+    return {
+        "OK": "정상",
+        "WARNING": "주의",
+        "CRITICAL": "장애",
+        "PAUSED": "일시중지",
+        "TIMEOUT": "응답 없음",
+        "UNREACHABLE": "도달 불가",
+        "ERROR": "오류",
+        "NO_PING_TARGET": "대상 없음",
+        "WAITING": "대기",
+    }.get(text, text or "-")
 
 
 def target_problem_score(snapshot: MetricSnapshot) -> float:

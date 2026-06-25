@@ -37,9 +37,9 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
         return [
             "아직 분석할 측정 데이터가 없습니다.",
             _diagnostic_line(
-                "ANALYSIS_NO_DATA",
-                "No measured samples are available.",
-                "Run at least 3 samples before judging the path.",
+            "ANALYSIS_NO_DATA",
+                "측정된 샘플이 없습니다.",
+                "경로를 판단하기 전에 최소 3개 샘플을 측정하세요.",
             ),
         ]
 
@@ -52,8 +52,8 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
         analysis.append(
             _diagnostic_line(
                 "ANALYSIS_INSUFFICIENT_SAMPLES",
-                "The final target has fewer than 3 samples.",
-                "Keep the trace running longer, then compare the final target with earlier hops.",
+                "최종 대상 샘플이 3개 미만입니다.",
+                "측정을 더 진행한 뒤 최종 대상과 이전 Hop을 비교하세요.",
             )
         )
 
@@ -69,15 +69,15 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
             analysis.append(
                 _diagnostic_line(
                     "ANALYSIS_FIRST_HOP_LAN_WIFI",
-                    "Packet loss starts at the first hop and reaches the final target.",
-                    "Check the local cable, Wi-Fi signal, AP, gateway, and try a wired test.",
+                    "첫 Hop에서 시작된 패킷 손실이 최종 대상까지 이어집니다.",
+                    "로컬 케이블, Wi-Fi 신호, AP, 게이트웨이를 확인하고 유선 테스트도 시도하세요.",
                 )
             )
             analysis.append(
                 _cause_line(
                     "CAUSE_LOCAL_LAN_WIFI",
-                    "The first hop and final target show the same packet-loss symptom.",
-                    "Start troubleshooting at the local NIC, cable, Wi-Fi/AP, switch port, or default gateway.",
+                    "첫 Hop과 최종 대상에 같은 패킷 손실 증상이 보입니다.",
+                    "로컬 NIC, 케이블, Wi-Fi/AP, 스위치 포트, 기본 게이트웨이부터 점검하세요.",
                 )
             )
         else:
@@ -89,9 +89,9 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                     else "CAUSE_FIREWALL_OR_TARGET_FILTER"
                 )
                 target_only_action = (
-                    "Confirm whether the host blocks ICMP, then retry with TCP Connect on the real service port such as 443."
+                    "대상이 ICMP를 차단하는지 확인한 뒤 443 같은 실제 서비스 포트로 TCP 연결 측정을 다시 시도하세요."
                     if final.loss_percent >= 100.0
-                    else "Confirm the service port, host firewall, upstream filtering, and test with TCP Connect on the expected port."
+                    else "서비스 포트, 호스트 방화벽, 상위 구간 필터링을 확인하고 예상 포트로 TCP 연결 측정을 테스트하세요."
                 )
                 analysis.append(
                     "최종 대상에서 주로 손실이 보입니다. 대상 서버, 방화벽, 서비스 구간 문제 가능성이 있습니다."
@@ -99,14 +99,14 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
                 analysis.append(
                     _diagnostic_line(
                         "ANALYSIS_TARGET_ONLY_LOSS_OR_FILTER",
-                        "Loss is visible mainly at the final target.",
-                        "Check the target service/firewall and retry with TCP Connect on the service port, usually 443.",
+                        "손실이 주로 최종 대상에서 보입니다.",
+                        "대상 서비스/방화벽을 확인하고 보통 443 같은 서비스 포트로 TCP 연결 측정을 다시 시도하세요.",
                     )
                 )
                 analysis.append(
                     _cause_line(
                         target_only_code,
-                        "Earlier hops are healthy, but the final target shows loss or timeout.",
+                        "이전 Hop은 정상이나 최종 대상에서 손실 또는 응답 없음이 보입니다.",
                         target_only_action,
                     )
                 )
@@ -126,15 +126,15 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
             analysis.append(
                 _diagnostic_line(
                     "ANALYSIS_MIDDLE_HOP_ICMP_RATE_LIMIT",
-                    f"Only intermediate hops show loss: {hop_list}. The final target is healthy.",
-                    "Do not treat middle-hop-only loss as an outage unless the final target has the same symptom.",
+                    f"중간 Hop에서만 손실이 보입니다: {hop_list}. 최종 대상은 정상입니다.",
+                    "최종 대상에도 같은 증상이 없다면 중간 Hop만의 손실을 장애로 판단하지 마세요.",
                 )
             )
             analysis.append(
                 _cause_line(
                     "CAUSE_INTERMEDIATE_HOP_ICMP_RATE_LIMIT",
-                    f"{hop_list} shows loss while the final target remains healthy.",
-                    "Treat this as ICMP rate-limit or firewall deprioritization unless later hops inherit the same loss.",
+                    f"{hop_list}에서는 손실이 보이지만 최종 대상은 정상입니다.",
+                    "뒤 Hop까지 같은 손실이 이어지지 않으면 ICMP 응답 제한 또는 방화벽 우선순위 저하로 판단하세요.",
                 )
             )
         isolated_latency = _isolated_middle_latency_hops(sampled_hops, final)
@@ -146,35 +146,35 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
             analysis.append(
                 _diagnostic_line(
                     "ANALYSIS_MIDDLE_HOP_LATENCY_DEPRIORITIZED",
-                    f"Only intermediate hops show high latency: {hop_list}. The final target is healthy.",
-                    "Do not treat middle-hop-only latency as congestion unless later hops or the final target inherit it.",
+                    f"중간 Hop에서만 높은 지연이 보입니다: {hop_list}. 최종 대상은 정상입니다.",
+                    "뒤 Hop 또는 최종 대상까지 같은 지연이 이어지지 않으면 혼잡으로 판단하지 마세요.",
                 )
             )
             analysis.append(
                 _cause_line(
                     "CAUSE_INTERMEDIATE_HOP_ICMP_DEPRIORITIZATION",
-                    f"{hop_list} has high latency while the final target remains healthy.",
-                    "Treat this as ICMP response deprioritization or control-plane rate limiting unless the final target also slows down.",
+                    f"{hop_list}에서는 지연이 높지만 최종 대상은 정상입니다.",
+                    "최종 대상도 느려지지 않는다면 ICMP 응답 우선순위 저하 또는 제어평면 제한으로 판단하세요.",
                 )
             )
         isolated_jitter = _isolated_middle_jitter_hops(sampled_hops, final)
         if isolated_jitter:
             hop_list = ", ".join(f"Hop {snapshot.hop_index}" for snapshot in isolated_jitter[:5])
             analysis.append(
-                f"{hop_list} shows high latency variation only at intermediate hops while the final target is healthy. This usually points to ICMP/control-plane deprioritization."
+                f"{hop_list}에서만 지연 변동이 크고 최종 대상은 정상입니다. 중간 장비의 ICMP/제어평면 응답 우선순위 저하 가능성이 큽니다."
             )
             analysis.append(
                 _diagnostic_line(
                     "ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED",
-                    f"Only intermediate hops show high latency variation: {hop_list}. The final target is healthy.",
-                    "Do not treat middle-hop-only latency variation as Wi-Fi or bandwidth congestion unless the final target also varies.",
+                    f"중간 Hop에서만 높은 지연 변동이 보입니다: {hop_list}. 최종 대상은 정상입니다.",
+                    "최종 대상도 함께 흔들리지 않으면 중간 Hop만의 지연 변동을 Wi-Fi 또는 대역폭 혼잡으로 판단하지 마세요.",
                 )
             )
             analysis.append(
                 _cause_line(
                     "CAUSE_INTERMEDIATE_HOP_JITTER_DEPRIORITIZATION",
-                    f"{hop_list} has high latency variation while the final target remains healthy.",
-                    "Treat this as ICMP response deprioritization or control-plane rate limiting unless later hops inherit the same latency variation.",
+                    f"{hop_list}에서는 지연 변동이 크지만 최종 대상은 정상입니다.",
+                    "뒤 Hop까지 같은 지연 변동이 이어지지 않으면 ICMP 응답 우선순위 저하 또는 제어평면 제한으로 판단하세요.",
                 )
             )
 
@@ -187,15 +187,15 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
         analysis.append(
             _diagnostic_line(
                 "ANALYSIS_JITTER_OR_WIRELESS_CONGESTION",
-                f"High latency variation is visible at {hop_list}.",
-                "Check Wi-Fi quality, local congestion, and bandwidth saturation during the focus window.",
+                f"{hop_list}에서 높은 지연 변동이 보입니다.",
+                "포커스 구간의 Wi-Fi 품질, 로컬 혼잡, 대역폭 포화를 확인하세요.",
             )
         )
         analysis.append(
             _cause_line(
                 "CAUSE_JITTER_OR_LOCAL_CONGESTION",
-                f"Latency variation is high at {hop_list}.",
-                "Compare with local Wi-Fi signal, link utilization, VPN load, and upload/download saturation.",
+                f"{hop_list}에서 지연 변동이 큽니다.",
+                "로컬 Wi-Fi 신호, 링크 사용률, VPN 부하, 업로드/다운로드 포화 상태와 비교하세요.",
             )
         )
 
@@ -206,12 +206,12 @@ def analyze_path(snapshots: list[MetricSnapshot], target_snapshot: MetricSnapsho
         analysis.append(
             _diagnostic_line(
                 "ANALYSIS_NO_CLEAR_PATH_ISSUE",
-                "No clear loss or latency growth is visible in the current samples.",
-                "Keep monitoring or apply a focus range around the user-reported bad period.",
+                "현재 샘플에서는 뚜렷한 손실 또는 지연 증가가 보이지 않습니다.",
+                "모니터링을 계속하거나 사용자가 문제를 느낀 시간대에 포커스 구간을 적용하세요.",
             )
         )
 
-    analysis.append("주의: 중간 Hop의 packet loss는 ICMP rate limit 또는 방화벽 정책일 수 있으므로 최종 대상 상태와 함께 판단해야 합니다.")
+    analysis.append("주의: 중간 Hop의 패킷 손실은 ICMP 응답 제한 또는 방화벽 정책일 수 있으므로 최종 대상 상태와 함께 판단해야 합니다.")
     return analysis
 
 
@@ -231,25 +231,25 @@ def _detect_segment_issue(
         if all(_lossy(item) for item in tail):
             cause_code = "CAUSE_LOCAL_LAN_WIFI" if snapshot.hop_index <= 1 else "CAUSE_ISP_OR_UPSTREAM_SEGMENT"
             cause_action = (
-                "Check the local gateway, cable, Wi-Fi/AP, and switch port before escalating."
+                "상위 구간으로 넘기기 전에 로컬 게이트웨이, 케이블, Wi-Fi/AP, 스위치 포트를 확인하세요."
                 if snapshot.hop_index <= 1
-                else f"Escalate with a focused export showing the first affected hop around Hop {snapshot.hop_index}."
+                else f"Hop {snapshot.hop_index} 주변의 첫 영향 Hop이 보이는 포커스 내보내기 자료로 전달하세요."
             )
             return [
                 f"Hop {snapshot.hop_index} 이후 여러 Hop에서 손실이 이어집니다. 해당 구간 이후 장애 가능성이 있습니다.",
                 _diagnostic_line(
                     "ANALYSIS_SEGMENT_LOSS_AFTER_HOP",
-                    f"Loss is carried from Hop {snapshot.hop_index} to later hops.",
-                    f"Focus on the boundary before Hop {snapshot.hop_index} and export that period for the provider.",
+                    f"Hop {snapshot.hop_index}부터 뒤 Hop까지 손실이 이어집니다.",
+                    f"Hop {snapshot.hop_index} 직전 경계를 중심으로 포커스를 잡고 해당 기간을 제공자에게 전달하세요.",
                 ),
                 _cause_line(
                     cause_code,
-                    f"Loss starts at Hop {snapshot.hop_index} and is inherited by later hops.",
+                    f"Hop {snapshot.hop_index}에서 손실이 시작되어 뒤 Hop으로 이어집니다.",
                     cause_action,
                 ),
                 _cause_line(
                     _provider_handoff_code(snapshot),
-                    f"The first affected hop is Hop {snapshot.hop_index}; later hops and the final target inherit the loss.",
+                    f"첫 영향 구간은 Hop {snapshot.hop_index}이며 뒤 Hop과 최종 대상도 손실을 이어받습니다.",
                     _provider_handoff_action(snapshot),
                 ),
             ]
@@ -266,18 +266,18 @@ def _detect_segment_issue(
                 f"Hop {snapshot.hop_index} 이후 평균 지연시간이 크게 증가합니다. 해당 구간 이후 혼잡 또는 라우팅 품질 저하 가능성이 있습니다.",
                 _diagnostic_line(
                     "ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION",
-                    f"Average latency jumps by at least {LATENCY_JUMP_MS:.0f} ms at Hop {snapshot.hop_index}.",
-                    "Check upload/download saturation, QoS, VPN load, and ISP congestion during the same period.",
+                    f"Hop {snapshot.hop_index}에서 평균 지연이 {LATENCY_JUMP_MS:.0f} ms 이상 증가합니다.",
+                    "같은 시간대의 업로드/다운로드 포화, QoS, VPN 부하, ISP 혼잡을 확인하세요.",
                 ),
                 _cause_line(
                     "CAUSE_BANDWIDTH_SATURATION",
-                    f"Average latency jumps by at least {LATENCY_JUMP_MS:.0f} ms at Hop {snapshot.hop_index}.",
-                    "Check interface utilization, upload/download saturation, VPN load, QoS, and congestion at the same time window.",
+                    f"Hop {snapshot.hop_index}에서 평균 지연이 {LATENCY_JUMP_MS:.0f} ms 이상 증가합니다.",
+                    "같은 시간대의 인터페이스 사용률, 업로드/다운로드 포화, VPN 부하, QoS, 혼잡 상태를 확인하세요.",
                 ),
                 _cause_line(
                     "CAUSE_PROVIDER_OR_BORDER_CONGESTION",
-                    f"Latency growth starts at Hop {snapshot.hop_index} and is inherited by the final target.",
-                    "Send a focused report with the exact bad time window, the first affected hop, and user-impact notes.",
+                    f"Hop {snapshot.hop_index}에서 지연 증가가 시작되어 최종 대상까지 이어집니다.",
+                    "정확한 장애 시간대, 첫 영향 Hop, 사용자 영향 메모가 포함된 포커스 보고서를 전달하세요.",
                 ),
             ]
         previous_avg = snapshot.avg_latency_ms
@@ -287,8 +287,8 @@ def _detect_segment_issue(
             "최종 대상까지 손실이 이어집니다. 경로 후단 또는 대상 구간 장애 가능성이 있습니다.",
             _diagnostic_line(
                 "ANALYSIS_END_TO_END_LOSS",
-                "Loss reaches the final target, but the start point is not isolated yet.",
-                "Compare the focused final-hop loss with each earlier hop to find the first matching symptom.",
+                "손실이 최종 대상까지 도달했지만 시작 지점은 아직 분리되지 않았습니다.",
+                "포커스 구간의 최종 Hop 손실과 이전 Hop을 비교해 같은 증상이 처음 시작되는 지점을 찾으세요.",
             ),
         ]
 
@@ -343,7 +343,7 @@ def _jittery(snapshot: MetricSnapshot) -> bool:
 
 
 def _snapshot_label(snapshot: MetricSnapshot) -> str:
-    return "Target" if snapshot.hop_index <= 0 else f"Hop {snapshot.hop_index}"
+    return "최종 대상" if snapshot.hop_index <= 0 else f"Hop {snapshot.hop_index}"
 
 
 def _latency_jump_is_inherited(
@@ -370,10 +370,9 @@ def _provider_handoff_code(snapshot: MetricSnapshot) -> str:
 
 def _provider_handoff_action(snapshot: MetricSnapshot) -> str:
     if snapshot.hop_index <= 1:
-        return "Test wired, check Wi-Fi/AP, gateway, local switch port, and local link errors before escalating."
+        return "상위 구간으로 넘기기 전에 유선 테스트, Wi-Fi/AP, 게이트웨이, 로컬 스위치 포트, 로컬 링크 오류를 확인하세요."
     return (
-        f"Build a report for the provider showing Hop {snapshot.hop_index} as the first affected hop, "
-        "the final target impact, and any user-impact comments."
+        f"Hop {snapshot.hop_index}가 첫 영향 Hop임을 보여 주고, 최종 대상 영향과 사용자 영향 메모를 포함한 보고서를 만드세요."
     )
 
 
@@ -386,20 +385,20 @@ def _append_overlap_guidance(analysis: list[str]) -> None:
     analysis.append(
         _diagnostic_line(
             "ANALYSIS_MULTIPLE_SYMPTOMS_OVERLAP",
-            f"Multiple symptom families are present in the current samples: {symptom_label}.",
+            f"현재 샘플에 여러 증상 유형이 함께 보입니다: {symptom_label}.",
             (
-                "Start with the final target impact, then find the earliest hop where the same symptoms "
-                "begin; keep isolated middle-hop ICMP symptoms separate."
+                "최종 대상 영향을 먼저 보고, 같은 증상이 처음 시작되는 Hop을 찾으세요. "
+                "중간 Hop에만 보이는 ICMP 증상은 별도로 분리해서 판단하세요."
             ),
         )
     )
     analysis.append(
         _cause_line(
             "CAUSE_MULTIPLE_SYMPTOM_OVERLAP",
-            f"The focused samples include overlapping symptom families: {symptom_label}.",
+            f"포커스 샘플에 겹치는 증상 유형이 포함되어 있습니다: {symptom_label}.",
             (
-                "Prioritize the final destination and the first inherited hop before escalating, "
-                "and avoid blaming isolated intermediate hops unless the final target shares the symptom."
+                "상위 구간으로 넘기기 전에 최종 목적지와 같은 증상이 이어지는 첫 Hop을 우선 확인하고, "
+                "최종 대상에 같은 증상이 없으면 고립된 중간 Hop을 원인으로 단정하지 마세요."
             ),
         )
     )
@@ -424,27 +423,27 @@ def _symptom_family(line: str) -> str | None:
             "ANALYSIS_END_TO_END_LOSS:",
         )
     ):
-        return "loss"
+        return "손실"
     if line.startswith(
         (
             "ANALYSIS_MIDDLE_HOP_LATENCY_DEPRIORITIZED:",
             "ANALYSIS_BANDWIDTH_SATURATION_OR_CONGESTION:",
         )
     ):
-        return "latency"
+        return "지연"
     if line.startswith(
         (
             "ANALYSIS_MIDDLE_HOP_JITTER_DEPRIORITIZED:",
             "ANALYSIS_JITTER_OR_WIRELESS_CONGESTION:",
         )
     ):
-        return "latency variation"
+        return "지연 변동"
     return None
 
 
 def _diagnostic_line(code: str, summary: str, action: str) -> str:
-    return f"{code}: {summary} Action: {action}"
+    return f"{code}: {summary} 조치: {action}"
 
 
 def _cause_line(code: str, evidence: str, action: str) -> str:
-    return f"{code}: Evidence: {evidence} Action: {action}"
+    return f"{code}: 근거: {evidence} 조치: {action}"

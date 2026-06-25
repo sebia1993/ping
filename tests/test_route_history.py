@@ -48,7 +48,7 @@ def test_route_history_detects_added_and_removed_hops() -> None:
 
     assert change is not None
     assert change.added_hops == (2,)
-    assert "added Hop 2" in change.summary
+    assert "추가 Hop 2" in change.summary
 
 
 def test_route_log_persists_snapshots_and_reads_changes_in_range(tmp_path) -> None:
@@ -82,7 +82,7 @@ def test_route_log_persists_snapshots_and_reads_changes_in_range(tmp_path) -> No
 
     assert len(loaded) == 1
     assert loaded[0].changed_hops == (1,)
-    assert loaded[0].summary == "changed Hop 1"
+    assert loaded[0].summary == "변경 Hop 1"
     assert "H1:192.0.2.1" in route_path_for_assertion(loaded[0].previous)
 
 

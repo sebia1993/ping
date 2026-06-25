@@ -117,7 +117,7 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.session_state_label.setProperty("tone", "neutral")
     owner.target_input.textChanged.connect(owner.on_target_input_changed)
     owner.warning_label = QLabel(
-        "도메인과 IPv6은 등록하지 않습니다. 중간 Hop의 packet loss는 ICMP rate limit 또는 방화벽 정책일 수 있으므로 최종 대상 상태와 함께 판단하세요."
+        "도메인과 IPv6은 등록하지 않습니다. 중간 Hop의 패킷 손실은 ICMP 응답 제한 또는 방화벽 정책일 수 있으므로 최종 대상 상태와 함께 판단하세요."
     )
     owner.warning_label.setObjectName("warningText")
     owner.warning_label.setWordWrap(True)

@@ -59,7 +59,7 @@ class LatencyGraphWidget(QWidget):
 
     def set_points(self, points: list[HopObservation]) -> None:
         self._points = list(points)
-        self.set_series([TimelineSeries("target", "Target", self._points)])
+        self.set_series([TimelineSeries("target", "대상", self._points)])
 
     def set_main_graph_mode(self, enabled: bool) -> None:
         self._main_graph_mode = enabled
