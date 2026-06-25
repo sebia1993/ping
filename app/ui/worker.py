@@ -854,22 +854,22 @@ class MeasurementWorker(QThread):
             and trace_future is None
             and route_adjustment_keys
         ):
-            reason = "target alert"
+            reason = "대상 알림"
             for event in events:
                 if event.key in route_adjustment_keys:
                     reason = event.title
                     break
             self.measurement_mode = MEASUREMENT_MODE_FULL_ROUTE
             self._auto_full_route_active = True
-            self.status_message.emit(f"Auto Full Route enabled: {reason}")
+            self.status_message.emit(f"자동 Full Route 전환: {reason}")
             return self._start_trace_refresh(executor)
         if self._auto_full_route_active and not route_adjustment_keys:
             self._auto_full_route_active = False
             if self.auto_restore_final_hop_on_recovery:
                 self.measurement_mode = MEASUREMENT_MODE_FINAL_HOP_ONLY
-                self.status_message.emit("Auto Final Hop Only restored: alert recovered")
+                self.status_message.emit("자동 Final Hop Only 복원: 알림 정상 복구")
             else:
-                self.status_message.emit("Auto Full Route alert recovered; Full Route remains enabled")
+                self.status_message.emit("알림 정상 복구: Full Route 유지")
             return trace_future
         return trace_future
 

@@ -525,9 +525,9 @@ class MainWindow(QMainWindow):
         self.states_box.setMaximumHeight(126)
         self.states_box.setObjectName("statesBox")
         self.states_box.setPlainText(
-            "OK: 최종 대상 응답 정상, 손실률 0-5%\n"
-            "Warning: 손실률 5-20% 또는 jitter 30ms 이상\n"
-            "Critical: 손실률 20% 이상 또는 연속 timeout"
+            "정상: 최종 대상 응답 정상, 손실률 0-5%\n"
+            "주의: 손실률 5-20% 또는 지터 30ms 이상\n"
+            "심각: 손실률 20% 이상 또는 연속 timeout"
         )
 
         diagnostics_title = QLabel("측정 엔진 상태")
@@ -559,13 +559,13 @@ class MainWindow(QMainWindow):
         self.latency_threshold_spin.setValue(100)
         self.latency_threshold_spin.setSuffix("ms")
         self.jitter_alert_check = QCheckBox("지터")
-        self.jitter_alert_check.setChecked(True)
+        self.jitter_alert_check.setChecked(False)
         self.jitter_threshold_spin = QSpinBox()
         self.jitter_threshold_spin.setRange(1, 1000)
         self.jitter_threshold_spin.setValue(30)
         self.jitter_threshold_spin.setSuffix("ms")
         self.mos_alert_check = QCheckBox("MOS")
-        self.mos_alert_check.setToolTip("Alert when estimated voice quality drops below the threshold")
+        self.mos_alert_check.setToolTip("추정 음성 품질이 기준보다 낮으면 알림을 발생시킵니다.")
         self.mos_threshold_spin = QDoubleSpinBox()
         self.mos_threshold_spin.setRange(1.0, 4.5)
         self.mos_threshold_spin.setDecimals(1)
@@ -576,7 +576,7 @@ class MainWindow(QMainWindow):
         self.mos_window_spin.setValue(5)
         self.mos_window_spin.setSuffix("m")
         self.route_ip_alert_check = QCheckBox("경로 IP")
-        self.route_ip_alert_check.setToolTip("Alert when the watched IPv4 address appears in the current route")
+        self.route_ip_alert_check.setToolTip("감시 중인 IPv4 주소가 현재 경로에 나타나면 알림을 발생시킵니다.")
         self.route_ip_alert_edit = QLineEdit()
         self.route_ip_alert_edit.setPlaceholderText("192.0.2.1")
         self.route_ip_alert_edit.setMinimumWidth(105)
@@ -598,14 +598,14 @@ class MainWindow(QMainWindow):
         self.timer_window_spin.setSuffix("m")
         self.alert_start_action_check = QCheckBox("시작")
         self.alert_start_action_check.setChecked(True)
-        self.alert_start_action_check.setToolTip("Run selected actions when a new alert starts")
+        self.alert_start_action_check.setToolTip("새 알림이 시작될 때 선택한 동작을 실행합니다.")
         self.alert_end_action_check = QCheckBox("종료")
         self.alert_end_action_check.setChecked(True)
-        self.alert_end_action_check.setToolTip("Run selected actions when an active alert recovers")
+        self.alert_end_action_check.setToolTip("활성 알림이 정상 복구될 때 선택한 동작을 실행합니다.")
         self.alert_route_adjust_action_check = QCheckBox("경로 조정")
         self.alert_route_adjust_action_check.setChecked(False)
         self.alert_route_adjust_action_check.setToolTip(
-            "When Final Hop Only is active, switch to Full Route on matching target alerts"
+            "Final Hop Only 상태에서 대상 알림이 발생하면 Full Route로 전환합니다."
         )
         self.alert_timeline_action_check = QCheckBox("타임라인")
         self.alert_timeline_action_check.setChecked(True)
@@ -659,7 +659,7 @@ class MainWindow(QMainWindow):
         alert_rule_row.addWidget(self.mos_alert_check)
         alert_rule_row.addWidget(QLabel("<"))
         alert_rule_row.addWidget(self.mos_threshold_spin)
-        alert_rule_row.addWidget(QLabel("MOS Window"))
+        alert_rule_row.addWidget(QLabel("MOS 구간"))
         alert_rule_row.addWidget(self.mos_window_spin)
         alert_rule_row.addWidget(self.route_ip_alert_check)
         alert_rule_row.addWidget(self.route_ip_alert_edit)
@@ -691,7 +691,7 @@ class MainWindow(QMainWindow):
         self.alerts_box.setReadOnly(True)
         self.alerts_box.setMaximumHeight(120)
         self.alerts_box.setObjectName("statesBox")
-        self.alerts_box.setPlainText("No alert events.")
+        self.alerts_box.setPlainText("알림 이벤트 없음.")
 
         route_title = QLabel("경로 변경")
         route_title.setObjectName("panelTitle")
@@ -2041,7 +2041,7 @@ class MainWindow(QMainWindow):
             TimelineAnnotation(
                 change.timestamp,
                 change.timestamp,
-                "Route changed",
+                "경로 변경",
                 None,
             )
             for change in self.route_changes
@@ -2138,7 +2138,7 @@ class MainWindow(QMainWindow):
             loss_window_seconds=int(loss_window_minutes) * 60,
             latency_enabled=self.latency_alert_check.isChecked() if hasattr(self, "latency_alert_check") else True,
             latency_threshold_ms=latency_threshold,
-            jitter_enabled=self.jitter_alert_check.isChecked() if hasattr(self, "jitter_alert_check") else True,
+            jitter_enabled=self.jitter_alert_check.isChecked() if hasattr(self, "jitter_alert_check") else False,
             jitter_threshold_ms=jitter_threshold,
             sample_enabled=self.sample_alert_check.isChecked() if hasattr(self, "sample_alert_check") else True,
             sample_window_count=int(sample_window),
@@ -2409,7 +2409,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _is_alert_end_event(event: AlertEvent) -> bool:
-        return event.title == "Alert ended" or ":ended:" in event.key
+        return event.title in {"정상 복구", "Alert ended"} or ":ended:" in event.key
 
     def _alert_email_config(self) -> AlertEmailConfig | None:
         if not hasattr(self, "alert_email_server_edit"):
@@ -2626,10 +2626,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "alert_table"):
             update_alert_table(self.alert_table, self.alert_events, self.alert_event_actions)
         if not self.alert_events:
-            self.alerts_box.setPlainText("No alert events.")
+            self.alerts_box.setPlainText("알림 이벤트 없음.")
             return
         lines = [
-            f"{event.timestamp.strftime('%H:%M:%S')} | {event.severity.upper()} | {event.title}: {event.message}"
+            f"{event.timestamp.strftime('%H:%M:%S')} | {_alert_severity_text(event.severity)} | {event.title}: {event.message}"
             for event in reversed(self.alert_events[-8:])
         ]
         self.alerts_box.setPlainText("\n".join(lines))
@@ -3818,6 +3818,14 @@ def _all_targets_summary_line(snapshots: list[MetricSnapshot], *, total_count: i
     return " | ".join(parts)
 
 
+def _alert_severity_text(severity: str) -> str:
+    return {
+        "critical": "심각",
+        "warning": "주의",
+        "info": "정보",
+    }.get(severity.casefold(), severity.upper())
+
+
 def _target_snapshot_matches_filter(snapshot: MetricSnapshot, terms: list[str], state_filter: str) -> bool:
     status = display_status(snapshot)
     if state_filter == "problem":
@@ -4265,7 +4273,7 @@ def _alert_event_from_action_row(row: dict[str, str], index: int) -> AlertEvent 
     start = _parse_iso_datetime(row.get("start", "")) or timestamp
     end = _parse_iso_datetime(row.get("end", "")) or timestamp
     source = row.get("source", "") or "alert"
-    title = row.get("title", "") or ("Route changed" if source == "route" else "Alert")
+    title = row.get("title", "") or ("경로 변경" if source == "route" else "알림")
     message = row.get("message", "")
     severity = row.get("severity", "") or ("warning" if source == "route" else "info")
     key = _alert_event_key_from_action_row(source, timestamp, title, message, index)

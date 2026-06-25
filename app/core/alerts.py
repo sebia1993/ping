@@ -26,7 +26,7 @@ class AlertRuleConfig:
     loss_window_seconds: int = 180
     latency_enabled: bool = True
     latency_threshold_ms: float = 100.0
-    jitter_enabled: bool = True
+    jitter_enabled: bool = False
     jitter_threshold_ms: float = 30.0
     sample_enabled: bool = True
     sample_window_count: int = 10
@@ -90,11 +90,11 @@ def evaluate_target_alerts(
         if latency_event is not None:
             active_keys.add(latency_event.key)
             events.append(latency_event)
-    if config is None or config.jitter_enabled:
+    if config is not None and config.jitter_enabled:
         jitter_event = _jitter_alert(
             points,
             jitter_threshold_ms,
-            config.sample_window_count if config else 10,
+            config.sample_window_count,
         )
         if jitter_event is not None:
             active_keys.add(jitter_event.key)
@@ -134,8 +134,8 @@ def alert_recovery_event(alert_key: str, timestamp: datetime) -> AlertEvent:
         start=timestamp,
         end=timestamp,
         severity="info",
-        title="Alert ended",
-        message=f"{title} recovered",
+        title="정상 복구",
+        message=f"{title} 정상 복구",
     )
 
 
@@ -146,7 +146,7 @@ def route_change_alert(timestamp: datetime, summary: str) -> AlertEvent:
         start=timestamp,
         end=timestamp,
         severity="warning",
-        title="Route changed",
+        title="경로 변경",
         message=summary,
         series_key=None,
     )
@@ -178,8 +178,8 @@ def evaluate_route_ip_alert(
             start=timestamp,
             end=timestamp,
             severity="warning",
-            title="Route IP alert",
-            message=f"Watched IP {watched_ip} appeared in route at Hop {first.hop_index}",
+            title="경로 IP 경고",
+            message=f"감시 IP {watched_ip}가 Hop {first.hop_index} 경로에 나타났습니다.",
             series_key=f"hop-{first.hop_index}" if first.hop_index > 0 else "target",
         )
     ]
@@ -221,8 +221,8 @@ def _loss_alert(
         start=window[0].timestamp,
         end=end,
         severity="critical",
-        title="Loss alert",
-        message=f"Packet loss {loss_percent:.1f}% for {window_seconds // 60}m",
+        title="손실 경고",
+        message=f"최근 {window_seconds // 60}분 동안 패킷 손실률 {loss_percent:.1f}%가 감지되었습니다.",
     )
 
 
@@ -238,8 +238,8 @@ def _latency_alert(points: list[HopObservation], threshold_ms: float) -> AlertEv
         start=latest.timestamp,
         end=latest.timestamp,
         severity="warning",
-        title="Latency alert",
-        message=f"Target latency {latest.latency_ms:.1f} ms >= {threshold_ms:.0f} ms",
+        title="지연 경고",
+        message=f"현재 지연 {latest.latency_ms:.1f} ms가 기준 {threshold_ms:.0f} ms 이상입니다.",
     )
 
 
@@ -266,8 +266,8 @@ def _jitter_alert(
         start=window[0].timestamp,
         end=window[-1].timestamp,
         severity="warning",
-        title="Jitter alert",
-        message=f"Target jitter {jitter_ms:.1f} ms >= {threshold_ms:.0f} ms over last {window_count} samples",
+        title="지터 경고",
+        message=f"최근 {window_count}개 샘플의 지터 {jitter_ms:.1f} ms가 기준 {threshold_ms:.0f} ms 이상입니다.",
     )
 
 
@@ -297,10 +297,10 @@ def _sample_count_alert(
         start=window[0].timestamp,
         end=window[-1].timestamp,
         severity="critical",
-        title="Sample count alert",
+        title="샘플 불량 경고",
         message=(
-            f"{len(bad_points)} of last {window_count} samples failed or exceeded "
-            f"{latency_threshold_ms:.0f} ms"
+            f"최근 {window_count}개 샘플 중 {len(bad_points)}개가 실패했거나 "
+            f"기준 {latency_threshold_ms:.0f} ms를 초과했습니다."
         ),
     )
 
@@ -335,8 +335,8 @@ def _timer_alert(
         start=bad_tail[0].timestamp,
         end=bad_tail[-1].timestamp,
         severity="critical",
-        title="Timer alert",
-        message=f"Target stayed failed or >= {latency_threshold_ms:.0f} ms for {duration_label}",
+        title="지속 장애 경고",
+        message=f"실패 또는 기준 {latency_threshold_ms:.0f} ms 이상 상태가 {duration_label} 동안 지속되었습니다.",
     )
 
 
@@ -362,8 +362,8 @@ def _mos_alert(
         start=window[0].timestamp,
         end=end,
         severity="critical",
-        title="MOS alert",
-        message=f"Estimated MOS {mos:.2f} < {threshold:.1f} over {window_seconds // 60}m",
+        title="MOS 품질 경고",
+        message=f"최근 {window_seconds // 60}분 추정 MOS {mos:.2f}가 기준 {threshold:.1f} 미만입니다.",
     )
 
 
@@ -410,19 +410,19 @@ def _sample_stdev(values: list[float]) -> float:
 
 def _alert_title_for_key(alert_key: str) -> str:
     if alert_key == LOSS_ALERT_KEY:
-        return "Loss alert"
+        return "손실 경고"
     if alert_key == LATENCY_ALERT_KEY:
-        return "Latency alert"
+        return "지연 경고"
     if alert_key == JITTER_ALERT_KEY:
-        return "Jitter alert"
+        return "지터 경고"
     if alert_key == SAMPLE_ALERT_KEY:
-        return "Sample count alert"
+        return "샘플 불량 경고"
     if alert_key == TIMER_ALERT_KEY:
-        return "Timer alert"
+        return "지속 장애 경고"
     if alert_key == MOS_ALERT_KEY:
-        return "MOS alert"
+        return "MOS 품질 경고"
     if alert_key.startswith(ROUTE_IP_ALERT_KEY_PREFIX):
-        return "Route IP alert"
+        return "경로 IP 경고"
     if alert_key.startswith("route_changed:"):
-        return "Route changed"
-    return "Alert"
+        return "경로 변경"
+    return "알림"

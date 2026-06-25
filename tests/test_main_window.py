@@ -109,7 +109,7 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.graph_png_scope_combo.isEnabled() is False
         assert window.loss_alert_check.isChecked() is True
         assert window.latency_alert_check.isChecked() is True
-        assert window.jitter_alert_check.isChecked() is True
+        assert window.jitter_alert_check.isChecked() is False
         assert window.sample_alert_check.isChecked() is True
         assert window.timer_alert_check.isChecked() is True
         assert window.alert_start_action_check.isChecked() is True
@@ -613,8 +613,8 @@ def test_main_window_restores_saved_alert_actions_when_opening_session(qt_app, t
         start=now,
         end=now,
         severity="warning",
-        title="Latency alert",
-        message="Target latency 120.0 ms >= 100 ms",
+        title="지연 경고",
+        message="현재 지연 120.0 ms가 기준 100 ms 이상입니다.",
     )
     append_alert_action(
         alert_action_log_path_for_session(sample_path),
@@ -640,13 +640,13 @@ def test_main_window_restores_saved_alert_actions_when_opening_session(qt_app, t
 
         window.open_selected_session()
 
-        assert [event.title for event in window.alert_events] == ["Latency alert"]
-        assert "Latency alert" in window.alerts_box.toPlainText()
+        assert [event.title for event in window.alert_events] == ["지연 경고"]
+        assert "지연 경고" in window.alerts_box.toPlainText()
         assert list(window.alert_event_actions.values()) == [["timeline_annotation", "comment"]]
         annotations = window.annotations_for_export()
         assert len(annotations) == 1
         assert annotations[0].source == "alert"
-        assert annotations[0].title == "Latency alert"
+        assert annotations[0].title == "지연 경고"
     finally:
         window.close()
 
@@ -2905,9 +2905,9 @@ def test_main_window_displays_route_change_history_and_graph_marker(qt_app) -> N
         assert "Hop 1" in window.route_changes_box.toPlainText()
         assert "Impact: before loss 0.0% avg 10.0 ms" in window.route_changes_box.toPlainText()
         assert "after loss 0.0% avg 12.0 ms" in window.route_changes_box.toPlainText()
-        assert "Route changed" in window.alerts_box.toPlainText()
+        assert "경로 변경" in window.alerts_box.toPlainText()
         assert len(window.graph._annotations) == 1
-        assert window.graph._annotations[0].label == "Route changed"
+        assert window.graph._annotations[0].label == "경로 변경"
         assert len(window.graph_detail_window.graph._annotations) == 1
     finally:
         window.close()
@@ -2955,9 +2955,9 @@ def test_main_window_loads_persisted_route_changes_with_timeline_range(qt_app, t
         assert "Hop 1" in window.route_changes_box.toPlainText()
         assert "Impact: before loss 0.0% avg 10.0 ms" in window.route_changes_box.toPlainText()
         assert "after loss 0.0% avg 12.0 ms" in window.route_changes_box.toPlainText()
-        assert "Route changed" in window.alerts_box.toPlainText()
+        assert "경로 변경" in window.alerts_box.toPlainText()
         assert [annotation.label for annotation in window.graph_detail_window.graph._annotations] == [
-            "Route changed"
+            "경로 변경"
         ]
         assert window.annotations_for_export()[0].source == "route"
     finally:
@@ -3002,7 +3002,7 @@ def test_main_window_open_session_does_not_replay_route_alert_actions(qt_app, tm
             start=change.timestamp,
             end=change.timestamp,
             severity="warning",
-            title="Route changed",
+            title="경로 변경",
             message=change.summary,
             series_key=None,
         ),
@@ -3031,7 +3031,7 @@ def test_main_window_open_session_does_not_replay_route_alert_actions(qt_app, tm
         rows = read_alert_actions(alert_action_log_path_for_session(sample_path))
         assert len(rows) == 1
         assert rows[0]["actions"] == "comment"
-        assert [event.title for event in window.alert_events] == ["Route changed"]
+        assert [event.title for event in window.alert_events] == ["경로 변경"]
         assert list(window.alert_event_actions.values()) == [["comment"]]
     finally:
         window.close()
@@ -3055,21 +3055,21 @@ def test_main_window_records_metric_alerts_and_graph_annotations(qt_app) -> None
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         text = window.alerts_box.toPlainText()
-        assert "Loss alert" in text
-        assert "Latency alert" in text
+        assert "손실 경고" in text
+        assert "지연 경고" in text
         assert window.alert_table.rowCount() == 2
         alert_titles = {
             window.alert_table.item(row, 2).text()
             for row in range(window.alert_table.rowCount())
         }
-        assert alert_titles == {"Loss alert", "Latency alert"}
+        assert alert_titles == {"손실 경고", "지연 경고"}
         first_row_actions = window.alert_table.item(0, 6).text()
         second_row_actions = window.alert_table.item(1, 6).text()
         assert {first_row_actions, second_row_actions} == {"timeline_annotation, comment"}
-        assert [annotation.label for annotation in window.graph._annotations] == ["Loss alert", "Latency alert"]
+        assert [annotation.label for annotation in window.graph._annotations] == ["손실 경고", "지연 경고"]
         assert [annotation.label for annotation in window.graph_detail_window.graph._annotations] == [
-            "Loss alert",
-            "Latency alert",
+            "손실 경고",
+            "지연 경고",
         ]
 
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
@@ -3100,9 +3100,9 @@ def test_main_window_custom_alert_rules_write_action_log(qt_app, tmp_path) -> No
 
         text = window.alerts_box.toPlainText()
         rows = read_alert_actions(window.alert_action_log_path)
-        assert "Loss alert" in text
-        assert "Latency alert" in text
-        assert [row["title"] for row in rows] == ["Loss alert", "Latency alert"]
+        assert "손실 경고" in text
+        assert "지연 경고" in text
+        assert [row["title"] for row in rows] == ["손실 경고", "지연 경고"]
         assert all(row["actions"] == "timeline_annotation;comment" for row in rows)
     finally:
         window.close()
@@ -3131,7 +3131,7 @@ def test_main_window_records_route_adjustment_action_for_final_hop_alert(qt_app,
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["title"] == "지연 경고"
         assert rows[0]["actions"] == "route_adjustment"
     finally:
         window.close()
@@ -3153,7 +3153,7 @@ def test_main_window_disabled_alert_condition_does_not_fire(qt_app, tmp_path) ->
 
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
-        assert window.alerts_box.toPlainText() == "No alert events."
+        assert window.alerts_box.toPlainText() == "알림 이벤트 없음."
         assert read_alert_actions(window.alert_action_log_path) == []
     finally:
         window.close()
@@ -3443,9 +3443,9 @@ def test_main_window_alert_action_selection_controls_log_beep_and_timeline(qt_ap
 
         rows = read_alert_actions(window.alert_action_log_path)
         assert beep_calls == [True]
-        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["title"] == "지연 경고"
         assert rows[0]["actions"] == "beep"
-        assert "Latency alert" in window.alerts_box.toPlainText()
+        assert "지연 경고" in window.alerts_box.toPlainText()
         assert window.graph._annotations == []
         assert window.annotations_for_export() == []
     finally:
@@ -3473,9 +3473,9 @@ def test_main_window_alert_log_action_writes_without_annotation(qt_app, tmp_path
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["title"] == "지연 경고"
         assert rows[0]["actions"] == "log"
-        assert "Latency alert" in window.alerts_box.toPlainText()
+        assert "지연 경고" in window.alerts_box.toPlainText()
         assert window.graph._annotations == []
         assert window.annotations_for_export() == []
     finally:
@@ -3510,7 +3510,7 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["title"] == "지연 경고"
         assert rows[0]["actions"] == "rest"
         assert posted == [
             (
@@ -3521,8 +3521,8 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
                     "start": "2026-01-01T12:00:00",
                     "end": "2026-01-01T12:00:00",
                     "severity": "warning",
-                    "title": "Latency alert",
-                    "message": "Target latency 90.0 ms >= 80 ms",
+                    "title": "지연 경고",
+                    "message": "현재 지연 90.0 ms가 기준 80 ms 이상입니다.",
                     "target": "198.51.100.10",
                     "series_key": "target",
                 },
@@ -3590,7 +3590,7 @@ def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, mo
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["title"] == "지연 경고"
         assert rows[0]["actions"] == "email"
         assert sent
         assert sent[0]["host"] == "smtp.example"
@@ -3600,9 +3600,9 @@ def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, mo
         assert sent[0]["security"] == main_window_module.ALERT_EMAIL_SECURITY_STARTTLS
         assert sent[0]["username"] == "alert-user"
         assert sent[0]["password_env"] == "NPD_SMTP_PASSWORD"
-        assert "Latency alert" in str(sent[0]["subject"])
+        assert "지연 경고" in str(sent[0]["subject"])
         assert "Target: 198.51.100.10" in str(sent[0]["body"])
-        assert "Target latency 90.0 ms >= 80 ms" in str(sent[0]["body"])
+        assert "현재 지연 90.0 ms가 기준 80 ms 이상입니다." in str(sent[0]["body"])
     finally:
         window.close()
 
@@ -3640,7 +3640,7 @@ def test_main_window_send_alert_email_supports_starttls_auth(qt_app, monkeypatch
             587,
             "npd@example.com",
             "ops@example.com",
-            "Latency alert",
+            "지연 경고",
             "body",
             security=main_window_module.ALERT_EMAIL_SECURITY_STARTTLS,
             username="alert-user",
@@ -3652,7 +3652,7 @@ def test_main_window_send_alert_email_supports_starttls_auth(qt_app, monkeypatch
             ("enter",),
             ("starttls",),
             ("login", "alert-user", "test-password"),
-            ("send", "npd@example.com", "ops@example.com", "Latency alert"),
+            ("send", "npd@example.com", "ops@example.com", "지연 경고"),
             ("exit",),
         ]
     finally:
@@ -3689,14 +3689,14 @@ def test_main_window_alert_executable_action_launches_configured_file(qt_app, tm
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["title"] == "지연 경고"
         assert rows[0]["actions"] == "executable"
         assert launched == [
             (
                 executable_path,
-                "Latency alert",
+                "지연 경고",
                 "198.51.100.10",
-                "Target latency 90.0 ms >= 80 ms",
+                "현재 지연 90.0 ms가 기준 80 ms 이상입니다.",
             )
         ]
     finally:
@@ -3778,19 +3778,19 @@ def test_main_window_records_sample_count_alert_and_recovery(qt_app, tmp_path) -
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], good_history, good_history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert [event.title for event in window.alert_events] == ["Sample count alert", "Alert ended"]
-        assert "Alert ended" in window.alerts_box.toPlainText()
+        assert [event.title for event in window.alert_events] == ["샘플 불량 경고", "정상 복구"]
+        assert "정상 복구" in window.alerts_box.toPlainText()
         assert window.alert_table.rowCount() == 2
         assert {
             window.alert_table.item(row, 2).text()
             for row in range(window.alert_table.rowCount())
-        } == {"Sample count alert", "Alert ended"}
+        } == {"샘플 불량 경고", "정상 복구"}
         assert {
             window.alert_table.item(row, 1).text()
             for row in range(window.alert_table.rowCount())
-        } == {"CRITICAL", "INFO"}
-        assert [row["title"] for row in rows] == ["Sample count alert", "Alert ended"]
-        assert rows[1]["message"] == "Sample count alert recovered"
+        } == {"심각", "정보"}
+        assert [row["title"] for row in rows] == ["샘플 불량 경고", "정상 복구"]
+        assert rows[1]["message"] == "샘플 불량 경고 정상 복구"
     finally:
         window.close()
 
@@ -3824,11 +3824,11 @@ def test_main_window_can_disable_recovery_alert_actions(qt_app, tmp_path) -> Non
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], good_history, good_history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert [event.title for event in window.alert_events] == ["Sample count alert", "Alert ended"]
-        assert [row["title"] for row in rows] == ["Sample count alert"]
+        assert [event.title for event in window.alert_events] == ["샘플 불량 경고", "정상 복구"]
+        assert [row["title"] for row in rows] == ["샘플 불량 경고"]
         assert window.alert_event_actions[window.alert_events[0].key] == ["timeline_annotation", "comment"]
         assert window.alert_event_actions[window.alert_events[1].key] == []
-        assert [annotation.label for annotation in window.graph._annotations] == ["Sample count alert"]
+        assert [annotation.label for annotation in window.graph._annotations] == ["샘플 불량 경고"]
     finally:
         window.close()
 
@@ -3849,6 +3849,7 @@ def test_main_window_records_jitter_alert_action(qt_app, tmp_path) -> None:
         window.alert_action_log_path = tmp_path / "session.alerts.csv"
         window.loss_threshold_spin.setValue(100)
         window.latency_threshold_spin.setValue(1000)
+        window.jitter_alert_check.setChecked(True)
         window.jitter_threshold_spin.setValue(20)
         window.sample_window_spin.setValue(4)
         window.sample_bad_spin.setValue(4)
@@ -3856,10 +3857,10 @@ def test_main_window_records_jitter_alert_action(qt_app, tmp_path) -> None:
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert "Jitter alert" in window.alerts_box.toPlainText()
-        assert [row["title"] for row in rows] == ["Jitter alert"]
-        assert rows[0]["message"] == "Target jitter 28.9 ms >= 20 ms over last 4 samples"
-        assert window.graph._annotations[0].label == "Jitter alert"
+        assert "지터 경고" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["지터 경고"]
+        assert rows[0]["message"] == "최근 4개 샘플의 지터 28.9 ms가 기준 20 ms 이상입니다."
+        assert window.graph._annotations[0].label == "지터 경고"
     finally:
         window.close()
 
@@ -3891,10 +3892,10 @@ def test_main_window_records_mos_alert_when_enabled(qt_app, tmp_path) -> None:
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert "MOS alert" in window.alerts_box.toPlainText()
-        assert [row["title"] for row in rows] == ["MOS alert"]
-        assert rows[0]["message"].startswith("Estimated MOS ")
-        assert window.graph._annotations[0].label == "MOS alert"
+        assert "MOS 품질 경고" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["MOS 품질 경고"]
+        assert rows[0]["message"].startswith("최근 1분 추정 MOS ")
+        assert window.graph._annotations[0].label == "MOS 품질 경고"
     finally:
         window.close()
 
@@ -3928,13 +3929,13 @@ def test_main_window_records_route_ip_alert_and_recovery(qt_app, tmp_path) -> No
         window.on_measurement_updated(second_snapshots, target_snapshot, [target_snapshot], ["live"], second_history, second_history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert [event.title for event in window.alert_events] == ["Route IP alert", "Alert ended"]
-        assert "Route IP alert" in window.alerts_box.toPlainText()
-        assert [row["title"] for row in rows] == ["Route IP alert", "Alert ended"]
+        assert [event.title for event in window.alert_events] == ["경로 IP 경고", "정상 복구"]
+        assert "경로 IP 경고" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["경로 IP 경고", "정상 복구"]
         assert [row["source"] for row in rows] == ["route", "route"]
-        assert rows[0]["message"] == "Watched IP 203.0.113.50 appeared in route at Hop 2"
-        assert rows[1]["message"] == "Route IP alert recovered"
-        assert [annotation.label for annotation in window.graph._annotations] == ["Route IP alert", "Alert ended"]
+        assert rows[0]["message"] == "감시 IP 203.0.113.50가 Hop 2 경로에 나타났습니다."
+        assert rows[1]["message"] == "경로 IP 경고 정상 복구"
+        assert [annotation.label for annotation in window.graph._annotations] == ["경로 IP 경고", "정상 복구"]
         assert window.annotations_for_export()[0].source == "route"
     finally:
         window.close()
@@ -3967,11 +3968,11 @@ def test_main_window_records_timer_alert_and_recovery(qt_app, tmp_path) -> None:
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], good_history, good_history)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert [event.title for event in window.alert_events] == ["Timer alert", "Alert ended"]
-        assert "Timer alert" in window.alerts_box.toPlainText()
-        assert [row["title"] for row in rows] == ["Timer alert", "Alert ended"]
-        assert rows[0]["message"] == "Target stayed failed or >= 100 ms for 1m"
-        assert rows[1]["message"] == "Timer alert recovered"
+        assert [event.title for event in window.alert_events] == ["지속 장애 경고", "정상 복구"]
+        assert "지속 장애 경고" in window.alerts_box.toPlainText()
+        assert [row["title"] for row in rows] == ["지속 장애 경고", "정상 복구"]
+        assert rows[0]["message"] == "실패 또는 기준 100 ms 이상 상태가 1m 동안 지속되었습니다."
+        assert rows[1]["message"] == "지속 장애 경고 정상 복구"
     finally:
         window.close()
 
@@ -3987,7 +3988,7 @@ def test_main_window_alert_image_action_saves_graph_after_render(qt_app, tmp_pat
 
     def fake_save_graph_png(path: Path) -> Path:
         assert window.graph._points == history
-        assert window.graph._annotations[0].label == "Latency alert"
+        assert window.graph._annotations[0].label == "지연 경고"
         saved_paths.append(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"png")
@@ -4009,7 +4010,7 @@ def test_main_window_alert_image_action_saves_graph_after_render(qt_app, tmp_pat
         assert saved_paths[0].parent == tmp_path / "alert_images"
         assert saved_paths[0].suffix == ".png"
         assert rows[0]["actions"] == "timeline_annotation;comment;image"
-        assert rows[0]["title"] == "Latency alert"
+        assert rows[0]["title"] == "지연 경고"
         assert window.pending_alert_image_keys == set()
         assert window.status_label.text() == f"Alert image saved: {saved_paths[0]}"
     finally:
@@ -4035,8 +4036,8 @@ def test_main_window_exports_alert_route_and_manual_annotations(qt_app) -> None:
                 start=now + timedelta(seconds=10),
                 end=now + timedelta(seconds=10),
                 severity="warning",
-                title="Latency alert",
-                message="Target latency 125.0 ms >= 100 ms",
+                title="지연 경고",
+                message="현재 지연 125.0 ms가 기준 100 ms 이상입니다.",
             ),
             AlertEvent(
                 key="route_changed:2026-01-01T12:00:20",
@@ -4044,7 +4045,7 @@ def test_main_window_exports_alert_route_and_manual_annotations(qt_app) -> None:
                 start=now + timedelta(seconds=20),
                 end=now + timedelta(seconds=20),
                 severity="warning",
-                title="Route changed",
+                title="경로 변경",
                 message="changed Hop 1",
                 series_key=None,
             ),
@@ -4068,8 +4069,8 @@ def test_main_window_exports_alert_route_and_manual_annotations(qt_app) -> None:
 
         assert [annotation.source for annotation in annotations] == ["alert", "route", "manual"]
         assert [annotation.title for annotation in annotations] == [
-            "Latency alert",
-            "Route changed",
+            "지연 경고",
+            "경로 변경",
             "operator note",
         ]
     finally:

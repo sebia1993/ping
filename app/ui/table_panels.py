@@ -283,7 +283,7 @@ def update_alert_table(
         actions_text = ", ".join(actions) if actions else "-"
         values = [
             (event.timestamp.strftime("%Y-%m-%d %H:%M:%S"), event.timestamp.timestamp()),
-            (event.severity.upper(), _alert_severity_sort_key(event.severity)),
+            (_alert_severity_text(event.severity), _alert_severity_sort_key(event.severity)),
             (event.title, event.title),
             (event.start.strftime("%Y-%m-%d %H:%M:%S"), event.start.timestamp()),
             (event.end.strftime("%Y-%m-%d %H:%M:%S"), event.end.timestamp()),
@@ -395,6 +395,14 @@ def _alert_severity_sort_key(severity: str) -> int:
         "warning": 1,
         "info": 2,
     }.get(severity.casefold(), 99)
+
+
+def _alert_severity_text(severity: str) -> str:
+    return {
+        "critical": "심각",
+        "warning": "주의",
+        "info": "정보",
+    }.get(severity.casefold(), severity.upper())
 
 
 def fmt_ms(value: float | None) -> str:

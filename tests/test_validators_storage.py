@@ -120,16 +120,16 @@ def test_export_csv_writes_evidence_annotations(tmp_path) -> None:
         end=now + timedelta(seconds=60),
         source="alert",
         severity="critical",
-        title="Loss alert",
-        message="Packet loss 25.0% for 3m",
+        title="손실 경고",
+        message="최근 3분 동안 패킷 손실률 25.0%가 감지되었습니다.",
     )
 
     export_csv(path, [_sample_observation(timestamp=now)], [_sample_snapshot()], ["focus"], [annotation])
 
     text = path.read_text(encoding="utf-8-sig")
     assert "Annotations" in text
-    assert "Loss alert" in text
-    assert "Packet loss 25.0% for 3m" in text
+    assert "손실 경고" in text
+    assert "최근 3분 동안 패킷 손실률 25.0%가 감지되었습니다." in text
 
 
 def test_export_xlsx_writes_workbook(tmp_path) -> None:
@@ -171,7 +171,7 @@ def test_export_xlsx_writes_annotations_sheet_when_present(tmp_path) -> None:
         end=now,
         source="route",
         severity="warning",
-        title="Route changed",
+        title="경로 변경",
         message="changed Hop 1",
     )
 
@@ -179,7 +179,7 @@ def test_export_xlsx_writes_annotations_sheet_when_present(tmp_path) -> None:
 
     workbook = load_workbook(path)
     assert "Annotations" in workbook.sheetnames
-    assert workbook["Annotations"]["E2"].value == "Route changed"
+    assert workbook["Annotations"]["E2"].value == "경로 변경"
     assert workbook["Annotations"]["F2"].value == "changed Hop 1"
 
 
@@ -308,15 +308,15 @@ def test_alert_action_log_appends_comment_and_annotation_actions(tmp_path) -> No
         start=now,
         end=now,
         severity="warning",
-        title="Latency alert",
-        message="Target latency 125.0 ms >= 100 ms",
+        title="지연 경고",
+        message="현재 지연 125.0 ms가 기준 100 ms 이상입니다.",
     )
 
     append_alert_action(path, event, actions=["timeline_annotation", "comment"])
     rows = read_alert_actions(path)
 
     assert rows[0]["source"] == "alert"
-    assert rows[0]["title"] == "Latency alert"
+    assert rows[0]["title"] == "지연 경고"
     assert rows[0]["actions"] == "timeline_annotation;comment"
 
 
@@ -1169,7 +1169,7 @@ def test_export_worker_includes_focus_annotations(tmp_path) -> None:
         snapshots=[_sample_snapshot(address="203.0.113.5")],
         analysis=["focus"],
         annotations=[
-            ExportAnnotation(now, now + timedelta(seconds=1), "alert", "critical", "Loss alert", "loss evidence")
+            ExportAnnotation(now, now + timedelta(seconds=1), "alert", "critical", "손실 경고", "loss evidence")
         ],
         focus_range=(now, now + timedelta(seconds=10)),
     )
@@ -1179,7 +1179,7 @@ def test_export_worker_includes_focus_annotations(tmp_path) -> None:
 
     text = export_path.read_text(encoding="utf-8-sig")
     assert errors == []
-    assert "Loss alert" in text
+    assert "손실 경고" in text
     assert "loss evidence" in text
 
 
@@ -1227,7 +1227,7 @@ def test_export_worker_writes_html_report_with_focus_range(tmp_path) -> None:
         snapshots=[_sample_snapshot(address="203.0.113.5")],
         analysis=["Target path needs review"],
         annotations=[
-            ExportAnnotation(now, now + timedelta(seconds=1), "alert", "critical", "Loss alert", "loss evidence")
+            ExportAnnotation(now, now + timedelta(seconds=1), "alert", "critical", "손실 경고", "loss evidence")
         ],
         focus_range=(now, now + timedelta(minutes=10)),
     )
@@ -1241,7 +1241,7 @@ def test_export_worker_writes_html_report_with_focus_range(tmp_path) -> None:
     assert completed == [str(export_path)]
     assert "Target path needs review" in html
     assert "203.0.113.5" in html
-    assert "Loss alert" in html
+    assert "손실 경고" in html
     assert "2026-01-01T12:00:00 - 2026-01-01T12:10:00" in html
 
 

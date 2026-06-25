@@ -310,7 +310,7 @@ def test_worker_auto_promotes_final_hop_only_to_full_route_on_latency_alert() ->
     assert traceroute_probe.calls == [("198.51.100.10", 1000, False)]
     assert [hop.index for hop in traces[0]] == [1, 2]
     assert updates[-1][0]
-    assert any("Auto Full Route enabled" in status for status in statuses)
+    assert any("자동 Full Route 전환" in status for status in statuses)
     assert "192.0.2.1" in ping_calls
 
 
@@ -340,7 +340,7 @@ def test_worker_route_adjustment_can_be_disabled() -> None:
 
     assert worker.measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
     assert traceroute_probe.calls == []
-    assert not any("Auto Full Route enabled" in status for status in statuses)
+    assert not any("자동 Full Route 전환" in status for status in statuses)
 
 
 def test_worker_route_adjustment_uses_configured_alert_threshold() -> None:
@@ -395,8 +395,8 @@ def test_worker_route_adjustment_can_restore_final_hop_on_recovery() -> None:
 
     assert worker.measurement_mode == MEASUREMENT_MODE_FINAL_HOP_ONLY
     assert traceroute_probe.calls == [("198.51.100.10", 1000, False)]
-    assert any("Auto Full Route enabled" in status for status in statuses)
-    assert any("Auto Final Hop Only restored" in status for status in statuses)
+    assert any("자동 Full Route 전환" in status for status in statuses)
+    assert any("자동 Final Hop Only 복원" in status for status in statuses)
 
 
 def test_worker_does_not_stack_duplicate_pings_for_slow_targets(monkeypatch) -> None:
