@@ -57,8 +57,11 @@ def append_alert_action(
 def read_alert_actions(path: Path | None) -> list[dict[str, str]]:
     if path is None or not path.exists():
         return []
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+    try:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+    except (OSError, csv.Error):
+        return []
 
 
 def _format_dt(value: datetime) -> str:

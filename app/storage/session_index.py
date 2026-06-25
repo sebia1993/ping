@@ -21,6 +21,7 @@ SESSION_STATE_ARCHIVED = "Archived"
 SESSION_STATE_WILL_DELETE = "Will Delete"
 SESSION_INDEX_IO_RETRY_ATTEMPTS = 5
 SESSION_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
+SESSION_DELETE_FILES_FAILED_CODE = "SESSION_DELETE_FILES_FAILED"
 
 
 @dataclass(frozen=True)
@@ -290,9 +291,30 @@ class SessionIndexStore:
             record = next((item for item in records if item.session_id == session_id), None)
             if record is None:
                 return None
+            if not delete_files:
+                self._write_records([item for item in records if item.session_id != session_id])
+                return record
+
+        _deleted, failures = _delete_session_files_with_failures(record, root=self.path.parent)
+        with self._lock:
+            records = self._read_records()
+            if failures:
+                first_path, first_error = failures[0]
+                marked = _replace_record(
+                    record,
+                    state=SESSION_STATE_WILL_DELETE,
+                    end=record.end or datetime.now(),
+                    last_error=(
+                        f"{SESSION_DELETE_FILES_FAILED_CODE}: "
+                        f"{type(first_error).__name__}: {first_path}"
+                    ),
+                )
+                self._write_records([
+                    marked if item.session_id == session_id else item
+                    for item in records
+                ])
+                return marked
             self._write_records([item for item in records if item.session_id != session_id])
-        if delete_files:
-            delete_session_files(record, root=self.path.parent)
         return record
 
     def prune_sessions_older_than(
@@ -733,16 +755,33 @@ def session_data_paths(record: TraceSessionRecord) -> tuple[Path, ...]:
 
 
 def delete_session_files(record: TraceSessionRecord, *, root: Path) -> tuple[Path, ...]:
+    deleted, _failures = _delete_session_files_with_failures(record, root=root)
+    return deleted
+
+
+def _delete_session_files_with_failures(
+    record: TraceSessionRecord,
+    *,
+    root: Path,
+) -> tuple[tuple[Path, ...], tuple[tuple[Path, OSError], ...]]:
     deleted: list[Path] = []
+    failures: list[tuple[Path, OSError]] = []
     for path in session_data_paths(record):
         if not _is_managed_file(path, root):
             continue
         try:
-            path.unlink()
-        except (FileNotFoundError, OSError):
+            _unlink_path(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            failures.append((path, exc))
             continue
         deleted.append(path)
-    return tuple(deleted)
+    return tuple(deleted), tuple(failures)
+
+
+def _unlink_path(path: Path) -> None:
+    path.unlink()
 
 
 def _dedupe_paths(paths) -> tuple[Path, ...]:

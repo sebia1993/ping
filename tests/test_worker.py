@@ -868,6 +868,22 @@ def test_worker_stop_request_with_slow_active_pings_finishes_without_deadlock() 
     assert worker.isRunning() is False
 
 
+def test_worker_cancels_pending_measurement_futures_on_shutdown() -> None:
+    trace_future: Future[list[HopInfo]] = Future()
+    target_future: Future[PingResult] = Future()
+    hop_future: Future[PingResult] = Future()
+
+    MeasurementWorker._cancel_pending_futures(
+        trace_future,
+        {target_future: "198.51.100.10"},
+        {hop_future: "192.0.2.1"},
+    )
+
+    assert trace_future.cancelled() is True
+    assert target_future.cancelled() is True
+    assert hop_future.cancelled() is True
+
+
 def test_worker_applies_runtime_add_and_remove_requests() -> None:
     _app()
     worker = MeasurementWorker(

@@ -640,6 +640,7 @@ class MeasurementWorker(QThread):
             self.error_message.emit(f"측정 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({last_error})")
         finally:
             self._stop_event.set()
+            self._cancel_pending_futures(trace_future, target_futures, hop_futures)
             if session_log is not None:
                 try:
                     session_log.close()
@@ -678,6 +679,17 @@ class MeasurementWorker(QThread):
             target_executor.shutdown(wait=True, cancel_futures=True)
             hop_executor.shutdown(wait=True, cancel_futures=True)
             trace_executor.shutdown(wait=True, cancel_futures=True)
+
+    @staticmethod
+    def _cancel_pending_futures(
+        trace_future: Future[list[HopInfo]] | None,
+        target_futures: dict[Future[PingResult], str],
+        hop_futures: dict[Future[PingResult], str],
+    ) -> None:
+        if trace_future is not None:
+            trace_future.cancel()
+        for future in [*target_futures, *hop_futures]:
+            future.cancel()
 
     def _schedule_target_pings(
         self,

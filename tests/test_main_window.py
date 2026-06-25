@@ -4315,6 +4315,42 @@ def test_main_window_marks_failed_external_alert_actions_in_log(qt_app, tmp_path
         window.close()
 
 
+def test_main_window_alert_log_write_failure_does_not_crash_action_recording(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+
+    def fail_append(*_args, **_kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(main_window_module, "append_alert_action", fail_append)
+
+    try:
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.alert_route_adjust_action_check.setChecked(False)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_log_action_check.setChecked(True)
+        window.alert_beep_action_check.setChecked(False)
+        window.alert_image_action_check.setChecked(False)
+        window.alert_rest_action_check.setChecked(False)
+        window.alert_email_action_check.setChecked(False)
+        window.alert_executable_action_check.setChecked(False)
+
+        actions = window._record_alert_actions(
+            AlertEvent("target:198.51.100.10:sample", now, now, now, "critical", "샘플 불량 경고", "sample")
+        )
+
+        assert actions == ["log"]
+        assert window.status_label.text() == "알림 로그 저장 실패: PermissionError"
+        assert not window.alert_action_log_path.exists()
+    finally:
+        window.close()
+
+
 def test_main_window_records_sample_count_alert_and_recovery(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)

@@ -96,6 +96,7 @@ from app.storage.alert_action_log import append_alert_action, alert_action_log_p
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.route_log import route_changes_in_range, route_log_path_for_session
 from app.storage.session_index import (
+    SESSION_STATE_WILL_DELETE,
     SessionIndexStore,
     SessionStorageBucket,
     TraceSessionRecord,
@@ -2882,11 +2883,14 @@ class MainWindow(QMainWindow):
                 recorded_actions.append(action)
         if not recorded_actions:
             return []
-        append_alert_action(
-            self.alert_action_log_path,
-            event,
-            actions=recorded_actions,
-        )
+        try:
+            append_alert_action(
+                self.alert_action_log_path,
+                event,
+                actions=recorded_actions,
+            )
+        except OSError as exc:
+            self.status_label.setText(f"알림 로그 저장 실패: {type(exc).__name__}")
         return recorded_actions
 
     def _selected_alert_actions(self, event: AlertEvent | None = None) -> list[str]:
@@ -3499,6 +3503,8 @@ class MainWindow(QMainWindow):
         deleted = self.session_index_store.delete_session(record.session_id)
         if deleted is None:
             self.status_label.setText("선택한 세션을 더 이상 사용할 수 없습니다.")
+        elif deleted.state == SESSION_STATE_WILL_DELETE:
+            self.status_label.setText(f"세션 파일 삭제 실패: 삭제 예정으로 표시됨 ({deleted.target})")
         else:
             self._clear_deleted_session_paths(deleted)
             self.status_label.setText(f"세션 삭제 완료: {deleted.target}")

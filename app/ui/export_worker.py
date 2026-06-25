@@ -20,6 +20,11 @@ from app.storage.statistics_exporter import (
 )
 
 
+EXPORT_EMPTY_STATISTICS_MESSAGE = "선택한 내보내기 범위에 해당하는 통계 샘플이 없습니다."
+EXPORT_WRITE_FAILED_CODE = "EXPORT_WRITE_FAILED"
+EXPORT_UNEXPECTED_ERROR_CODE = "EXPORT_UNEXPECTED_ERROR"
+
+
 class ExportWorker(QThread):
     status_message = Signal(str)
     export_completed = Signal(str)
@@ -93,7 +98,7 @@ class ExportWorker(QThread):
             else:
                 raise RuntimeError(f"지원하지 않는 저장 형식입니다: {self.kind}")
         except Exception as exc:
-            self.error_message.emit(str(exc))
+            self.error_message.emit(_format_export_error(exc))
             return
         self.export_completed.emit(str(self.path))
 
@@ -105,5 +110,14 @@ class ExportWorker(QThread):
         try:
             first = next(iterator)
         except StopIteration as exc:
-            raise RuntimeError("선택한 내보내기 범위에 해당하는 통계 샘플이 없습니다.") from exc
+            raise RuntimeError(EXPORT_EMPTY_STATISTICS_MESSAGE) from exc
         return chain([first], iterator)
+
+
+def _format_export_error(exc: Exception) -> str:
+    message = str(exc)
+    if isinstance(exc, RuntimeError) and message == EXPORT_EMPTY_STATISTICS_MESSAGE:
+        return message
+    if isinstance(exc, OSError):
+        return f"{EXPORT_WRITE_FAILED_CODE}: {type(exc).__name__}: {message}"
+    return f"{EXPORT_UNEXPECTED_ERROR_CODE}: {type(exc).__name__}: {message}"

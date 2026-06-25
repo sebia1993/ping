@@ -13,6 +13,7 @@ from app.storage.report_writer import write_html_report, write_text_report
 from app.storage import session_index as session_index_module
 from app.storage import session_log as session_log_module
 from app.storage.session_index import (
+    SESSION_DELETE_FILES_FAILED_CODE,
     SESSION_STATE_ACTIVE,
     SESSION_STATE_ARCHIVED,
     SESSION_STATE_PAUSED,
@@ -36,6 +37,7 @@ from app.storage.statistics_exporter import (
     export_statistics_xlsx,
     grouped_statistics,
 )
+from app.ui import export_worker as export_worker_module
 from app.ui.export_worker import ExportWorker
 from app.utils.filename import safe_target_name
 from app.utils.validators import parse_ipv4_targets, validate_target
@@ -318,6 +320,21 @@ def test_alert_action_log_appends_comment_and_annotation_actions(tmp_path) -> No
     assert rows[0]["source"] == "alert"
     assert rows[0]["title"] == "지연 경고"
     assert rows[0]["actions"] == "timeline_annotation;comment"
+
+
+def test_alert_action_log_read_returns_empty_when_file_is_locked(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "alerts.csv"
+    path.write_text("timestamp,title\n", encoding="utf-8")
+    original_open = type(path).open
+
+    def locked_open(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("temporarily locked")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "open", locked_open)
+
+    assert read_alert_actions(path) == []
 
 
 def test_session_log_round_trips_observations(tmp_path) -> None:
@@ -1074,6 +1091,44 @@ def test_session_index_delete_removes_record_and_managed_files(tmp_path) -> None
     assert not segment_index_path.exists()
 
 
+def test_session_index_delete_marks_will_delete_when_file_is_locked(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "locked.samples.csv"
+    route_path = sample_path.with_name("locked.routes.csv")
+    sample_path.parent.mkdir(parents=True)
+    sample_path.write_text("managed\n", encoding="utf-8")
+    route_path.write_text("managed\n", encoding="utf-8")
+
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=route_path,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    def locked_unlink(path):
+        if path == sample_path:
+            raise PermissionError("locked")
+        path.unlink()
+
+    monkeypatch.setattr(session_index_module, "_unlink_path", locked_unlink)
+
+    deleted = store.delete_session(record.session_id)
+
+    assert deleted is not None
+    assert deleted.state == SESSION_STATE_WILL_DELETE
+    assert SESSION_DELETE_FILES_FAILED_CODE in deleted.last_error
+    refreshed = store.find_session(record.session_id)
+    assert refreshed is not None
+    assert refreshed.state == SESSION_STATE_WILL_DELETE
+    assert sample_path.exists()
+    assert not route_path.exists()
+
+
 def test_session_index_prunes_old_inactive_sessions_and_keeps_active(tmp_path) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 31, 12, 0, 0)
@@ -1410,6 +1465,33 @@ def test_export_worker_rejects_empty_statistics_xlsx_override(tmp_path) -> None:
     assert completed == []
     assert errors == ["선택한 내보내기 범위에 해당하는 통계 샘플이 없습니다."]
     assert not export_path.exists()
+
+
+def test_export_worker_reports_stable_code_for_write_failure(tmp_path, monkeypatch) -> None:
+    export_path = tmp_path / "locked.csv"
+    completed: list[str] = []
+    errors: list[str] = []
+
+    def fail_export(*_args, **_kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(export_worker_module, "export_csv", fail_export)
+    worker = ExportWorker(
+        kind="csv",
+        path=export_path,
+        target="8.8.8.8",
+        session_log_path=None,
+        snapshots=[],
+        analysis=[],
+        observations_override=[],
+    )
+    worker.export_completed.connect(completed.append)
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    assert completed == []
+    assert errors == ["EXPORT_WRITE_FAILED: PermissionError: locked"]
 
 
 def test_export_statistics_xlsx_writes_statistics_sheet(tmp_path) -> None:
