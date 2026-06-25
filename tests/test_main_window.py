@@ -83,8 +83,11 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.target_summary_status_label.text() == "IP: 0"
         assert hasattr(window, "graph_range_recent_button") is False
         assert hasattr(window, "graph_range_all_button") is False
-        assert window.graph_range_toggle_button.text() == "전체 보기"
-        assert "전체 기간" in window.graph_range_toggle_button.toolTip()
+        assert hasattr(window, "graph_range_toggle_button") is False
+        assert window.main_graph_range_combo.currentData() == 600
+        assert window.main_graph_range_combo.currentText() == "최근 10분"
+        assert "모든 실시간 그래프" in window.main_graph_range_combo.toolTip()
+        assert window.main_graph_time_status_label.text() == "측정 시작 - | 표시 최근 10분 | 현재 -"
         assert window.target_filter_edit.text() == ""
         assert window.target_status_filter_combo.currentData() == ""
         assert hasattr(window, "toggle_target_panel_button") is False
@@ -1085,7 +1088,8 @@ def test_main_window_start_stop_uses_operator_inputs(qt_app) -> None:
         assert window.running_target_summary_label.text() == "측정 IP 2개"
         assert window.graph_panel.isHidden() is False
         assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
-        assert window.graph_range_toggle_button.text() == "전체 보기"
+        assert window.main_graph_range_combo.currentData() == 600
+        assert window.main_graph_range_combo.currentText() == "최근 10분"
 
         window.stop_measurement()
 
@@ -2065,21 +2069,31 @@ def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) ->
         assert hasattr(window, "graph_time_current_button") is False
         assert hasattr(window, "graph_time_next_button") is False
 
-        window.graph_range_toggle_button.click()
+        window.main_graph_range_combo.setCurrentIndex(
+            window.main_graph_range_combo.findData(MAIN_GRAPH_RANGE_ALL)
+        )
 
         expected_all_range = (now, now + timedelta(minutes=20))
         assert window.graph.visible_datetime_range() == expected_all_range
         assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_all_range
         assert window.graph._time_axis_labels() == ("시작 12:00:00", "현재 12:20:00")
         assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL
-        assert window.graph_range_toggle_button.text() == "최근 보기"
+        assert window.main_graph_range_combo.currentText() == "측정 전체"
+        assert window.main_graph_time_status_label.text() == (
+            "측정 시작 12:00:00 | 표시 측정 전체 | 현재 12:20:00"
+        )
 
-        window.graph_range_toggle_button.click()
+        window.main_graph_range_combo.setCurrentIndex(
+            window.main_graph_range_combo.findData(600)
+        )
 
         assert window.graph.visible_datetime_range() == expected_current_range
         assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_current_range
         assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
-        assert window.graph_range_toggle_button.text() == "전체 보기"
+        assert window.main_graph_range_combo.currentText() == "최근 10분"
+        assert window.main_graph_time_status_label.text() == (
+            "측정 시작 12:00:00 | 표시 최근 10분 | 현재 12:20:00"
+        )
     finally:
         window.close()
 
@@ -2116,7 +2130,9 @@ def test_main_window_all_range_uses_session_log_start_beyond_live_buffer(qt_app,
         assert [point.timestamp for point in window.graph._points] == [now]
         assert [point.timestamp for point in window.target_graph_widgets[targets[1]]._points] == [now]
 
-        window.graph_range_toggle_button.click()
+        window.main_graph_range_combo.setCurrentIndex(
+            window.main_graph_range_combo.findData(MAIN_GRAPH_RANGE_ALL)
+        )
 
         expected_all_range = (start, now)
         assert window.graph.visible_datetime_range() == expected_all_range
@@ -2124,7 +2140,10 @@ def test_main_window_all_range_uses_session_log_start_beyond_live_buffer(qt_app,
         assert [point.timestamp for point in window.graph._points] == [start, now]
         assert [point.timestamp for point in window.target_graph_widgets[targets[1]]._points] == [start, now]
         assert window.graph._time_axis_labels() == ("시작 09:00:00", "현재 11:00:00")
-        assert window.graph_range_toggle_button.text() == "최근 보기"
+        assert window.main_graph_range_combo.currentText() == "측정 전체"
+        assert window.main_graph_time_status_label.text() == (
+            "측정 시작 09:00:00 | 표시 측정 전체 | 현재 11:00:00"
+        )
     finally:
         window.close()
 
@@ -2146,9 +2165,53 @@ def test_main_window_falls_back_to_live_buffer_when_session_log_has_no_bounds(qt
         window.on_measurement_updated([], snapshot, [snapshot], ["live"], observations, observations)
 
         assert window.graph._points == observations
-        window.graph_range_toggle_button.click()
+        window.main_graph_range_combo.setCurrentIndex(
+            window.main_graph_range_combo.findData(MAIN_GRAPH_RANGE_ALL)
+        )
         assert window.graph._points == observations
         assert window.graph.visible_datetime_range() == (now, now + timedelta(minutes=2))
+    finally:
+        window.close()
+
+
+def test_main_window_range_combo_applies_shared_recent_windows(qt_app) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    end = now + timedelta(hours=2)
+    targets = ["198.51.100.10", "203.0.113.10"]
+    snapshots = [
+        _snapshot(0, targets[0], None, latency=10.0, is_target=True),
+        _snapshot(0, targets[1], None, latency=20.0, is_target=True),
+    ]
+    observations = [
+        HopObservation(now + timedelta(minutes=minute), 0, target, "Target", True, 10.0 + minute, STATUS_OK, True)
+        for minute in range(121)
+        for target in targets
+    ]
+
+    try:
+        window.current_target = targets[0]
+        window.current_targets = list(targets)
+        window.on_measurement_updated([], snapshots[0], snapshots, ["live"], observations, [])
+
+        for seconds, label in [
+            (60, "최근 1분"),
+            (300, "최근 5분"),
+            (1800, "최근 30분"),
+            (3600, "최근 1시간"),
+        ]:
+            window.main_graph_range_combo.setCurrentIndex(
+                window.main_graph_range_combo.findData(seconds)
+            )
+            expected_range = (end - timedelta(seconds=seconds), end)
+            assert window.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
+            assert window.main_graph_range_seconds == seconds
+            assert window.main_graph_range_combo.currentText() == label
+            assert window.graph.visible_datetime_range() == expected_range
+            assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_range
+            assert window.main_graph_time_status_label.text() == (
+                f"측정 시작 12:00:00 | 표시 {label} | 현재 14:00:00"
+            )
     finally:
         window.close()
 

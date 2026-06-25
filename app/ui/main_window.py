@@ -138,6 +138,14 @@ GRAPH_RENDER_THROTTLE_SECONDS = 2.0
 MAIN_GRAPH_DEFAULT_RANGE_SECONDS = 600
 MAIN_GRAPH_RANGE_RECENT = "recent"
 MAIN_GRAPH_RANGE_ALL = "all"
+MAIN_GRAPH_RANGE_OPTIONS: tuple[tuple[str, int | str], ...] = (
+    ("최근 1분", 60),
+    ("최근 5분", 300),
+    ("최근 10분", 600),
+    ("최근 30분", 1800),
+    ("최근 1시간", 3600),
+    ("측정 전체", MAIN_GRAPH_RANGE_ALL),
+)
 TARGET_GRAPH_STATE_NORMAL = "normal"
 TARGET_GRAPH_STATE_WARNING = "warning"
 TARGET_GRAPH_STATE_CRITICAL = "critical"
@@ -255,6 +263,7 @@ class MainWindow(QMainWindow):
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
         self.paused_target_addresses: set[str] = set()
         self.main_graph_range_mode = MAIN_GRAPH_RANGE_RECENT
+        self.main_graph_range_seconds = MAIN_GRAPH_DEFAULT_RANGE_SECONDS
         self.main_graph_live_end_time: datetime | None = None
         self._last_graph_render_monotonic = 0.0
         self._pending_graph_render = False
@@ -401,10 +410,15 @@ class MainWindow(QMainWindow):
         graph_advanced_layout.addWidget(self.load_timeline_button)
         graph_advanced_layout.addWidget(self.reset_current_button)
         graph_advanced_layout.addWidget(self.clear_focus_button)
-        self.graph_range_toggle_button = QPushButton("전체 보기")
-        self.graph_range_toggle_button.setObjectName("graphRangeToggle")
-        self.graph_range_toggle_button.clicked.connect(self.toggle_main_graph_range_mode)
-        self._sync_main_graph_range_button()
+        self.main_graph_range_combo = QComboBox()
+        self.main_graph_range_combo.setObjectName("mainGraphRangeCombo")
+        self.main_graph_range_combo.setToolTip("모든 실시간 그래프 행에 적용할 시간 범위")
+        for label, value in MAIN_GRAPH_RANGE_OPTIONS:
+            self.main_graph_range_combo.addItem(label, value)
+        self._sync_main_graph_range_combo()
+        self.main_graph_range_combo.currentIndexChanged.connect(self.on_main_graph_range_changed)
+        self.main_graph_time_status_label = QLabel(self._main_graph_time_status_text())
+        self.main_graph_time_status_label.setObjectName("mainGraphTimeStatus")
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
         self.target_graph_legend_label = QLabel(
@@ -413,10 +427,15 @@ class MainWindow(QMainWindow):
             '<span style="color:#dc2626;">● 장애</span>'
         )
         self.target_graph_legend_label.setObjectName("targetGraphLegend")
-        graph_header.addWidget(self.target_graph_legend_label)
         graph_header.addWidget(self.target_summary_status_label)
-        graph_header.addWidget(self.graph_range_toggle_button)
+        graph_header.addWidget(self.main_graph_range_combo)
         graph_header.addWidget(self.graph_advanced_controls)
+        graph_meta = QHBoxLayout()
+        graph_meta.setContentsMargins(0, 0, 0, 0)
+        graph_meta.setSpacing(8)
+        graph_meta.addWidget(self.main_graph_time_status_label)
+        graph_meta.addStretch(1)
+        graph_meta.addWidget(self.target_graph_legend_label)
         self.graph = LatencyGraphWidget()
         self.graph.setMinimumHeight(112)
         self._configure_main_graph_widget(self.graph)
@@ -434,6 +453,7 @@ class MainWindow(QMainWindow):
         self.target_graph_layout.addWidget(self.target_graph_empty_label, 1)
         self.target_graph_scroll.setWidget(self.target_graph_container)
         graph_layout.addLayout(graph_header)
+        graph_layout.addLayout(graph_meta)
         graph_layout.addWidget(self.target_graph_scroll, 1)
         layout.addWidget(graph_panel, 8)
 
@@ -1914,6 +1934,7 @@ class MainWindow(QMainWindow):
             self.graph.set_points([])
             self.graph.set_annotations([])
             self.graph.set_visible_time_range(None, None)
+            self._sync_main_graph_time_status()
             self.target_graph_empty_label.setVisible(True)
             self.target_graph_render_keys.clear()
             return
@@ -1935,7 +1956,9 @@ class MainWindow(QMainWindow):
             self.target_graph_layout.addWidget(self.target_graph_rows[address])
 
         snapshot_by_address = {snapshot.address: snapshot for snapshot in target_snapshots if snapshot.address}
-        visible_range = self._main_graph_visible_time_range()
+        data_bounds = self._main_graph_data_bounds()
+        visible_range = self._main_graph_visible_time_range(data_bounds)
+        self._sync_main_graph_time_status(visible_range, data_bounds)
         for address in addresses:
             history = histories.get(address, [])
             snapshot = snapshot_by_address.get(address)
@@ -2098,11 +2121,44 @@ class MainWindow(QMainWindow):
     def set_main_graph_range_mode(self, mode: str, *, render: bool = True) -> None:
         if mode not in {MAIN_GRAPH_RANGE_RECENT, MAIN_GRAPH_RANGE_ALL}:
             mode = MAIN_GRAPH_RANGE_RECENT
+        if mode == MAIN_GRAPH_RANGE_RECENT:
+            self.main_graph_range_seconds = MAIN_GRAPH_DEFAULT_RANGE_SECONDS
         self.main_graph_range_mode = mode
-        self._sync_main_graph_range_button()
+        self._sync_main_graph_range_combo()
         self._sync_main_graph_time_axis_modes()
+        self._sync_main_graph_time_status()
         if render:
             self._request_graph_render(force=True)
+
+    def set_main_graph_range_seconds(self, seconds: int, *, render: bool = True) -> None:
+        allowed_seconds = {
+            int(value)
+            for _, value in MAIN_GRAPH_RANGE_OPTIONS
+            if isinstance(value, int)
+        }
+        if seconds not in allowed_seconds:
+            seconds = MAIN_GRAPH_DEFAULT_RANGE_SECONDS
+        self.main_graph_range_seconds = seconds
+        self.main_graph_range_mode = MAIN_GRAPH_RANGE_RECENT
+        self._sync_main_graph_range_combo()
+        self._sync_main_graph_time_axis_modes()
+        self._sync_main_graph_time_status()
+        if render:
+            self._request_graph_render(force=True)
+
+    def on_main_graph_range_changed(self) -> None:
+        combo = getattr(self, "main_graph_range_combo", None)
+        if combo is None:
+            return
+        value = combo.currentData()
+        if value == MAIN_GRAPH_RANGE_ALL:
+            self.set_main_graph_range_mode(MAIN_GRAPH_RANGE_ALL)
+            return
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            seconds = MAIN_GRAPH_DEFAULT_RANGE_SECONDS
+        self.set_main_graph_range_seconds(seconds)
 
     def toggle_main_graph_range_mode(self) -> None:
         next_mode = (
@@ -2112,16 +2168,25 @@ class MainWindow(QMainWindow):
         )
         self.set_main_graph_range_mode(next_mode)
 
-    def _sync_main_graph_range_button(self) -> None:
-        button = getattr(self, "graph_range_toggle_button", None)
-        if button is None:
+    def _sync_main_graph_range_combo(self) -> None:
+        combo = getattr(self, "main_graph_range_combo", None)
+        if combo is None:
             return
-        if self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL:
-            button.setText("최근 보기")
-            button.setToolTip("전체 기간에서 최근 측정 구간 보기로 돌아갑니다.")
-        else:
-            button.setText("전체 보기")
-            button.setToolTip("측정 시작 시간부터 현재까지 전체 기간을 표시합니다.")
+        value: int | str = (
+            MAIN_GRAPH_RANGE_ALL
+            if self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL
+            else self.main_graph_range_seconds
+        )
+        index = combo.findData(value)
+        if index < 0:
+            index = combo.findData(MAIN_GRAPH_DEFAULT_RANGE_SECONDS)
+        if index < 0:
+            return
+        blocked = combo.blockSignals(True)
+        try:
+            combo.setCurrentIndex(index)
+        finally:
+            combo.blockSignals(blocked)
 
     def _sync_main_graph_time_axis_modes(self) -> None:
         seen: set[int] = set()
@@ -2133,6 +2198,49 @@ class MainWindow(QMainWindow):
                 continue
             seen.add(graph_id)
             graph.set_time_axis_mode(self.main_graph_range_mode)
+
+    def _main_graph_range_label(self) -> str:
+        combo = getattr(self, "main_graph_range_combo", None)
+        if combo is not None:
+            text = combo.currentText().strip()
+            if text:
+                return text
+        if self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL:
+            return "측정 전체"
+        seconds = self.main_graph_range_seconds
+        if seconds < 60:
+            return f"최근 {seconds}초"
+        if seconds % 3600 == 0:
+            return f"최근 {seconds // 3600}시간"
+        return f"최근 {seconds // 60}분"
+
+    def _main_graph_time_status_text(
+        self,
+        visible_range: tuple[datetime, datetime] | None = None,
+        data_bounds: tuple[datetime, datetime] | None = None,
+    ) -> str:
+        label = self._main_graph_range_label()
+        if visible_range is None or data_bounds is None:
+            return f"측정 시작 - | 표시 {label} | 현재 -"
+        measurement_start, _ = data_bounds
+        _, current = visible_range
+        return (
+            f"측정 시작 {measurement_start.strftime('%H:%M:%S')} | "
+            f"표시 {label} | "
+            f"현재 {current.strftime('%H:%M:%S')}"
+        )
+
+    def _sync_main_graph_time_status(
+        self,
+        visible_range: tuple[datetime, datetime] | None = None,
+        data_bounds: tuple[datetime, datetime] | None = None,
+    ) -> None:
+        label = getattr(self, "main_graph_time_status_label", None)
+        if label is None:
+            return
+        text = self._main_graph_time_status_text(visible_range, data_bounds)
+        label.setText(text)
+        label.setToolTip(text)
 
     def _main_graph_data_bounds(self) -> tuple[datetime, datetime] | None:
         if self.timeline_range is None and self.focus_range is None:
@@ -2153,15 +2261,19 @@ class MainWindow(QMainWindow):
             return None
         return min(timestamps), max(timestamps)
 
-    def _main_graph_visible_time_range(self) -> tuple[datetime, datetime] | None:
-        bounds = self._main_graph_data_bounds()
+    def _main_graph_visible_time_range(
+        self,
+        bounds: tuple[datetime, datetime] | None = None,
+    ) -> tuple[datetime, datetime] | None:
+        if bounds is None:
+            bounds = self._main_graph_data_bounds()
         if bounds is None:
             return None
         full_start, full_end = bounds
         visible_end = self._main_graph_visible_end(full_end)
         if self.main_graph_range_mode == MAIN_GRAPH_RANGE_ALL:
             return full_start, visible_end
-        start = max(full_start, visible_end - timedelta(seconds=MAIN_GRAPH_DEFAULT_RANGE_SECONDS))
+        start = max(full_start, visible_end - timedelta(seconds=self.main_graph_range_seconds))
         return start, visible_end
 
     def _main_graph_visible_end(self, data_end: datetime) -> datetime:
@@ -4849,6 +4961,12 @@ QLabel#targetGraphLegend {
     font-size: 11px;
     font-weight: 700;
 }
+QLabel#mainGraphTimeStatus {
+    color: #4b5563;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 600;
+}
 QLabel#warningText {
     color: #92400e;
 }
@@ -4924,13 +5042,9 @@ QPushButton#dangerButton {
 QPushButton#targetPanelToggle {
     padding: 6px 10px;
 }
-QPushButton#graphRangeToggle {
-    padding: 5px 10px;
-}
-QPushButton#graphRangeToggle:checked {
-    background: #2563eb;
-    border-color: #2563eb;
-    color: #ffffff;
+QComboBox#mainGraphRangeCombo {
+    min-width: 104px;
+    padding: 5px 8px;
 }
 QPushButton:disabled {
     color: #9ca3af;
