@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -1189,6 +1189,7 @@ class MainWindow(QMainWindow):
         self.current_targets = [target for target in self.current_targets if target not in removed_set]
         for target in removed_set:
             self.target_interval_overrides.pop(target, None)
+        self._discard_target_alert_state(removed_set)
         self.target_snapshots = [
             snapshot for snapshot in self.target_snapshots if snapshot.address not in removed_set
         ]
@@ -1909,10 +1910,13 @@ class MainWindow(QMainWindow):
                 self.target_graph_render_keys[address] = render_key
             self._sync_target_graph_action_buttons(address, snapshot_by_address.get(address))
             self._apply_main_graph_time_range_to_widget(graph, visible_range)
-            if graph is not self.graph:
-                graph.set_annotations([])
+            graph.set_annotations(
+                self._timeline_annotations(
+                    target=address,
+                    include_route=address == self.current_target,
+                )
+            )
 
-        self.graph.set_annotations(self._timeline_annotations())
         self.target_graph_empty_label.setVisible(False)
 
     def _target_graph_render_key(
@@ -2157,8 +2161,14 @@ class MainWindow(QMainWindow):
         self.timeline_status = "그래프 데이터: 실시간 버퍼"
         self._sync_timeline_controls()
 
-    def _timeline_annotations(self) -> list[TimelineAnnotation]:
-        return [*self._route_timeline_annotations(), *self._alert_timeline_annotations()]
+    def _timeline_annotations(
+        self,
+        *,
+        target: str | None = None,
+        include_route: bool = True,
+    ) -> list[TimelineAnnotation]:
+        route_annotations = self._route_timeline_annotations() if include_route else []
+        return [*route_annotations, *self._alert_timeline_annotations(target=target)]
 
     def _route_timeline_annotations(self) -> list[TimelineAnnotation]:
         return [
@@ -2178,7 +2188,7 @@ class MainWindow(QMainWindow):
         if loaded:
             self._merge_route_changes(loaded, record_alert_actions=False)
             self._sync_route_changes_box()
-            self.graph.set_annotations(self._timeline_annotations())
+            self.graph.set_annotations(self._timeline_annotations(target=self.current_target))
 
     def _merge_route_changes(self, changes: list[RouteChange], *, record_alert_actions: bool = True) -> None:
         if not changes:
@@ -2196,7 +2206,7 @@ class MainWindow(QMainWindow):
             self._append_alert_event(route_change_alert(change.timestamp, change.summary), record_actions=record_alert_actions)
         self.route_changes = sorted(self.route_changes, key=lambda item: item.timestamp)[-100:]
 
-    def _alert_timeline_annotations(self) -> list[TimelineAnnotation]:
+    def _alert_timeline_annotations(self, *, target: str | None = None) -> list[TimelineAnnotation]:
         return [
             TimelineAnnotation(
                 event.start,
@@ -2207,15 +2217,28 @@ class MainWindow(QMainWindow):
             for event in self.alert_events
             if not event.key.startswith("route_changed:")
             and self._alert_event_has_action(event, "timeline_annotation")
+            and self._alert_event_matches_target(event, target)
         ]
 
     def _record_metric_alerts(self) -> None:
         previous_active_keys = set(self.active_alert_keys)
-        active_keys, events = evaluate_target_alerts(
-            self.target_history,
-            current_target=self.current_target,
-            config=self._alert_rule_config(),
-        )
+        active_keys: set[str] = set()
+        events: list[AlertEvent] = []
+        histories = self._target_histories_by_address(self.observations)
+        alert_targets = self.current_targets or _unique_addresses(histories.keys())
+        if not alert_targets and self.current_target:
+            alert_targets = [self.current_target]
+        for target in alert_targets:
+            target_history = histories.get(target, [])
+            if not target_history:
+                continue
+            target_active_keys, target_events = evaluate_target_alerts(
+                target_history,
+                current_target=target,
+                config=self._alert_rule_config(),
+            )
+            active_keys.update(self._target_alert_key(target, key) for key in target_active_keys)
+            events.extend(self._target_alert_event(target, event) for event in target_events)
         route_active_keys, route_events = evaluate_route_ip_alert(
             self.snapshots,
             self._watched_route_ip(),
@@ -2228,10 +2251,79 @@ class MainWindow(QMainWindow):
                 self._append_alert_event(event)
         ended_keys = previous_active_keys - active_keys
         if ended_keys:
-            timestamp = self.target_history[-1].timestamp if self.target_history else datetime.now()
             for key in sorted(ended_keys):
-                self._append_alert_event(alert_recovery_event(key, timestamp))
+                target, base_key = self._split_target_alert_key(key)
+                timestamp = self._latest_alert_timestamp_for_target(target, histories)
+                if target is not None and base_key:
+                    recovery = alert_recovery_event(base_key, timestamp)
+                    self._append_alert_event(
+                        replace(
+                            recovery,
+                            key=f"{key}:ended:{timestamp.isoformat(timespec='seconds')}",
+                            series_key=target,
+                        )
+                    )
+                else:
+                    self._append_alert_event(alert_recovery_event(key, timestamp))
         self.active_alert_keys = active_keys
+
+    @staticmethod
+    def _target_alert_key(target: str, key: str) -> str:
+        return f"target:{target}:{key}"
+
+    @staticmethod
+    def _split_target_alert_key(key: str) -> tuple[str | None, str]:
+        if not key.startswith("target:"):
+            return None, key
+        target, separator, base_key = key.removeprefix("target:").partition(":")
+        if not separator or not target or not base_key:
+            return None, key
+        return target, base_key
+
+    def _target_alert_event(self, target: str, event: AlertEvent) -> AlertEvent:
+        return replace(
+            event,
+            key=self._target_alert_key(target, event.key),
+            series_key=target,
+        )
+
+    def _latest_alert_timestamp_for_target(
+        self,
+        target: str | None,
+        histories: dict[str, list[HopObservation]] | None = None,
+    ) -> datetime:
+        if target:
+            history = (histories or self._target_histories_by_address(self.observations)).get(target, [])
+            if history:
+                return history[-1].timestamp
+        return self._latest_alert_timestamp()
+
+    def _alert_event_target(self, event: AlertEvent) -> str:
+        target, _base_key = self._split_target_alert_key(event.key)
+        if target is not None:
+            return target
+        if event.series_key and event.series_key in set(self.current_targets):
+            return event.series_key
+        if event.series_key == "target" and self.current_target:
+            return self.current_target
+        return ""
+
+    def _alert_event_matches_target(self, event: AlertEvent, target: str | None) -> bool:
+        if target is None:
+            return True
+        event_target = self._alert_event_target(event)
+        if event_target:
+            return event_target == target
+        return True
+
+    def _discard_target_alert_state(self, targets: set[str]) -> None:
+        if not targets:
+            return
+        prefixes = tuple(f"target:{target}:" for target in targets)
+        self.active_alert_keys = {key for key in self.active_alert_keys if not key.startswith(prefixes)}
+        self.pending_alert_image_keys = {
+            key for key in self.pending_alert_image_keys if not key.startswith(prefixes)
+        }
 
     def _watched_route_ip(self) -> str:
         if not hasattr(self, "route_ip_alert_check") or not self.route_ip_alert_check.isChecked():
@@ -2572,7 +2664,7 @@ class MainWindow(QMainWindow):
         subject = f"[MultiPingCheck] {event.severity.upper()} {event.title}"
         body = "\n".join(
             [
-                f"Target: {self.current_target or '-'}",
+                f"Target: {self._alert_event_target(event) or self.current_target or '-'}",
                 f"Severity: {event.severity}",
                 f"Title: {event.title}",
                 f"Message: {event.message}",
@@ -2646,7 +2738,7 @@ class MainWindow(QMainWindow):
             "severity": event.severity,
             "title": event.title,
             "message": event.message,
-            "target": self.current_target,
+            "target": self._alert_event_target(event) or self.current_target,
             "series_key": event.series_key,
         }
         try:
@@ -2686,7 +2778,7 @@ class MainWindow(QMainWindow):
                 "NPD_ALERT_TITLE": event.title,
                 "NPD_ALERT_MESSAGE": event.message,
                 "NPD_ALERT_SEVERITY": event.severity,
-                "NPD_ALERT_TARGET": self.current_target,
+                "NPD_ALERT_TARGET": self._alert_event_target(event) or self.current_target,
             }
         )
         try:
@@ -3370,7 +3462,7 @@ class MainWindow(QMainWindow):
             snapshots,
             self.selected_hop_index,
         )
-        self.graph_detail_window.set_external_annotations(self._timeline_annotations())
+        self.graph_detail_window.set_external_annotations(self._timeline_annotations(target=self.current_target))
         self.graph_detail_window.set_timeline_status(self.timeline_status)
 
     def save_csv(self) -> None:

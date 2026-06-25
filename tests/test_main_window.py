@@ -1809,6 +1809,124 @@ def test_main_window_removes_target_from_graph_row_while_running(qt_app) -> None
         window.close()
 
 
+def test_main_window_removing_alerting_target_does_not_recover_on_remaining_graph(qt_app) -> None:
+    created_workers: list[_FakeWorker] = []
+
+    def worker_factory(
+        target: str,
+        interval_seconds: int,
+        max_cycles: int | None,
+        targets: list[str],
+        measurement_mode: str,
+        probe_engine: str = "icmp",
+        tcp_port: int = 443,
+    ) -> "_FakeWorker":
+        worker = _FakeWorker(
+            target=target,
+            interval_seconds=interval_seconds,
+            max_cycles=max_cycles,
+            targets=targets,
+            measurement_mode=measurement_mode,
+            probe_engine=probe_engine,
+            tcp_port=tcp_port,
+        )
+        created_workers.append(worker)
+        return worker
+
+    window = MainWindow(worker_factory=worker_factory)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    bad_snapshot = _snapshot(
+        0,
+        "198.51.100.10",
+        None,
+        latency=None,
+        received=0,
+        timeout_count=1,
+        status=STATUS_TIMEOUT,
+        is_target=True,
+    )
+    ok_snapshot = _snapshot(0, "203.0.113.10", None, latency=18.0, is_target=True)
+    bad_history = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+        for index in range(3)
+    ]
+    ok_history = [
+        HopObservation(now + timedelta(seconds=index), 0, "203.0.113.10", "Target", True, 18.0, STATUS_OK, True)
+        for index in range(3)
+    ]
+
+    try:
+        window.target_input.setText("198.51.100.10\n203.0.113.10")
+        window.start_measurement()
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(1000)
+        window.sample_window_spin.setValue(3)
+        window.sample_bad_spin.setValue(2)
+
+        window.on_measurement_updated([], bad_snapshot, [bad_snapshot, ok_snapshot], ["live"], bad_history + ok_history, bad_history)
+
+        assert [event.title for event in window.alert_events] == ["샘플 불량 경고"]
+        assert "target:198.51.100.10:target_sample_condition" in window.active_alert_keys
+
+        window.target_graph_remove_buttons["198.51.100.10"].click()
+        window.on_measurement_updated([], ok_snapshot, [ok_snapshot], ["live"], ok_history, ok_history)
+
+        assert created_workers[0].removed_calls == [["198.51.100.10"]]
+        assert [event.title for event in window.alert_events] == ["샘플 불량 경고"]
+        assert window.target_graph_widgets["203.0.113.10"]._annotations == []
+    finally:
+        window.close()
+
+
+def test_main_window_recovery_annotation_stays_on_original_target_row(qt_app) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    first_bad = _snapshot(
+        0,
+        "198.51.100.10",
+        None,
+        latency=None,
+        received=0,
+        timeout_count=1,
+        status=STATUS_TIMEOUT,
+        is_target=True,
+    )
+    first_ok = _snapshot(0, "198.51.100.10", None, latency=11.0, is_target=True)
+    second_ok = _snapshot(0, "203.0.113.10", None, latency=18.0, is_target=True)
+    bad_history = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+        for index in range(3)
+    ]
+    recovered_history = [
+        HopObservation(now + timedelta(seconds=3 + index), 0, "198.51.100.10", "Target", True, 11.0, STATUS_OK, True)
+        for index in range(3)
+    ]
+    second_history = [
+        HopObservation(now + timedelta(seconds=index), 0, "203.0.113.10", "Target", True, 18.0, STATUS_OK, True)
+        for index in range(6)
+    ]
+
+    try:
+        window.current_target = "198.51.100.10"
+        window.current_targets = ["198.51.100.10", "203.0.113.10"]
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(1000)
+        window.sample_window_spin.setValue(3)
+        window.sample_bad_spin.setValue(2)
+
+        window.on_measurement_updated([], first_bad, [first_bad, second_ok], ["live"], bad_history + second_history[:3], bad_history)
+        window.on_measurement_updated([], first_ok, [first_ok, second_ok], ["live"], recovered_history + second_history, recovered_history)
+
+        assert [event.title for event in window.alert_events] == ["샘플 불량 경고", "정상 복구"]
+        assert [annotation.label for annotation in window.target_graph_widgets["198.51.100.10"]._annotations] == [
+            "샘플 불량 경고",
+            "정상 복구",
+        ]
+        assert window.target_graph_widgets["203.0.113.10"]._annotations == []
+    finally:
+        window.close()
+
+
 def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
     window = MainWindow()
     now = datetime.now()
@@ -3615,7 +3733,7 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
             (
                 "https://collector.example/alerts",
                 {
-                    "key": "target_latency_100ms",
+                    "key": "target:198.51.100.10:target_latency_100ms",
                     "timestamp": "2026-01-01T12:00:00",
                     "start": "2026-01-01T12:00:00",
                     "end": "2026-01-01T12:00:00",
@@ -3623,7 +3741,7 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
                     "title": "지연 경고",
                     "message": "현재 지연 90.0 ms가 기준 80 ms 이상입니다.",
                     "target": "198.51.100.10",
-                    "series_key": "target",
+                    "series_key": "198.51.100.10",
                 },
             )
         ]
