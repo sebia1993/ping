@@ -1784,11 +1784,16 @@ def test_main_window_removes_target_from_graph_row_while_running(qt_app) -> None
 
         assert worker.paused_calls == [["198.51.100.10"]]
         assert window.target_graph_pause_buttons["198.51.100.10"].text() == "재개"
+        assert window.target_graph_status_labels["198.51.100.10"].text() == "일시중지"
+        assert window.target_graph_widgets["198.51.100.10"]._series[0].color == main_window_module.TARGET_GRAPH_STATE_COLORS[
+            main_window_module.TARGET_GRAPH_STATE_PAUSED
+        ]
 
         window.target_graph_pause_buttons["198.51.100.10"].click()
 
         assert worker.resumed_calls == [["198.51.100.10"]]
         assert window.target_graph_pause_buttons["198.51.100.10"].text() == "일시중지"
+        assert window.target_graph_status_labels["198.51.100.10"].text() == "정상"
 
         window.target_graph_remove_buttons["198.51.100.10"].click()
 
@@ -1917,7 +1922,8 @@ def test_main_window_recovery_annotation_stays_on_original_target_row(qt_app) ->
         window.on_measurement_updated([], first_ok, [first_ok, second_ok], ["live"], recovered_history + second_history, recovered_history)
 
         assert [event.title for event in window.alert_events] == ["샘플 불량 경고", "정상 복구"]
-        assert [annotation.label for annotation in window.target_graph_widgets["198.51.100.10"]._annotations] == [
+        assert window.target_graph_widgets["198.51.100.10"]._annotations == []
+        assert [annotation.title for annotation in window.annotations_for_export()] == [
             "샘플 불량 경고",
             "정상 복구",
         ]
@@ -1966,6 +1972,69 @@ def test_main_window_renders_each_target_as_separate_graph_row(qt_app) -> None:
         assert f"갱신 {now.strftime('%H:%M:%S')}" in window.target_summary_status_label.text()
         assert "현재 18.0 ms" in window.target_graph_metric_labels["203.0.113.10"].text()
         assert "손실 35.0%" in window.target_graph_metric_labels["203.0.113.20"].text()
+    finally:
+        window.close()
+
+
+def test_main_window_colors_target_graph_rows_by_current_alert_state(qt_app) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    normal = "198.51.100.10"
+    warning = "203.0.113.10"
+    critical = "203.0.113.20"
+    normal_snapshot = _snapshot(0, normal, None, latency=10.0, is_target=True)
+    warning_snapshot = _snapshot(0, warning, None, latency=150.0, is_target=True)
+    critical_snapshot = _snapshot(
+        0,
+        critical,
+        None,
+        latency=None,
+        received=0,
+        timeout_count=1,
+        status=STATUS_TIMEOUT,
+        is_target=True,
+    )
+    observations = [
+        HopObservation(now, 0, normal, "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now, 0, warning, "Target", True, 150.0, STATUS_OK, True),
+        HopObservation(now, 0, critical, "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(now + timedelta(seconds=1), 0, critical, "Target", False, None, STATUS_TIMEOUT, True),
+        HopObservation(now + timedelta(seconds=2), 0, critical, "Target", False, None, STATUS_TIMEOUT, True),
+    ]
+
+    try:
+        window.current_target = normal
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(100)
+        window.sample_window_spin.setValue(3)
+        window.sample_bad_spin.setValue(2)
+
+        window.on_measurement_updated(
+            [],
+            normal_snapshot,
+            [normal_snapshot, warning_snapshot, critical_snapshot],
+            ["live"],
+            observations,
+            [observations[0]],
+        )
+
+        assert window.target_graph_status_labels[normal].text() == "정상"
+        assert window.target_graph_status_labels[warning].text() == "주의"
+        assert window.target_graph_status_labels[critical].text() == "장애"
+        assert window.target_graph_widgets[normal]._series[0].color == main_window_module.TARGET_GRAPH_STATE_COLORS[
+            main_window_module.TARGET_GRAPH_STATE_NORMAL
+        ]
+        assert window.target_graph_widgets[warning]._series[0].color == main_window_module.TARGET_GRAPH_STATE_COLORS[
+            main_window_module.TARGET_GRAPH_STATE_WARNING
+        ]
+        assert window.target_graph_widgets[critical]._series[0].color == main_window_module.TARGET_GRAPH_STATE_COLORS[
+            main_window_module.TARGET_GRAPH_STATE_CRITICAL
+        ]
+        assert "target:203.0.113.10:target_latency_100ms" in window.active_alert_keys
+        assert "target:203.0.113.20:target_sample_condition" in window.active_alert_keys
+        assert "정상" in window.target_graph_legend_label.text()
+        assert "주의" in window.target_graph_legend_label.text()
+        assert "장애" in window.target_graph_legend_label.text()
     finally:
         window.close()
 
@@ -3347,11 +3416,12 @@ def test_main_window_records_metric_alerts_and_graph_annotations(qt_app) -> None
         first_row_actions = window.alert_table.item(0, 6).text()
         second_row_actions = window.alert_table.item(1, 6).text()
         assert {first_row_actions, second_row_actions} == {"타임라인, 코멘트"}
-        assert [annotation.label for annotation in window.graph._annotations] == ["손실 경고", "지연 경고"]
+        assert window.graph._annotations == []
         assert [annotation.label for annotation in window.graph_detail_window.graph._annotations] == [
             "손실 경고",
             "지연 경고",
         ]
+        assert window.target_graph_status_labels["198.51.100.10"].text() == "장애"
 
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
 
@@ -4109,7 +4179,8 @@ def test_main_window_can_disable_recovery_alert_actions(qt_app, tmp_path) -> Non
         assert [row["title"] for row in rows] == ["샘플 불량 경고"]
         assert window.alert_event_actions[window.alert_events[0].key] == ["timeline_annotation", "comment"]
         assert window.alert_event_actions[window.alert_events[1].key] == []
-        assert [annotation.label for annotation in window.graph._annotations] == ["샘플 불량 경고"]
+        assert window.graph._annotations == []
+        assert [annotation.title for annotation in window.annotations_for_export()] == ["샘플 불량 경고"]
     finally:
         window.close()
 
@@ -4141,7 +4212,8 @@ def test_main_window_records_jitter_alert_action(qt_app, tmp_path) -> None:
         assert "지연 변동 경고" in window.alerts_box.toPlainText()
         assert [row["title"] for row in rows] == ["지연 변동 경고"]
         assert rows[0]["message"] == "최근 4개 샘플의 지연 변동 28.9 ms가 기준 20 ms 이상입니다."
-        assert window.graph._annotations[0].label == "지연 변동 경고"
+        assert window.graph._annotations == []
+        assert window.target_graph_status_labels["198.51.100.10"].text() == "주의"
     finally:
         window.close()
 
@@ -4176,7 +4248,8 @@ def test_main_window_records_mos_alert_when_enabled(qt_app, tmp_path) -> None:
         assert "MOS 품질 경고" in window.alerts_box.toPlainText()
         assert [row["title"] for row in rows] == ["MOS 품질 경고"]
         assert rows[0]["message"].startswith("최근 1분 추정 MOS ")
-        assert window.graph._annotations[0].label == "MOS 품질 경고"
+        assert window.graph._annotations == []
+        assert window.target_graph_status_labels["198.51.100.10"].text() == "장애"
     finally:
         window.close()
 
@@ -4216,7 +4289,7 @@ def test_main_window_records_route_ip_alert_and_recovery(qt_app, tmp_path) -> No
         assert [row["source"] for row in rows] == ["route", "route"]
         assert rows[0]["message"] == "감시 IP 203.0.113.50가 Hop 2 경로에 나타났습니다."
         assert rows[1]["message"] == "경로 IP 경고 정상 복구"
-        assert [annotation.label for annotation in window.graph._annotations] == ["경로 IP 경고", "정상 복구"]
+        assert window.graph._annotations == []
         assert window.annotations_for_export()[0].source == "route"
     finally:
         window.close()
@@ -4269,7 +4342,7 @@ def test_main_window_alert_image_action_saves_graph_after_render(qt_app, tmp_pat
 
     def fake_save_graph_png(path: Path) -> Path:
         assert window.graph._points == history
-        assert window.graph._annotations[0].label == "지연 경고"
+        assert window.graph._annotations == []
         saved_paths.append(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"png")

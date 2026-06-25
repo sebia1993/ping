@@ -43,6 +43,12 @@ from PySide6.QtWidgets import (
 from app.core.alerts import (
     AlertEvent,
     AlertRuleConfig,
+    JITTER_ALERT_KEY,
+    LATENCY_ALERT_KEY,
+    LOSS_ALERT_KEY,
+    MOS_ALERT_KEY,
+    SAMPLE_ALERT_KEY,
+    TIMER_ALERT_KEY,
     alert_recovery_event,
     evaluate_route_ip_alert,
     evaluate_target_alerts,
@@ -56,7 +62,7 @@ from app.core.route_history import RouteChange, route_path
 from app.ui.control_panel import build_controls_panel
 from app.ui.export_worker import ExportWorker
 from app.ui.graph_detail_window import GraphDetailWindow
-from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation
+from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries
 from app.ui.table_panels import (
     ALERT_HEADERS,
     SESSION_HEADERS,
@@ -132,6 +138,34 @@ GRAPH_RENDER_THROTTLE_SECONDS = 2.0
 MAIN_GRAPH_DEFAULT_RANGE_SECONDS = 600
 MAIN_GRAPH_RANGE_RECENT = "recent"
 MAIN_GRAPH_RANGE_ALL = "all"
+TARGET_GRAPH_STATE_NORMAL = "normal"
+TARGET_GRAPH_STATE_WARNING = "warning"
+TARGET_GRAPH_STATE_CRITICAL = "critical"
+TARGET_GRAPH_STATE_PAUSED = "paused"
+TARGET_GRAPH_STATE_WAITING = "waiting"
+TARGET_GRAPH_WARNING_ALERT_KEYS = {LATENCY_ALERT_KEY, JITTER_ALERT_KEY}
+TARGET_GRAPH_CRITICAL_ALERT_KEYS = {LOSS_ALERT_KEY, SAMPLE_ALERT_KEY, TIMER_ALERT_KEY, MOS_ALERT_KEY}
+TARGET_GRAPH_STATE_LABELS = {
+    TARGET_GRAPH_STATE_NORMAL: "정상",
+    TARGET_GRAPH_STATE_WARNING: "주의",
+    TARGET_GRAPH_STATE_CRITICAL: "장애",
+    TARGET_GRAPH_STATE_PAUSED: "일시중지",
+    TARGET_GRAPH_STATE_WAITING: "대기",
+}
+TARGET_GRAPH_STATE_TONES = {
+    TARGET_GRAPH_STATE_NORMAL: "success",
+    TARGET_GRAPH_STATE_WARNING: "warning",
+    TARGET_GRAPH_STATE_CRITICAL: "danger",
+    TARGET_GRAPH_STATE_PAUSED: "neutral",
+    TARGET_GRAPH_STATE_WAITING: "neutral",
+}
+TARGET_GRAPH_STATE_COLORS = {
+    TARGET_GRAPH_STATE_NORMAL: "#16a34a",
+    TARGET_GRAPH_STATE_WARNING: "#f59e0b",
+    TARGET_GRAPH_STATE_CRITICAL: "#dc2626",
+    TARGET_GRAPH_STATE_PAUSED: "#6b7280",
+    TARGET_GRAPH_STATE_WAITING: "#6b7280",
+}
 
 
 @dataclass(frozen=True)
@@ -214,6 +248,7 @@ class MainWindow(QMainWindow):
         self.target_graph_rows: dict[str, QFrame] = {}
         self.target_graph_widgets: dict[str, LatencyGraphWidget] = {}
         self.target_graph_title_labels: dict[str, QLabel] = {}
+        self.target_graph_status_labels: dict[str, QLabel] = {}
         self.target_graph_metric_labels: dict[str, QLabel] = {}
         self.target_graph_pause_buttons: dict[str, QPushButton] = {}
         self.target_graph_remove_buttons: dict[str, QPushButton] = {}
@@ -372,6 +407,13 @@ class MainWindow(QMainWindow):
         self._sync_main_graph_range_button()
         graph_header.addWidget(graph_title)
         graph_header.addStretch(1)
+        self.target_graph_legend_label = QLabel(
+            '<span style="color:#16a34a;">● 정상</span>  '
+            '<span style="color:#f59e0b;">● 주의</span>  '
+            '<span style="color:#dc2626;">● 장애</span>'
+        )
+        self.target_graph_legend_label.setObjectName("targetGraphLegend")
+        graph_header.addWidget(self.target_graph_legend_label)
         graph_header.addWidget(self.target_summary_status_label)
         graph_header.addWidget(self.graph_range_toggle_button)
         graph_header.addWidget(self.graph_advanced_controls)
@@ -1347,6 +1389,7 @@ class MainWindow(QMainWindow):
         self.paused_target_addresses.update(target for target in targets if target in self.current_targets)
         for target in targets:
             self._sync_target_graph_action_buttons(target, self._target_snapshot_for_address(target))
+        self._request_graph_render(force=True)
         self.status_label.setText(f"IP {len(targets)}개를 일시중지했습니다.")
 
     def _resume_targets(self, targets: list[str]) -> None:
@@ -1356,6 +1399,7 @@ class MainWindow(QMainWindow):
         for target in targets:
             self.paused_target_addresses.discard(target)
             self._sync_target_graph_action_buttons(target, self._target_snapshot_for_address(target))
+        self._request_graph_render(force=True)
         self.status_label.setText(f"IP {len(targets)}개를 재개했습니다.")
 
     def _is_target_paused(self, address: str, snapshot: MetricSnapshot | None = None) -> bool:
@@ -1885,19 +1929,26 @@ class MainWindow(QMainWindow):
         visible_range = self._main_graph_visible_time_range()
         for address in addresses:
             history = histories.get(address, [])
+            snapshot = snapshot_by_address.get(address)
+            graph_state = self._target_graph_health_state(address, snapshot, history)
+            graph_color = TARGET_GRAPH_STATE_COLORS[graph_state]
             graph = self.target_graph_widgets[address]
-            render_key = self._target_graph_render_key(snapshot_by_address.get(address), history)
+            render_key = self._target_graph_render_key(snapshot, history, graph_state)
             if self.target_graph_render_keys.get(address) != render_key:
-                graph.set_points(history)
+                if history:
+                    graph.set_series([TimelineSeries(address, address, history, graph_color)])
+                else:
+                    graph.set_points([])
                 self.target_graph_title_labels[address].setText(address)
                 self.target_graph_metric_labels[address].setText(
-                    self._target_graph_metric_text(snapshot_by_address.get(address), history)
+                    self._target_graph_metric_text(snapshot, history)
                 )
+                self._set_target_graph_status_label(address, graph_state)
                 self.target_graph_render_keys[address] = render_key
-            self._sync_target_graph_action_buttons(address, snapshot_by_address.get(address))
+            self._sync_target_graph_action_buttons(address, snapshot)
             self._apply_main_graph_time_range_to_widget(graph, visible_range)
             graph.set_annotations(
-                self._timeline_annotations(
+                self._main_graph_annotations(
                     target=address,
                     include_route=address == self.current_target,
                 )
@@ -1909,9 +1960,11 @@ class MainWindow(QMainWindow):
         self,
         snapshot: MetricSnapshot | None,
         history: list[HopObservation],
+        graph_state: str,
     ) -> tuple[object, ...]:
         latest = history[-1] if history else None
         return (
+            graph_state,
             len(history),
             latest.timestamp.isoformat(timespec="milliseconds") if latest is not None else "",
             latest.status if latest is not None else "",
@@ -1921,6 +1974,46 @@ class MainWindow(QMainWindow):
             snapshot.current_latency_ms if snapshot is not None else None,
             snapshot.loss_percent if snapshot is not None else 0.0,
         )
+
+    def _target_graph_health_state(
+        self,
+        address: str,
+        snapshot: MetricSnapshot | None,
+        history: list[HopObservation],
+    ) -> str:
+        if self._is_target_paused(address, snapshot):
+            return TARGET_GRAPH_STATE_PAUSED
+
+        active_alerts = self._active_target_alert_base_keys(address)
+        if active_alerts & TARGET_GRAPH_CRITICAL_ALERT_KEYS:
+            return TARGET_GRAPH_STATE_CRITICAL
+        if active_alerts & TARGET_GRAPH_WARNING_ALERT_KEYS:
+            return TARGET_GRAPH_STATE_WARNING
+
+        if snapshot is not None:
+            return _target_graph_state_from_status(display_status(snapshot))
+
+        if history:
+            latest = history[-1]
+            if latest.status == STATUS_PAUSED:
+                return TARGET_GRAPH_STATE_PAUSED
+            if latest.success:
+                return TARGET_GRAPH_STATE_NORMAL
+            return TARGET_GRAPH_STATE_CRITICAL
+        return TARGET_GRAPH_STATE_WAITING
+
+    def _active_target_alert_base_keys(self, address: str) -> set[str]:
+        prefix = f"target:{address}:"
+        return {key.removeprefix(prefix) for key in self.active_alert_keys if key.startswith(prefix)}
+
+    def _set_target_graph_status_label(self, address: str, state: str) -> None:
+        label = self.target_graph_status_labels.get(address)
+        if label is None:
+            return
+        label.setText(TARGET_GRAPH_STATE_LABELS.get(state, "대기"))
+        label.setProperty("tone", TARGET_GRAPH_STATE_TONES.get(state, "neutral"))
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def _create_target_graph_row(self, address: str, *, use_primary_graph: bool) -> None:
         row = QFrame()
@@ -1936,6 +2029,7 @@ class MainWindow(QMainWindow):
         title = QLabel(address)
         title.setObjectName("targetGraphTitle")
         title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        status_badge = _chip("대기", "neutral")
         metric = QLabel("대기")
         metric.setObjectName("targetGraphMeta")
         metric.setWordWrap(True)
@@ -1953,6 +2047,7 @@ class MainWindow(QMainWindow):
         action_row.addWidget(pause_button)
         action_row.addWidget(remove_button)
         info.addWidget(title)
+        info.addWidget(status_badge)
         info.addWidget(metric)
         info.addLayout(action_row)
         info.addStretch(1)
@@ -1966,6 +2061,7 @@ class MainWindow(QMainWindow):
         self.target_graph_rows[address] = row
         self.target_graph_widgets[address] = graph
         self.target_graph_title_labels[address] = title
+        self.target_graph_status_labels[address] = status_badge
         self.target_graph_metric_labels[address] = metric
         self.target_graph_pause_buttons[address] = pause_button
         self.target_graph_remove_buttons[address] = remove_button
@@ -2072,6 +2168,7 @@ class MainWindow(QMainWindow):
         row = self.target_graph_rows.pop(address, None)
         graph = self.target_graph_widgets.pop(address, None)
         self.target_graph_title_labels.pop(address, None)
+        self.target_graph_status_labels.pop(address, None)
         self.target_graph_metric_labels.pop(address, None)
         self.target_graph_pause_buttons.pop(address, None)
         self.target_graph_remove_buttons.pop(address, None)
@@ -2097,15 +2194,13 @@ class MainWindow(QMainWindow):
         if snapshot is not None and snapshot.sent:
             current = f"{fmt_ms(snapshot.current_latency_ms)} ms" if snapshot.current_latency_ms is not None else "-"
             return (
-                f"{_status_display_text(display_status(snapshot))} | 현재 {current} | "
-                f"손실 {snapshot.loss_percent:.1f}% | 샘플 {snapshot.samples}"
+                f"현재 {current} | 손실 {snapshot.loss_percent:.1f}% | 샘플 {snapshot.samples}"
             )
         if history:
             latest = history[-1]
             current = f"{fmt_ms(latest.latency_ms)} ms" if latest.latency_ms is not None else "-"
-            status = latest.status if latest.status else ("OK" if latest.success else "TIMEOUT")
-            return f"{_status_display_text(status)} | 최근 {current} | 샘플 {len(history)}"
-        return "대기 | 샘플 0"
+            return f"최근 {current} | 샘플 {len(history)}"
+        return "샘플 0"
 
     def _reset_target_graphs_to_current(self) -> None:
         seen: set[int] = set()
@@ -2177,6 +2272,17 @@ class MainWindow(QMainWindow):
         route_annotations = self._route_timeline_annotations() if include_route else []
         return [*route_annotations, *self._alert_timeline_annotations(target=target)]
 
+    def _main_graph_annotations(
+        self,
+        *,
+        target: str | None = None,
+        include_route: bool = True,
+    ) -> list[TimelineAnnotation]:
+        # 운영용 메인 화면은 상태 색상으로 문제를 보여 주고, 알림 문구 라벨은 숨깁니다.
+        # target 인자는 호출부 의미를 보존하기 위한 자리이며, 상세 그래프/export는 _timeline_annotations를 씁니다.
+        _ = target
+        return self._route_timeline_annotations() if include_route else []
+
     def _route_timeline_annotations(self) -> list[TimelineAnnotation]:
         return [
             TimelineAnnotation(
@@ -2195,7 +2301,7 @@ class MainWindow(QMainWindow):
         if loaded:
             self._merge_route_changes(loaded, record_alert_actions=False)
             self._sync_route_changes_box()
-            self.graph.set_annotations(self._timeline_annotations(target=self.current_target))
+            self.graph.set_annotations(self._main_graph_annotations(target=self.current_target))
 
     def _merge_route_changes(self, changes: list[RouteChange], *, record_alert_actions: bool = True) -> None:
         if not changes:
@@ -4521,6 +4627,19 @@ def _status_display_text(status: object) -> str:
     }.get(text, text or "-")
 
 
+def _target_graph_state_from_status(status: object) -> str:
+    text = str(status or "")
+    if text == STATUS_PAUSED:
+        return TARGET_GRAPH_STATE_PAUSED
+    if text in {"CRITICAL", "TIMEOUT", "UNREACHABLE", "ERROR"}:
+        return TARGET_GRAPH_STATE_CRITICAL
+    if text == "WARNING":
+        return TARGET_GRAPH_STATE_WARNING
+    if text == "OK":
+        return TARGET_GRAPH_STATE_NORMAL
+    return TARGET_GRAPH_STATE_WAITING
+
+
 def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
     parts = [part for part in value.split(":") if part]
     mode = (
@@ -4686,6 +4805,12 @@ QLabel#targetGraphMeta {
     color: #6b7280;
     font-size: 11px;
     min-width: 132px;
+}
+QLabel#targetGraphLegend {
+    color: #374151;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 700;
 }
 QLabel#warningText {
     color: #92400e;

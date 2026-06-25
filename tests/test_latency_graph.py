@@ -70,6 +70,42 @@ def test_latency_graph_downsamples_long_series_without_losing_time_bounds(qt_app
     assert graph._series[0].points[-1].timestamp == points[-1].timestamp
 
 
+def test_latency_graph_renders_explicit_series_color(qt_app) -> None:
+    graph = LatencyGraphWidget()
+    graph.resize(360, 200)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(
+            now + timedelta(seconds=index),
+            0,
+            "198.51.100.10",
+            "Target",
+            True,
+            10.0 + index * 8,
+            STATUS_OK,
+            True,
+        )
+        for index in range(8)
+    ]
+
+    graph.set_series([TimelineSeries("target", "Target", points, "#16a34a")])
+
+    assert graph._series[0].color == "#16a34a"
+
+    pixmap = QPixmap(graph.size())
+    pixmap.fill(Qt.GlobalColor.white)
+    graph.render(pixmap)
+    image = pixmap.toImage()
+
+    assert any(
+        (pixel := image.pixelColor(x, y)).green() > 120
+        and pixel.red() < 100
+        and pixel.blue() < 130
+        for x in range(image.width())
+        for y in range(image.height())
+    )
+
+
 def test_latency_graph_time_axis_labels_use_visible_sample_times(qt_app) -> None:
     graph = LatencyGraphWidget()
     now = datetime(2026, 1, 1, 12, 0, 0)
