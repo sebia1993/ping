@@ -76,6 +76,9 @@ jobs:
             $runId,
             '--output-dir',
             'artifacts\stability_soak_suite',
+            '--evidence-report',
+            '--evidence-report-path',
+            "artifacts\stability_soak_suite\$runId\stability_soak_evidence.json",
             '--profiles'
           ) + $profiles
           $override = "${{ inputs.override_duration_seconds }}"
@@ -163,6 +166,9 @@ jobs:
             $runId,
             '--output-dir',
             'artifacts\stability_soak_suite',
+            '--evidence-report',
+            '--evidence-report-path',
+            "artifacts\stability_soak_suite\$runId\stability_soak_evidence.json",
             '--profiles'
           ) + $profiles
           $override = "${{ inputs.override_duration_seconds }}"

@@ -28,12 +28,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.validate_only:
         failures = validate_manifest(manifest_path, args.profiles)
         if args.evidence_report:
-            print(
-                json.dumps(
-                    build_evidence_report(manifest_path, args.profiles, validation_failures=failures),
-                    ensure_ascii=False,
-                    indent=2,
-                )
+            emit_evidence_report(
+                build_evidence_report(manifest_path, args.profiles, validation_failures=failures),
+                report_path=args.evidence_report_path,
             )
             return 1 if failures else 0
         if failures:
@@ -80,12 +77,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"manifest": str(manifest_path), "validation_failures": validation_failures}, ensure_ascii=False, indent=2))
         return 1
     if args.evidence_report:
-        print(
-            json.dumps(
-                build_evidence_report(manifest_path, args.profiles, validation_failures=[]),
-                ensure_ascii=False,
-                indent=2,
-            )
+        emit_evidence_report(
+            build_evidence_report(manifest_path, args.profiles, validation_failures=[]),
+            report_path=args.evidence_report_path,
         )
     return 0
 
@@ -129,6 +123,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--evidence-report",
         action="store_true",
         help="Print compact JSON evidence after validation so downloaded long-run artifacts are easy to audit.",
+    )
+    parser.add_argument(
+        "--evidence-report-path",
+        type=Path,
+        help="Optional file path for the JSON evidence report. Use inside artifact folders for GitHub Actions runs.",
     )
     return parser.parse_args(argv)
 
@@ -382,6 +381,14 @@ def build_evidence_report(
         )
     report["profiles"] = profile_reports
     return report
+
+
+def emit_evidence_report(report: dict[str, Any], *, report_path: Path | None = None) -> None:
+    text = json.dumps(report, ensure_ascii=False, indent=2)
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(text + "\n", encoding="utf-8")
+    print(text)
 
 
 def _load_summary_if_available(path: Path | None) -> dict[str, Any]:

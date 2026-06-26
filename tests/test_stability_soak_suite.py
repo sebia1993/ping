@@ -201,9 +201,12 @@ def test_soak_suite_validate_only_can_print_evidence_report(tmp_path, capsys) ->
         finished_at="2026-01-01T01:00:05",
     )
 
+    report_path = run_root / "stability_soak_evidence.json"
     exit_code = suite.main([
         "--validate-only",
         "--evidence-report",
+        "--evidence-report-path",
+        str(report_path),
         "--run-id",
         "validate-report",
         "--output-dir",
@@ -217,6 +220,7 @@ def test_soak_suite_validate_only_can_print_evidence_report(tmp_path, capsys) ->
     assert exit_code == 0
     assert report["validation_failures"] == []
     assert report["profiles"][0]["checks"]["session_log_ok"] is True
+    assert json.loads(report_path.read_text(encoding="utf-8")) == report
 
 
 def test_soak_suite_validate_accepts_downloaded_artifact_paths(tmp_path) -> None:
@@ -406,6 +410,8 @@ def test_manual_stability_soak_workflow_is_manual_only() -> None:
     assert "Session Delta" in text
     assert "Thread Limit" in text
     assert "Memory Limit MB" in text
+    assert "--evidence-report" in text
+    assert "stability_soak_evidence.json" in text
 
 
 def test_manual_stability_soak_blocks_long_profiles_on_github_hosted_windows() -> None:
