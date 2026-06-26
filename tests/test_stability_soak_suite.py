@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import run_stability_soak_suite as suite
 
@@ -242,6 +243,38 @@ def test_soak_suite_loads_latest_summary(tmp_path) -> None:
     assert summary["data"]["failures"] == []
 
 
+def test_soak_suite_result_records_session_and_thread_evidence(tmp_path, monkeypatch) -> None:
+    args = SimpleNamespace(
+        python_executable="python",
+        override_duration_seconds=None,
+        dry_run=False,
+    )
+
+    def fake_run(_command, cwd):
+        profile_root = tmp_path / "run" / "release"
+        profile_root.mkdir(parents=True, exist_ok=True)
+        summary = _summary("release", duration_seconds=5.0, ping_results=200, session_log_rows=205)
+        summary["session_log_min_expected_rows"] = 200
+        summary["session_log_row_delta"] = 5
+        summary["max_active_threads"] = 24
+        (profile_root / "soak_50_targets_20260101_010101.json").write_text(
+            json.dumps(summary, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(suite.subprocess, "run", fake_run)
+
+    result = suite.run_profile("release", args=args, run_root=tmp_path / "run")
+
+    assert result["status"] == "passed"
+    assert result["session_log_rows"] == 205
+    assert result["session_log_min_expected_rows"] == 200
+    assert result["session_log_row_delta"] == 5
+    assert result["max_active_threads"] == 24
+    assert result["thresholds"]["targets"] == 50
+
+
 def test_soak_suite_records_summary_paths_relative_to_run_root(tmp_path) -> None:
     run_root = tmp_path / "portable-run"
     summary_path = run_root / "release" / "soak_50_targets_20260101_010101.json"
@@ -281,6 +314,11 @@ def test_manual_stability_soak_workflow_is_manual_only() -> None:
     assert "self-hosted-windows" in text
     assert "actions/upload-artifact@v4" in text
     assert "--override-duration-seconds" in text
+    assert "Min Duration" in text
+    assert "UI Gap Limit" in text
+    assert "Session Delta" in text
+    assert "Thread Limit" in text
+    assert "Memory Limit MB" in text
 
 
 def test_manual_stability_soak_blocks_long_profiles_on_github_hosted_windows() -> None:

@@ -149,7 +149,10 @@ def run_profile(profile: str, *, args: argparse.Namespace, run_root: Path) -> di
         result["max_ui_event_process_seconds"] = summary["data"].get("max_ui_event_process_seconds")
         result["memory_growth_bytes"] = summary["data"].get("memory_growth_bytes")
         result["active_threads_final"] = summary["data"].get("active_threads_final")
+        result["max_active_threads"] = summary["data"].get("max_active_threads")
         result["session_log_rows"] = summary["data"].get("session_log_rows")
+        result["session_log_min_expected_rows"] = summary["data"].get("session_log_min_expected_rows")
+        result["session_log_row_delta"] = summary["data"].get("session_log_row_delta")
     if completed.returncode == 0 and not result["failures"]:
         result["status"] = "passed"
     else:

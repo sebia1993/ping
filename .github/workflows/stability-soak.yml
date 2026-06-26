@@ -105,10 +105,15 @@ jobs:
           Add-Content $env:GITHUB_STEP_SUMMARY "- Passed: ``$($payload.passed)``"
           Add-Content $env:GITHUB_STEP_SUMMARY "- Profiles: ``$($payload.profiles_requested -join ' ')``"
           Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "| Profile | Status | Duration | Max UI Gap | Max UI Process | Memory Growth |"
-          Add-Content $env:GITHUB_STEP_SUMMARY "| --- | --- | ---: | ---: | ---: | ---: |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Profile | Status | Duration | Min Duration | Max UI Gap | UI Gap Limit | Session Delta | Threads | Thread Limit | Memory Growth | Memory Limit MB |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
           foreach ($result in $payload.results) {
-            Add-Content $env:GITHUB_STEP_SUMMARY "| $($result.profile) | $($result.status) | $($result.duration_seconds) | $($result.max_ui_event_gap_seconds) | $($result.max_ui_event_process_seconds) | $($result.memory_growth_bytes) |"
+            $thresholds = $result.thresholds
+            $minDuration = if ($null -ne $thresholds) { $thresholds.minimum_duration_seconds } else { "" }
+            $uiGapLimit = if ($null -ne $thresholds) { $thresholds.max_ui_event_gap_seconds } else { "" }
+            $threadLimit = if ($null -ne $thresholds) { $thresholds.max_active_threads } else { "" }
+            $memoryLimit = if ($null -ne $thresholds) { $thresholds.max_memory_growth_mb } else { "" }
+            Add-Content $env:GITHUB_STEP_SUMMARY "| $($result.profile) | $($result.status) | $($result.duration_seconds) | $minDuration | $($result.max_ui_event_gap_seconds) | $uiGapLimit | $($result.session_log_row_delta) | $($result.active_threads_final) | $threadLimit | $($result.memory_growth_bytes) | $memoryLimit |"
           }
 
       - name: Upload soak artifacts
@@ -187,10 +192,15 @@ jobs:
           Add-Content $env:GITHUB_STEP_SUMMARY "- Passed: ``$($payload.passed)``"
           Add-Content $env:GITHUB_STEP_SUMMARY "- Profiles: ``$($payload.profiles_requested -join ' ')``"
           Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "| Profile | Status | Duration | Max UI Gap | Max UI Process | Memory Growth |"
-          Add-Content $env:GITHUB_STEP_SUMMARY "| --- | --- | ---: | ---: | ---: | ---: |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Profile | Status | Duration | Min Duration | Max UI Gap | UI Gap Limit | Session Delta | Threads | Thread Limit | Memory Growth | Memory Limit MB |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
           foreach ($result in $payload.results) {
-            Add-Content $env:GITHUB_STEP_SUMMARY "| $($result.profile) | $($result.status) | $($result.duration_seconds) | $($result.max_ui_event_gap_seconds) | $($result.max_ui_event_process_seconds) | $($result.memory_growth_bytes) |"
+            $thresholds = $result.thresholds
+            $minDuration = if ($null -ne $thresholds) { $thresholds.minimum_duration_seconds } else { "" }
+            $uiGapLimit = if ($null -ne $thresholds) { $thresholds.max_ui_event_gap_seconds } else { "" }
+            $threadLimit = if ($null -ne $thresholds) { $thresholds.max_active_threads } else { "" }
+            $memoryLimit = if ($null -ne $thresholds) { $thresholds.max_memory_growth_mb } else { "" }
+            Add-Content $env:GITHUB_STEP_SUMMARY "| $($result.profile) | $($result.status) | $($result.duration_seconds) | $minDuration | $($result.max_ui_event_gap_seconds) | $uiGapLimit | $($result.session_log_row_delta) | $($result.active_threads_final) | $threadLimit | $($result.memory_growth_bytes) | $memoryLimit |"
           }
 
       - name: Upload soak artifacts
