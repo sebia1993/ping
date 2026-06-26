@@ -2056,8 +2056,13 @@ class MainWindow(QMainWindow):
         label = self.target_graph_status_labels.get(address)
         if label is None:
             return
-        label.setText(TARGET_GRAPH_STATE_LABELS.get(state, "대기"))
-        label.setProperty("tone", TARGET_GRAPH_STATE_TONES.get(state, "neutral"))
+        text = TARGET_GRAPH_STATE_LABELS.get(state, "대기")
+        tone = TARGET_GRAPH_STATE_TONES.get(state, "neutral")
+        if label.text() == text and label.property("tone") == tone and label.property("state") == state:
+            return
+        label.setText(text)
+        label.setProperty("tone", tone)
+        label.setProperty("state", state)
         label.style().unpolish(label)
         label.style().polish(label)
 

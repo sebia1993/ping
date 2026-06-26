@@ -73,11 +73,14 @@ class LatencyGraphWidget(QWidget):
 
     def set_visible_time_range(self, start: datetime | None, end: datetime | None) -> None:
         if start is None or end is None:
-            self._external_visible_range = None
+            next_range = None
         else:
             start_value = start.timestamp()
             end_value = end.timestamp()
-            self._external_visible_range = (min(start_value, end_value), max(start_value, end_value))
+            next_range = (min(start_value, end_value), max(start_value, end_value))
+        if self._external_visible_range == next_range:
+            return
+        self._external_visible_range = next_range
         self.update()
 
     def set_series(
@@ -97,7 +100,10 @@ class LatencyGraphWidget(QWidget):
         self.update()
 
     def set_annotations(self, annotations: list[TimelineAnnotation]) -> None:
-        self._annotations = list(annotations)
+        next_annotations = list(annotations)
+        if self._annotations == next_annotations:
+            return
+        self._annotations = next_annotations
         self.update()
 
     def zoom_in(self) -> None:

@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import tracemalloc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,94 @@ from app.ui.worker import TRACE_REFRESH_SECONDS, MeasurementWorker
 
 # soak test는 "오래 돌려도 멈추지 않는지" 보는 안정성 테스트입니다.
 # 실제 IP를 때리지 않고 가짜 ping 응답을 만들어, timeout이 많은 환경을 안전하게 재현합니다.
+TOP_EVENT_SAMPLE_LIMIT = 10
+
+
+@dataclass
+class EventLoopStats:
+    """UI 이벤트 tick을 전부 저장하지 않고 장시간 운영에 필요한 통계만 유지합니다."""
+
+    tick_count: int = 0
+    previous_tick: float | None = None
+    total_gap_seconds: float = 0.0
+    max_gap_seconds: float = 0.0
+    total_process_seconds: float = 0.0
+    max_process_seconds: float = 0.0
+    top_gap_samples: list[dict[str, object]] = field(default_factory=list)
+    top_process_samples: list[dict[str, object]] = field(default_factory=list)
+
+    def record(
+        self,
+        tick: float,
+        *,
+        elapsed_seconds: float,
+        event_process_seconds: float,
+        updates: int,
+        diagnostic_samples: int,
+        last_diagnostics: dict[str, object] | None,
+    ) -> None:
+        self.tick_count += 1
+        self.total_process_seconds += event_process_seconds
+        self.max_process_seconds = max(self.max_process_seconds, event_process_seconds)
+
+        if self.previous_tick is None:
+            self.previous_tick = tick
+            return
+
+        event_gap_seconds = tick - self.previous_tick
+        self.previous_tick = tick
+        self.total_gap_seconds += event_gap_seconds
+        self.max_gap_seconds = max(self.max_gap_seconds, event_gap_seconds)
+
+        sample = self._sample(
+            elapsed_seconds=elapsed_seconds,
+            event_gap_seconds=event_gap_seconds,
+            event_process_seconds=event_process_seconds,
+            updates=updates,
+            diagnostic_samples=diagnostic_samples,
+            last_diagnostics=last_diagnostics or {},
+        )
+        _keep_top_samples(self.top_gap_samples, sample, key="event_gap_seconds")
+        _keep_top_samples(self.top_process_samples, sample, key="event_process_seconds")
+
+    @property
+    def avg_gap_seconds(self) -> float:
+        gap_count = max(self.tick_count - 1, 0)
+        return self.total_gap_seconds / gap_count if gap_count else 0.0
+
+    @property
+    def avg_process_seconds(self) -> float:
+        return self.total_process_seconds / self.tick_count if self.tick_count else 0.0
+
+    def _sample(
+        self,
+        *,
+        elapsed_seconds: float,
+        event_gap_seconds: float,
+        event_process_seconds: float,
+        updates: int,
+        diagnostic_samples: int,
+        last_diagnostics: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "event_gap_seconds": round(event_gap_seconds, 6),
+            "event_process_seconds": round(event_process_seconds, 6),
+            "updates": updates,
+            "diagnostic_samples": diagnostic_samples,
+            "active_ping_count": int(last_diagnostics.get("active_ping_count", 0) or 0),
+            "pending_ping_count": int(last_diagnostics.get("pending_ping_count", 0) or 0),
+            "log_queue_depth": int(last_diagnostics.get("log_queue_depth", 0) or 0),
+            "active_threads": threading.active_count(),
+        }
+
+
+def _keep_top_samples(samples: list[dict[str, object]], sample: dict[str, object], *, key: str) -> None:
+    samples.append(sample)
+    samples.sort(key=lambda row: float(row.get(key, 0.0) or 0.0), reverse=True)
+    del samples[TOP_EVENT_SAMPLE_LIMIT:]
+
+
 SOAK_PROFILES: dict[str, dict[str, object]] = {
     "default": {
         "duration_seconds": 1800.0,
@@ -34,6 +122,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "timeout_delay_seconds": 1.5,
         "with_ui": False,
         "event_poll_seconds": 0.05,
+        "event_process_max_milliseconds": 0,
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 2.0,
@@ -49,6 +138,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "timeout_delay_seconds": 0.05,
         "with_ui": False,
         "event_poll_seconds": 0.02,
+        "event_process_max_milliseconds": 0,
         "sample_seconds": 0.5,
         "progress_seconds": 0.0,
         "max_ui_event_gap_seconds": 2.0,
@@ -64,6 +154,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "timeout_delay_seconds": 1.5,
         "with_ui": False,
         "event_poll_seconds": 0.05,
+        "event_process_max_milliseconds": 0,
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 2.0,
@@ -79,6 +170,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "timeout_delay_seconds": 1.5,
         "with_ui": False,
         "event_poll_seconds": 0.05,
+        "event_process_max_milliseconds": 0,
         "sample_seconds": 5.0,
         "progress_seconds": 300.0,
         "max_ui_event_gap_seconds": 2.0,
@@ -94,6 +186,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "timeout_delay_seconds": 1.5,
         "with_ui": False,
         "event_poll_seconds": 0.05,
+        "event_process_max_milliseconds": 0,
         "sample_seconds": 10.0,
         "progress_seconds": 600.0,
         "max_ui_event_gap_seconds": 2.0,
@@ -109,6 +202,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "timeout_delay_seconds": 1.5,
         "with_ui": False,
         "event_poll_seconds": 0.05,
+        "event_process_max_milliseconds": 0,
         "sample_seconds": 30.0,
         "progress_seconds": 1800.0,
         "max_ui_event_gap_seconds": 2.0,
@@ -123,7 +217,8 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "interval_seconds": 1,
         "timeout_delay_seconds": 0.05,
         "with_ui": True,
-        "event_poll_seconds": 0.02,
+        "event_poll_seconds": 0.01,
+        "event_process_max_milliseconds": 10,
         "sample_seconds": 0.5,
         "progress_seconds": 10.0,
         "max_ui_event_gap_seconds": 2.0,
@@ -138,7 +233,8 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "interval_seconds": 1,
         "timeout_delay_seconds": 0.05,
         "with_ui": True,
-        "event_poll_seconds": 0.02,
+        "event_poll_seconds": 0.01,
+        "event_process_max_milliseconds": 10,
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 0.2,
@@ -153,7 +249,8 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "interval_seconds": 1,
         "timeout_delay_seconds": 0.05,
         "with_ui": True,
-        "event_poll_seconds": 0.02,
+        "event_poll_seconds": 0.01,
+        "event_process_max_milliseconds": 10,
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 0.2,
@@ -168,7 +265,8 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "interval_seconds": 1,
         "timeout_delay_seconds": 0.05,
         "with_ui": True,
-        "event_poll_seconds": 0.02,
+        "event_poll_seconds": 0.01,
+        "event_process_max_milliseconds": 10,
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 0.2,
@@ -199,7 +297,7 @@ def main() -> int:
     updates: list[float] = []
     diagnostics_rows: list[dict[str, object]] = []
     health_rows: list[dict[str, object]] = []
-    event_loop_ticks: list[float] = []
+    event_loop_stats = EventLoopStats()
     errors: list[str] = []
     session_log_paths: list[str] = []
     ping_calls: dict[str, int] = {}
@@ -253,8 +351,16 @@ def main() -> int:
         # Qt 이벤트 처리, Worker 결과 수집, 메모리/스레드 샘플링을 일정 간격으로 반복합니다.
         while time.monotonic() - started_at < args.duration_seconds and not errors:
             before_events = time.monotonic()
-            app.processEvents()
-            event_loop_ticks.append(time.monotonic())
+            process_application_events(app, args.event_process_max_milliseconds)
+            after_events = time.monotonic()
+            event_loop_stats.record(
+                after_events,
+                elapsed_seconds=after_events - started_at,
+                event_process_seconds=after_events - before_events,
+                updates=len(updates),
+                diagnostic_samples=len(diagnostics_rows),
+                last_diagnostics=diagnostics_rows[-1] if diagnostics_rows else None,
+            )
             now = time.monotonic()
             if now - last_sample_at >= args.sample_seconds:
                 current_memory, peak_memory = tracemalloc.get_traced_memory()
@@ -275,7 +381,7 @@ def main() -> int:
     finally:
         worker.request_stop()
         stopped_cleanly = worker.wait(max(30000, int((args.timeout_delay_seconds + 5) * 1000)))
-        app.processEvents()
+        process_application_events(app, args.event_process_max_milliseconds)
         if window is not None:
             window.close()
 
@@ -300,7 +406,7 @@ def main() -> int:
         updates=updates,
         diagnostics_rows=diagnostics_rows,
         health_rows=health_rows,
-        event_loop_ticks=event_loop_ticks,
+        event_loop_stats=event_loop_stats,
         errors=errors,
         session_log_paths=session_log_paths,
         ping_calls=ping_calls,
@@ -358,6 +464,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ui_group.add_argument("--no-ui", dest="with_ui", action="store_false")
     parser.add_argument("--event-poll-seconds", type=float, default=profile_defaults["event_poll_seconds"])
+    parser.add_argument(
+        "--event-process-max-milliseconds",
+        type=int,
+        default=profile_defaults["event_process_max_milliseconds"],
+    )
     parser.add_argument("--sample-seconds", type=float, default=profile_defaults["sample_seconds"])
     parser.add_argument("--progress-seconds", type=float, default=profile_defaults["progress_seconds"])
     parser.add_argument("--max-update-gap-seconds", type=float)
@@ -397,6 +508,15 @@ def create_application(*, with_ui: bool):
     from PySide6.QtCore import QCoreApplication
 
     return QCoreApplication.instance() or QCoreApplication([]), None
+
+
+def process_application_events(app: object, max_milliseconds: int) -> None:
+    if max_milliseconds > 0:
+        from PySide6.QtCore import QEventLoop
+
+        app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, max_milliseconds)
+        return
+    app.processEvents()
 
 
 def connect_window(window: object | None, worker: MeasurementWorker) -> None:
@@ -474,7 +594,7 @@ def build_summary(
     updates: list[float],
     diagnostics_rows: list[dict[str, object]],
     health_rows: list[dict[str, object]],
-    event_loop_ticks: list[float],
+    event_loop_stats: EventLoopStats,
     errors: list[str],
     session_log_paths: list[str],
     ping_calls: dict[str, int],
@@ -491,7 +611,6 @@ def build_summary(
     # 이 summary는 콘솔 출력과 JSON 파일에 같이 기록됩니다.
     session_stats = collect_session_log_stats(session_log_paths)
     update_gaps = [later - earlier for earlier, later in zip(updates, updates[1:])]
-    event_gaps = [later - earlier for earlier, later in zip(event_loop_ticks, event_loop_ticks[1:])]
     current_memory_values = [int(row["current_memory_bytes"]) for row in health_rows]
     memory_growth = (
         max(current_memory_values) - current_memory_values[0]
@@ -530,9 +649,13 @@ def build_summary(
         "memory_growth_bytes": memory_growth,
         "max_update_gap_seconds": max(update_gaps, default=0.0),
         "avg_update_gap_seconds": statistics.fmean(update_gaps) if update_gaps else 0.0,
-        "event_loop_samples": len(event_loop_ticks),
-        "max_ui_event_gap_seconds": max(event_gaps, default=0.0),
-        "avg_ui_event_gap_seconds": statistics.fmean(event_gaps) if event_gaps else 0.0,
+        "event_loop_samples": event_loop_stats.tick_count,
+        "max_ui_event_gap_seconds": event_loop_stats.max_gap_seconds,
+        "avg_ui_event_gap_seconds": event_loop_stats.avg_gap_seconds,
+        "max_ui_event_process_seconds": event_loop_stats.max_process_seconds,
+        "avg_ui_event_process_seconds": event_loop_stats.avg_process_seconds,
+        "top_ui_event_gaps": event_loop_stats.top_gap_samples,
+        "top_ui_event_processes": event_loop_stats.top_process_samples,
         "diagnostic_samples": len(diagnostics_rows),
         "health_samples": len(health_rows),
         "max_active_ping_count": max_active,

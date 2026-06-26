@@ -101,6 +101,22 @@ def test_release_policy_rejects_external_api_clients(monkeypatch, tmp_path) -> N
         raise AssertionError("Expected release policy check to fail")
 
 
+def test_run_pytest_uses_release_timeout(monkeypatch) -> None:
+    calls = []
+
+    def fake_run_command(command, *, timeout, env=None):
+        calls.append((command, timeout, env))
+
+    monkeypatch.setattr(verify_release, "run_command", fake_run_command)
+
+    verify_release.run_pytest()
+
+    assert calls == [
+        ([verify_release.sys.executable, "-m", "pytest"], verify_release.PYTEST_TIMEOUT_SECONDS, None)
+    ]
+    assert verify_release.PYTEST_TIMEOUT_SECONDS >= 600
+
+
 def test_field_verification_docs_match_current_graph_controls() -> None:
     text = (Path(__file__).resolve().parents[1] / "docs" / "field_verification.md").read_text(encoding="utf-8")
 

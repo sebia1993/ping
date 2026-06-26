@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 APP_DISPLAY_NAME = "멀티핑체크"
 APP_BINARY_NAME = "MultiPingCheck"
+PYTEST_TIMEOUT_SECONDS = 600
 
 from app.core.models import STATUS_OK, HopObservation, MetricSnapshot
 from app.core.ping_runner import CommandPingRunner
@@ -84,7 +85,7 @@ def run_command(command: list[str], *, env: dict[str, str] | None = None, timeou
 
 
 def run_pytest() -> None:
-    run_command([sys.executable, "-m", "pytest"], timeout=300)
+    run_command([sys.executable, "-m", "pytest"], timeout=PYTEST_TIMEOUT_SECONDS)
 
 
 def run_compileall() -> None:

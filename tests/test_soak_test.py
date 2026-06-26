@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from scripts.soak_test import evaluate_summary, parse_args
+import pytest
+
+from scripts.soak_test import EventLoopStats, evaluate_summary, parse_args
 
 
 def test_soak_release_profile_sets_fast_fifty_target_defaults() -> None:
@@ -18,6 +20,7 @@ def test_soak_release_profile_sets_fast_fifty_target_defaults() -> None:
     assert args.progress_seconds == 0.0
     assert args.max_cpu_percent == 250.0
     assert args.with_ui is False
+    assert args.event_process_max_milliseconds == 0
 
 
 def test_soak_long_profile_sets_thirty_minute_fifty_target_defaults() -> None:
@@ -65,9 +68,15 @@ def test_soak_ui_freeze_profiles_measure_ten_twenty_and_fifty_targets() -> None:
     assert ten.duration_seconds == 600.0
     assert twenty.duration_seconds == 600.0
     assert fifty.duration_seconds == 600.0
+    assert ten.event_poll_seconds == 0.01
+    assert twenty.event_poll_seconds == 0.01
+    assert fifty.event_poll_seconds == 0.01
     assert ten.max_ui_event_gap_seconds == 0.2
     assert twenty.max_ui_event_gap_seconds == 0.2
     assert fifty.max_ui_event_gap_seconds == 0.2
+    assert ten.event_process_max_milliseconds == 10
+    assert twenty.event_process_max_milliseconds == 10
+    assert fifty.event_process_max_milliseconds == 10
 
 
 def test_soak_profile_allows_explicit_cli_overrides() -> None:
@@ -88,6 +97,49 @@ def test_soak_profile_allows_explicit_cli_overrides() -> None:
     assert args.targets == 7
     assert args.with_ui is False
     assert args.max_cpu_percent == 90.0
+
+
+def test_event_loop_stats_keep_top_gap_and_process_samples() -> None:
+    stats = EventLoopStats()
+    diagnostics = {
+        "active_ping_count": 2,
+        "pending_ping_count": 1,
+        "log_queue_depth": 3,
+    }
+
+    stats.record(
+        10.0,
+        elapsed_seconds=0.0,
+        event_process_seconds=0.01,
+        updates=0,
+        diagnostic_samples=0,
+        last_diagnostics=diagnostics,
+    )
+    stats.record(
+        10.05,
+        elapsed_seconds=0.05,
+        event_process_seconds=0.02,
+        updates=1,
+        diagnostic_samples=1,
+        last_diagnostics=diagnostics,
+    )
+    stats.record(
+        10.35,
+        elapsed_seconds=0.35,
+        event_process_seconds=0.18,
+        updates=2,
+        diagnostic_samples=2,
+        last_diagnostics=diagnostics,
+    )
+
+    assert stats.tick_count == 3
+    assert stats.max_gap_seconds == pytest.approx(0.3)
+    assert stats.avg_gap_seconds == pytest.approx(0.175)
+    assert stats.max_process_seconds == pytest.approx(0.18)
+    assert stats.avg_process_seconds == pytest.approx(0.07)
+    assert stats.top_gap_samples[0]["event_gap_seconds"] == pytest.approx(0.3)
+    assert stats.top_gap_samples[0]["pending_ping_count"] == 1
+    assert stats.top_process_samples[0]["event_process_seconds"] == pytest.approx(0.18)
 
 
 def test_soak_evaluation_accepts_stable_thirty_minute_run() -> None:
