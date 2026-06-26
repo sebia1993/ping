@@ -80,6 +80,9 @@ python scripts/run_stability_soak_suite.py --dry-run
 
 ## Git Safety
 
+- Keep this `AGENTS.md` tracked in Git. It is the handoff file that lets the
+  same project rules follow the repository to GitHub, MacBook clones, GitHub
+  Actions, and future Windows workstations.
 - The worktree may contain user or unfinished Codex changes. Inspect
   `git status --short --branch` before committing.
 - Do not revert unrelated changes.
