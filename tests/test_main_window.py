@@ -4560,6 +4560,87 @@ def test_main_window_records_repeated_alert_episode_without_duplicate_same_event
         window.close()
 
 
+def test_main_window_records_repeated_alert_episode_through_live_updates(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    target = "198.51.100.10"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    bad_snapshot = _snapshot(
+        0,
+        target,
+        None,
+        latency=None,
+        received=0,
+        timeout_count=1,
+        status=STATUS_TIMEOUT,
+        is_target=True,
+    )
+    good_snapshot = _snapshot(0, target, None, latency=11.0, is_target=True)
+    first_bad_history = [
+        HopObservation(
+            now + timedelta(seconds=index),
+            0,
+            target,
+            "Target",
+            index == 0,
+            10.0 if index == 0 else None,
+            STATUS_OK if index == 0 else STATUS_TIMEOUT,
+            True,
+        )
+        for index in range(3)
+    ]
+    good_history = [
+        HopObservation(now + timedelta(minutes=5, seconds=index), 0, target, "Target", True, 10.0, STATUS_OK, True)
+        for index in range(3)
+    ]
+    second_bad_start = now + timedelta(minutes=10)
+    second_bad_history = [
+        HopObservation(
+            second_bad_start + timedelta(seconds=index),
+            0,
+            target,
+            "Target",
+            index == 0,
+            10.0 if index == 0 else None,
+            STATUS_OK if index == 0 else STATUS_TIMEOUT,
+            True,
+        )
+        for index in range(3)
+    ]
+    base_key = f"target:{target}:target_sample_condition"
+
+    try:
+        window.current_target = target
+        window.current_targets = [target]
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.loss_threshold_spin.setValue(100)
+        window.latency_threshold_spin.setValue(1000)
+        window.sample_window_spin.setValue(3)
+        window.sample_bad_spin.setValue(2)
+
+        window.on_measurement_updated([], bad_snapshot, [bad_snapshot], ["live"], first_bad_history, first_bad_history)
+        window.on_measurement_updated([], bad_snapshot, [bad_snapshot], ["live"], first_bad_history, first_bad_history)
+
+        assert [event.key for event in window.alert_events] == [base_key]
+
+        window.on_measurement_updated([], good_snapshot, [good_snapshot], ["live"], good_history, good_history)
+        window.on_measurement_updated([], bad_snapshot, [bad_snapshot], ["live"], second_bad_history, second_bad_history)
+
+        assert [event.key for event in window.alert_events] == [
+            base_key,
+            f"{base_key}:ended:2026-01-01T12:05:02",
+            f"{base_key}:event:2026-01-01T12:10:00",
+        ]
+        rows = read_alert_actions(window.alert_action_log_path)
+        assert [row["start"] for row in rows] == [
+            "2026-01-01T12:00:00",
+            "2026-01-01T12:05:02",
+            "2026-01-01T12:10:00",
+        ]
+        assert all(row["source"] == "alert" for row in rows)
+    finally:
+        window.close()
+
+
 def test_main_window_trims_alert_action_state_with_event_history(qt_app) -> None:
     window = MainWindow()
     base_time = datetime(2026, 1, 1, 12, 0, 0)
