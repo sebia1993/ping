@@ -641,8 +641,24 @@ class MeasurementWorker(QThread):
         finally:
             self._stop_event.set()
             self._cancel_pending_futures(trace_future, target_futures, hop_futures)
+            target_executor.shutdown(wait=True, cancel_futures=True)
+            hop_executor.shutdown(wait=True, cancel_futures=True)
+            trace_executor.shutdown(wait=True, cancel_futures=True)
             if session_log is not None:
                 try:
+                    self._collect_completed_ping_results(
+                        target_futures,
+                        active_target_pings,
+                        hop_futures,
+                        active_hop_pings,
+                        metrics,
+                        hops,
+                        target_trackers,
+                        target_states,
+                        session_log,
+                        recent_observations,
+                        timeout=0,
+                    )
                     session_log.close()
                 except Exception as exc:
                     session_error = _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc)
@@ -676,9 +692,6 @@ class MeasurementWorker(QThread):
             if self._hop_ping_probe_pool is not None:
                 self._hop_ping_probe_pool.close()
                 self._hop_ping_probe_pool = None
-            target_executor.shutdown(wait=True, cancel_futures=True)
-            hop_executor.shutdown(wait=True, cancel_futures=True)
-            trace_executor.shutdown(wait=True, cancel_futures=True)
 
     @staticmethod
     def _cancel_pending_futures(
@@ -791,6 +804,8 @@ class MeasurementWorker(QThread):
             if future in target_futures:
                 target = target_futures.pop(future)
                 active_target_pings.discard(target)
+                if future.cancelled():
+                    continue
                 if target not in target_states:
                     continue
                 result = self._future_result(future, target)
@@ -804,6 +819,8 @@ class MeasurementWorker(QThread):
             elif future in hop_futures:
                 target = hop_futures.pop(future)
                 active_hop_pings.discard(target)
+                if future.cancelled():
+                    continue
                 result = self._future_result(future, target)
                 observations = self._record_hop_ping_result(result, metrics, hops)
                 self._store_observations(session_log, recent_observations, observations)

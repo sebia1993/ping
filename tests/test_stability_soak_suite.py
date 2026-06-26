@@ -229,6 +229,36 @@ def test_soak_suite_loads_latest_summary(tmp_path) -> None:
     assert summary["data"]["failures"] == []
 
 
+def test_soak_suite_records_summary_paths_relative_to_run_root(tmp_path) -> None:
+    run_root = tmp_path / "portable-run"
+    summary_path = run_root / "release" / "soak_50_targets_20260101_010101.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(
+        json.dumps(_summary("release", duration_seconds=5.0), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    recorded = suite._manifest_path_value(summary_path, run_root=run_root)
+    manifest_path = run_root / "stability_soak_suite.json"
+    suite.write_manifest(
+        manifest_path,
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[
+            {
+                "profile": "release",
+                "status": "passed",
+                "summary_json": recorded,
+                "failures": [],
+            }
+        ],
+        finished_at="2026-01-01T01:00:05",
+    )
+
+    assert recorded == str(Path("release") / summary_path.name)
+    assert suite.validate_manifest(manifest_path, ["release"]) == []
+
+
 def test_manual_stability_soak_workflow_is_manual_only() -> None:
     text = (ROOT / ".github" / "workflows" / "stability-soak.yml").read_text(encoding="utf-8")
 

@@ -141,7 +141,7 @@ def run_profile(profile: str, *, args: argparse.Namespace, run_root: Path) -> di
     result["finished_at"] = datetime.now().isoformat(timespec="seconds")
     summary = load_latest_summary(profile_output_dir)
     if summary is not None:
-        result["summary_json"] = str(summary["path"])
+        result["summary_json"] = _manifest_path_value(summary["path"], run_root=run_root)
         result["failures"] = summary["data"].get("failures", [])
         result["duration_seconds"] = summary["data"].get("duration_seconds")
         result["max_ui_event_gap_seconds"] = summary["data"].get("max_ui_event_gap_seconds")
@@ -193,6 +193,13 @@ def load_manifest(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _manifest_path_value(path: Path, *, run_root: Path) -> str:
+    try:
+        return str(path.relative_to(run_root))
+    except ValueError:
+        return str(path)
 
 
 def latest_result(profile: str, results: list[dict[str, Any]]) -> dict[str, Any] | None:

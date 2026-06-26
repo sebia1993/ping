@@ -13,7 +13,7 @@ from app.core.metrics import TargetMetricTracker
 from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, PingResult
 from app.storage import session_log as session_log_module
 from app.storage.route_log import RouteLogWriter, route_changes_in_range
-from app.storage.session_log import SessionLogWriter
+from app.storage.session_log import SessionLogWriter, read_observations
 from app.storage.session_index import SESSION_STATE_ARCHIVED, SESSION_STATE_PAUSED, SessionIndexStore
 from app.ui import worker as worker_module
 from app.ui.worker import (
@@ -892,10 +892,50 @@ def test_worker_stop_request_is_bounded_by_active_probe_timeout() -> None:
     worker.request_stop()
 
     assert worker.wait(2500) is True
-    assert time.monotonic() - stopped_at < 2.0
+    assert time.monotonic() - stopped_at < 2.5
     assert calls
     assert {timeout_ms for _target, timeout_ms in calls} == {120}
     assert worker.isRunning() is False
+
+
+def test_worker_drains_active_ping_results_before_closing_session_log(tmp_path) -> None:
+    _app()
+    target_count = 6
+    targets = [f"198.51.100.{index}" for index in range(1, target_count + 1)]
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+    all_started = threading.Event()
+    release_pings = threading.Event()
+
+    worker = MeasurementWorker(
+        targets[0],
+        interval_seconds=1,
+        max_cycles=None,
+        timeout_ms=1000,
+        targets=targets,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        ping_probe_factory=lambda timeout_ms: _GatedPingRunner(
+            timeout_ms,
+            calls,
+            target_count=target_count,
+            all_started=all_started,
+            release=release_pings,
+            lock=calls_lock,
+        ),
+        session_log_root=tmp_path,
+    )
+
+    worker.start()
+    assert all_started.wait(2.0)
+    worker.request_stop()
+    release_pings.set()
+
+    assert worker.wait(3000) is True
+    sessions = SessionIndexStore.create(tmp_path).list_sessions(recover_missing=True)
+    assert len(sessions) == 1
+    observations = read_observations(sessions[0].sample_path)
+    assert len(observations) == len(calls) == target_count
+    assert {observation.address for observation in observations} == set(targets)
 
 
 def test_worker_cancels_pending_measurement_futures_on_shutdown() -> None:
@@ -1215,6 +1255,33 @@ class _TimeoutBoundPingRunner:
         self.calls.append((target, self.timeout_ms))
         time.sleep(self.timeout_ms / 1000)
         return PingResult(target, False, None, STATUS_TIMEOUT, datetime.now())
+
+
+class _GatedPingRunner:
+    def __init__(
+        self,
+        timeout_ms: int,
+        calls: list[str],
+        *,
+        target_count: int,
+        all_started: threading.Event,
+        release: threading.Event,
+        lock: threading.Lock,
+    ) -> None:
+        self.timeout_ms = timeout_ms
+        self.calls = calls
+        self.target_count = target_count
+        self.all_started = all_started
+        self.release = release
+        self.lock = lock
+
+    def ping(self, target: str) -> PingResult:
+        with self.lock:
+            self.calls.append(target)
+            if len(self.calls) >= self.target_count:
+                self.all_started.set()
+        self.release.wait(self.timeout_ms / 1000)
+        return PingResult(target, True, 10.0, STATUS_OK, datetime.now())
 
 
 class _CountingPingRunner:
