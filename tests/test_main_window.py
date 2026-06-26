@@ -4445,6 +4445,35 @@ def test_main_window_records_repeated_alert_episode_without_duplicate_same_event
         window.close()
 
 
+def test_main_window_trims_alert_action_state_with_event_history(qt_app) -> None:
+    window = MainWindow()
+    base_time = datetime(2026, 1, 1, 12, 0, 0)
+
+    try:
+        for index in range(main_window_module.ALERT_EVENT_HISTORY_LIMIT + 5):
+            key = f"target:198.51.100.{index}:target_sample_condition"
+            event = AlertEvent(
+                key,
+                base_time + timedelta(seconds=index),
+                base_time + timedelta(seconds=index),
+                base_time + timedelta(seconds=index),
+                "critical",
+                "샘플 불량 경고",
+                f"event {index}",
+            )
+            window.pending_alert_image_keys.add(key)
+            window._append_alert_event(event, record_actions=False, actions=["image"])
+
+        kept_keys = {event.key for event in window.alert_events}
+
+        assert len(window.alert_events) == main_window_module.ALERT_EVENT_HISTORY_LIMIT
+        assert set(window.alert_event_actions) == kept_keys
+        assert window.pending_alert_image_keys == kept_keys
+        assert all("198.51.100.0:" not in key for key in kept_keys)
+    finally:
+        window.close()
+
+
 def test_main_window_records_sample_count_alert_and_recovery(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)

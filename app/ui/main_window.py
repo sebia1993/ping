@@ -128,6 +128,7 @@ ALERT_EMAIL_SECURITY_MODES = {
     ALERT_EMAIL_SECURITY_STARTTLS,
     ALERT_EMAIL_SECURITY_SSL,
 }
+ALERT_EVENT_HISTORY_LIMIT = 100
 SIMPLE_DEFAULT_INTERVAL_SECONDS = 1
 SIMPLE_DEFAULT_TCP_PORT = 443
 GRAPH_PNG_SCOPE_TIMELINE = "timeline"
@@ -2863,12 +2864,22 @@ class MainWindow(QMainWindow):
         if any(existing.key == event.key for existing in self.alert_events):
             event = replace(event, key=_alert_event_instance_key(event))
         self.alert_events.append(event)
-        self.alert_events = self.alert_events[-100:]
+        self._trim_alert_event_history()
         if actions is not None:
             self.alert_event_actions[event.key] = actions
         elif record_actions:
             self.alert_event_actions[event.key] = self._record_alert_actions(event)
+        self._trim_alert_event_history()
         self._sync_alerts_box()
+
+    def _trim_alert_event_history(self) -> None:
+        if len(self.alert_events) > ALERT_EVENT_HISTORY_LIMIT:
+            self.alert_events = self.alert_events[-ALERT_EVENT_HISTORY_LIMIT:]
+        active_keys = {event.key for event in self.alert_events}
+        self.alert_event_actions = {
+            key: actions for key, actions in self.alert_event_actions.items() if key in active_keys
+        }
+        self.pending_alert_image_keys.intersection_update(active_keys)
 
     def _record_alert_actions(self, event: AlertEvent) -> list[str]:
         actions = self._selected_alert_actions(event)
