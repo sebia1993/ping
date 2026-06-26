@@ -61,6 +61,11 @@ jobs:
           if (-not $profiles) {
             throw 'profiles input is empty'
           }
+          $selfHostedOnlyProfiles = @('long8h', 'long24h')
+          $selfHostedOnlyRequested = @($profiles | Where-Object { $selfHostedOnlyProfiles -contains $_ })
+          if ($selfHostedOnlyRequested) {
+            throw "profiles '$($selfHostedOnlyRequested -join ' ')' require runner_mode=self-hosted-windows because GitHub-hosted Windows is limited by timeout-minutes: 360."
+          }
           $runId = "${{ inputs.run_id }}"
           if ([string]::IsNullOrWhiteSpace($runId)) {
             $runId = Get-Date -Format 'yyyyMMdd_HHmmss'

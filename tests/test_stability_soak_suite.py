@@ -205,6 +205,17 @@ def test_manual_stability_soak_workflow_is_manual_only() -> None:
     assert "--override-duration-seconds" in text
 
 
+def test_manual_stability_soak_blocks_long_profiles_on_github_hosted_windows() -> None:
+    text = (ROOT / ".github" / "workflows" / "stability-soak.yml").read_text(encoding="utf-8")
+
+    github_hosted_job = text.split("  self_hosted_windows:", maxsplit=1)[0]
+
+    assert "long8h" in github_hosted_job
+    assert "long24h" in github_hosted_job
+    assert "runner_mode=self-hosted-windows" in github_hosted_job
+    assert "timeout-minutes: 360" in github_hosted_job
+
+
 def _summary(
     profile: str,
     *,
