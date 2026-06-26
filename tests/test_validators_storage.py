@@ -1264,6 +1264,32 @@ def test_session_index_retry_pending_deletions_keeps_session_when_file_is_still_
     assert sample_path.exists()
 
 
+def test_session_index_retry_pending_deletions_removes_record_when_failed_delete_file_is_gone(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "missing.samples.csv"
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("missing.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(
+        record.session_id,
+        state=SESSION_STATE_WILL_DELETE,
+        ended_at=now + timedelta(seconds=1),
+        last_error=f"{SESSION_DELETE_FILES_FAILED_CODE}: PermissionError: {sample_path}",
+    )
+
+    removed = store.retry_pending_deletions()
+
+    assert [item.session_id for item in removed] == [record.session_id]
+    assert store.find_session(record.session_id) is None
+
+
 def test_session_index_prunes_old_inactive_sessions_and_keeps_active(tmp_path) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 31, 12, 0, 0)

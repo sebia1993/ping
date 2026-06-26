@@ -18,6 +18,7 @@ from app.storage.alert_action_log import append_alert_action, alert_action_log_p
 from app.storage.route_log import RouteLogWriter, route_log_path_for_session
 from app.storage import session_index as session_index_module
 from app.storage.session_index import (
+    SESSION_DELETE_FILES_FAILED_CODE,
     SESSION_STATE_ARCHIVED,
     SESSION_STATE_PAUSED,
     SESSION_STATE_WILL_DELETE,
@@ -597,6 +598,38 @@ def test_main_window_sync_sessions_retries_pending_deletions(qt_app, tmp_path, m
         window._sync_sessions_box()
 
         assert store.find_session(record.session_id) is None
+        assert "저장된 세션이 없습니다." in window.sessions_box.toPlainText()
+    finally:
+        window.close()
+
+
+def test_main_window_sync_sessions_cleans_failed_delete_record_when_file_is_gone(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "missing.samples.csv"
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("missing.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(
+        record.session_id,
+        state=SESSION_STATE_WILL_DELETE,
+        ended_at=now + timedelta(seconds=1),
+        last_error=f"{SESSION_DELETE_FILES_FAILED_CODE}: PermissionError: {sample_path}",
+    )
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        assert store.find_session(record.session_id) is None
+        assert window.session_combo.count() == 0
         assert "저장된 세션이 없습니다." in window.sessions_box.toPlainText()
     finally:
         window.close()
