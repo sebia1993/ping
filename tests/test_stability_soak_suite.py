@@ -118,6 +118,41 @@ def test_soak_suite_validate_accepts_completed_manifest(tmp_path) -> None:
     assert suite.validate_manifest(manifest_path, ["release"]) == []
 
 
+def test_soak_suite_validate_accepts_downloaded_artifact_paths(tmp_path) -> None:
+    run_id = "downloaded-run"
+    run_root = tmp_path / "artifact" / run_id
+    profile_root = run_root / "release"
+    profile_root.mkdir(parents=True)
+    summary_path = profile_root / "soak_50_targets_20260101_010101.json"
+    summary_path.write_text(
+        json.dumps(_summary("release", duration_seconds=5.0), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest_path = run_root / "stability_soak_suite.json"
+    runner_summary_path = (
+        Path("C:/runner/work/ping/ping/artifacts/stability_soak_suite")
+        / run_id
+        / "release"
+        / summary_path.name
+    )
+    suite.write_manifest(
+        manifest_path,
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[
+            {
+                "profile": "release",
+                "status": "passed",
+                "summary_json": str(runner_summary_path),
+                "failures": [],
+            }
+        ],
+        finished_at="2026-01-01T01:00:05",
+    )
+
+    assert suite.validate_manifest(manifest_path, ["release"]) == []
+
+
 def test_soak_suite_validate_rejects_short_long_run(tmp_path) -> None:
     summary = _summary("long4h", duration_seconds=10.0)
 

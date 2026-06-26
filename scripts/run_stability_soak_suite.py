@@ -287,15 +287,29 @@ def resolve_recorded_path(value: object, *, manifest_path: Path) -> Path | None:
     if not value:
         return None
     path = Path(str(value))
-    if path.is_absolute():
-        return path
-    root_relative = ROOT / path
-    if root_relative.exists():
-        return root_relative
-    manifest_relative = manifest_path.parent / path
-    if manifest_relative.exists():
-        return manifest_relative
-    return root_relative
+    candidates = [path] if path.is_absolute() else [ROOT / path, manifest_path.parent / path]
+    artifact_relative = _resolve_artifact_relative_path(path, manifest_path=manifest_path)
+    if artifact_relative is not None:
+        candidates.append(artifact_relative)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _resolve_artifact_relative_path(path: Path, *, manifest_path: Path) -> Path | None:
+    run_id = manifest_path.parent.name
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if part == run_id:
+            suffix = parts[index + 1 :]
+            if suffix:
+                return manifest_path.parent.joinpath(*suffix)
+    if path.name:
+        matches = sorted(manifest_path.parent.rglob(path.name))
+        if matches:
+            return matches[0]
+    return None
 
 
 def write_manifest(
