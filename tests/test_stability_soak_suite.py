@@ -65,6 +65,19 @@ def test_soak_suite_dry_run_writes_manifest_without_running_profiles(tmp_path) -
     assert payload["profiles_requested"] == ["long4h", "ui10"]
     assert [result["status"] for result in payload["results"]] == ["planned", "planned"]
     assert all(Path(result["output_dir"]).name in {"long4h", "ui10"} for result in payload["results"])
+    assert payload["results"][0]["thresholds"]["minimum_duration_seconds"] == 13_680.0
+    assert payload["results"][1]["thresholds"]["max_ui_event_gap_seconds"] == 0.2
+
+
+def test_soak_suite_profile_thresholds_capture_long_run_evidence_limits() -> None:
+    thresholds = suite.profile_thresholds("long24h")
+
+    assert thresholds["expected_duration_seconds"] == 86_400.0
+    assert thresholds["minimum_duration_seconds"] == 82_080.0
+    assert thresholds["targets"] == 50
+    assert thresholds["max_active_threads"] == 40
+    assert thresholds["max_memory_growth_mb"] == 256.0
+    assert thresholds["max_cpu_percent"] == 70.0
 
 
 def test_soak_suite_validate_only_rejects_dry_run_manifest(tmp_path) -> None:

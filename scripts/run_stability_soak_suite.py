@@ -130,6 +130,7 @@ def run_profile(profile: str, *, args: argparse.Namespace, run_root: Path) -> di
         "summary_json": None,
         "returncode": None,
         "status": "planned" if args.dry_run else "running",
+        "thresholds": profile_thresholds(profile),
         "failures": [],
     }
     if args.dry_run:
@@ -176,6 +177,23 @@ def build_profile_command(
     if override_duration_seconds is not None:
         command.extend(["--duration-seconds", str(override_duration_seconds)])
     return command
+
+
+def profile_thresholds(profile: str) -> dict[str, object]:
+    defaults = SOAK_PROFILES[profile]
+    expected_duration_seconds = float(defaults["duration_seconds"])
+    return {
+        "expected_duration_seconds": expected_duration_seconds,
+        "minimum_duration_seconds": expected_duration_seconds * 0.95,
+        "targets": int(defaults["targets"]),
+        "with_ui": bool(defaults["with_ui"]),
+        "interval_seconds": int(defaults["interval_seconds"]),
+        "max_active_threads": int(defaults["max_active_threads"]),
+        "max_memory_growth_mb": float(defaults["max_memory_growth_mb"]),
+        "max_cpu_percent": float(defaults["max_cpu_percent"]),
+        "max_ui_event_gap_seconds": float(defaults["max_ui_event_gap_seconds"]),
+        "max_ui_event_process_seconds": float(defaults["max_ui_event_process_seconds"]),
+    }
 
 
 def load_latest_summary(output_dir: Path) -> dict[str, Any] | None:
