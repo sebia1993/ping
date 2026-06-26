@@ -27,6 +27,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.validate_only:
         failures = validate_manifest(manifest_path, args.profiles)
+        if args.evidence_report:
+            print(
+                json.dumps(
+                    build_evidence_report(manifest_path, args.profiles, validation_failures=failures),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1 if failures else 0
         if failures:
             print(json.dumps({"manifest": str(manifest_path), "validation_failures": failures}, ensure_ascii=False, indent=2))
             return 1
@@ -70,6 +79,14 @@ def main(argv: list[str] | None = None) -> int:
     if validation_failures:
         print(json.dumps({"manifest": str(manifest_path), "validation_failures": validation_failures}, ensure_ascii=False, indent=2))
         return 1
+    if args.evidence_report:
+        print(
+            json.dumps(
+                build_evidence_report(manifest_path, args.profiles, validation_failures=[]),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     return 0
 
 
@@ -107,6 +124,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Write the suite plan without starting any long-running profile.",
+    )
+    parser.add_argument(
+        "--evidence-report",
+        action="store_true",
+        help="Print compact JSON evidence after validation so downloaded long-run artifacts are easy to audit.",
     )
     return parser.parse_args(argv)
 
@@ -309,6 +331,146 @@ def validate_summary(profile: str, summary: dict[str, Any]) -> list[str]:
             f"{summary.get('active_threads_final')} > {profile_defaults['max_active_threads']}"
         )
     return failures
+
+
+def build_evidence_report(
+    manifest_path: Path,
+    profiles: list[str],
+    *,
+    validation_failures: list[str] | None = None,
+) -> dict[str, Any]:
+    payload = load_manifest(manifest_path) or {}
+    results = list(payload.get("results", []))
+    report: dict[str, Any] = {
+        "manifest": str(manifest_path),
+        "passed": bool(payload.get("passed")) and not validation_failures,
+        "profiles_requested": payload.get("profiles_requested"),
+        "validation_failures": list(validation_failures or []),
+        "profiles": [],
+    }
+    profile_reports: list[dict[str, Any]] = []
+    for profile in profiles:
+        result = latest_result(profile, results)
+        if result is None:
+            profile_reports.append(
+                {
+                    "profile": profile,
+                    "status": "missing",
+                    "summary_json": None,
+                    "summary_exists": False,
+                    "thresholds": profile_thresholds(profile),
+                    "measurements": {},
+                    "checks": {},
+                }
+            )
+            continue
+
+        summary_path = resolve_recorded_path(result.get("summary_json"), manifest_path=manifest_path)
+        summary = _load_summary_if_available(summary_path)
+        thresholds = result.get("thresholds") or profile_thresholds(profile)
+        measurements = _evidence_measurements(result, summary)
+        profile_reports.append(
+            {
+                "profile": profile,
+                "status": result.get("status"),
+                "summary_json": str(summary_path) if summary_path is not None else None,
+                "summary_exists": bool(summary_path and summary_path.exists()),
+                "thresholds": thresholds,
+                "measurements": measurements,
+                "checks": _evidence_checks(measurements, thresholds),
+            }
+        )
+    report["profiles"] = profile_reports
+    return report
+
+
+def _load_summary_if_available(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _evidence_measurements(result: dict[str, Any], summary: dict[str, Any]) -> dict[str, object]:
+    return {
+        "duration_seconds": _first_present_number(result, summary, key="duration_seconds"),
+        "max_ui_event_gap_seconds": _first_present_number(result, summary, key="max_ui_event_gap_seconds"),
+        "max_ui_event_process_seconds": _first_present_number(result, summary, key="max_ui_event_process_seconds"),
+        "active_threads_final": _first_present_number(result, summary, key="active_threads_final"),
+        "max_active_threads": _first_present_number(result, summary, key="max_active_threads"),
+        "memory_growth_bytes": _first_present_number(result, summary, key="memory_growth_bytes"),
+        "session_log_rows": _first_present_number(result, summary, key="session_log_rows"),
+        "session_log_min_expected_rows": _first_present_number(result, summary, key="session_log_min_expected_rows"),
+        "session_log_row_delta": _first_present_number(result, summary, key="session_log_row_delta"),
+    }
+
+
+def _evidence_checks(measurements: dict[str, object], thresholds: dict[str, object]) -> dict[str, bool | None]:
+    memory_limit_mb = _number(thresholds.get("max_memory_growth_mb"))
+    memory_limit_bytes = None if memory_limit_mb is None else memory_limit_mb * 1024 * 1024
+    return {
+        "duration_ok": _greater_equal(
+            measurements.get("duration_seconds"),
+            thresholds.get("minimum_duration_seconds"),
+        ),
+        "ui_gap_ok": _less_equal(
+            measurements.get("max_ui_event_gap_seconds"),
+            thresholds.get("max_ui_event_gap_seconds"),
+        ),
+        "ui_processing_ok": _less_equal(
+            measurements.get("max_ui_event_process_seconds"),
+            thresholds.get("max_ui_event_process_seconds"),
+        ),
+        "thread_final_ok": _less_equal(
+            measurements.get("active_threads_final"),
+            thresholds.get("max_active_threads"),
+        ),
+        "thread_peak_ok": _less_equal(
+            measurements.get("max_active_threads"),
+            thresholds.get("max_active_threads"),
+        ),
+        "memory_growth_ok": _less_equal(measurements.get("memory_growth_bytes"), memory_limit_bytes),
+        "session_log_ok": _greater_equal(
+            measurements.get("session_log_rows"),
+            measurements.get("session_log_min_expected_rows"),
+        ),
+        "session_log_delta_ok": _greater_equal(measurements.get("session_log_row_delta"), 0),
+    }
+
+
+def _first_present_number(*sources: dict[str, Any], key: str) -> int | float | None:
+    for source in sources:
+        value = source.get(key)
+        number = _number(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _number(value: object) -> int | float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _greater_equal(value: object, threshold: object) -> bool | None:
+    value_number = _number(value)
+    threshold_number = _number(threshold)
+    if value_number is None or threshold_number is None:
+        return None
+    return value_number >= threshold_number
+
+
+def _less_equal(value: object, threshold: object) -> bool | None:
+    value_number = _number(value)
+    threshold_number = _number(threshold)
+    if value_number is None or threshold_number is None:
+        return None
+    return value_number <= threshold_number
 
 
 def resolve_recorded_path(value: object, *, manifest_path: Path) -> Path | None:

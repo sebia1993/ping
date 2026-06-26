@@ -132,6 +132,93 @@ def test_soak_suite_validate_accepts_completed_manifest(tmp_path) -> None:
     assert suite.validate_manifest(manifest_path, ["release"]) == []
 
 
+def test_soak_suite_evidence_report_summarizes_thresholds_and_checks(tmp_path) -> None:
+    run_root = tmp_path / "evidence"
+    run_root.mkdir()
+    summary_path = run_root / "soak_50_targets_20260101_010101.json"
+    summary = _summary("release", duration_seconds=5.0, ping_results=200, session_log_rows=205)
+    summary["session_log_min_expected_rows"] = 200
+    summary["session_log_row_delta"] = 5
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+    manifest_path = run_root / "stability_soak_suite.json"
+    suite.write_manifest(
+        manifest_path,
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[
+            {
+                "profile": "release",
+                "status": "passed",
+                "summary_json": str(summary_path),
+                "thresholds": suite.profile_thresholds("release"),
+                "failures": [],
+            }
+        ],
+        finished_at="2026-01-01T01:00:05",
+    )
+
+    report = suite.build_evidence_report(manifest_path, ["release"], validation_failures=[])
+    profile_report = report["profiles"][0]
+
+    assert report["passed"] is True
+    assert profile_report["summary_exists"] is True
+    assert profile_report["thresholds"]["minimum_duration_seconds"] == 4.75
+    assert profile_report["measurements"]["session_log_rows"] == 205
+    assert profile_report["measurements"]["session_log_row_delta"] == 5
+    assert profile_report["checks"] == {
+        "duration_ok": True,
+        "ui_gap_ok": True,
+        "ui_processing_ok": True,
+        "thread_final_ok": True,
+        "thread_peak_ok": True,
+        "memory_growth_ok": True,
+        "session_log_ok": True,
+        "session_log_delta_ok": True,
+    }
+
+
+def test_soak_suite_validate_only_can_print_evidence_report(tmp_path, capsys) -> None:
+    run_root = tmp_path / "validate-report"
+    run_root.mkdir()
+    summary_path = run_root / "soak_50_targets_20260101_010101.json"
+    summary = _summary("release", duration_seconds=5.0, ping_results=100, session_log_rows=100)
+    summary["session_log_min_expected_rows"] = 100
+    summary["session_log_row_delta"] = 0
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+    suite.write_manifest(
+        run_root / "stability_soak_suite.json",
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[
+            {
+                "profile": "release",
+                "status": "passed",
+                "summary_json": str(summary_path),
+                "thresholds": suite.profile_thresholds("release"),
+                "failures": [],
+            }
+        ],
+        finished_at="2026-01-01T01:00:05",
+    )
+
+    exit_code = suite.main([
+        "--validate-only",
+        "--evidence-report",
+        "--run-id",
+        "validate-report",
+        "--output-dir",
+        str(tmp_path),
+        "--profiles",
+        "release",
+    ])
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert report["validation_failures"] == []
+    assert report["profiles"][0]["checks"]["session_log_ok"] is True
+
+
 def test_soak_suite_validate_accepts_downloaded_artifact_paths(tmp_path) -> None:
     run_id = "downloaded-run"
     run_root = tmp_path / "artifact" / run_id
