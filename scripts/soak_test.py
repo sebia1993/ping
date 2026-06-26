@@ -126,6 +126,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 2.0,
+        "max_ui_event_process_seconds": 2.0,
         "max_active_threads": 40,
         "max_memory_growth_mb": 96.0,
         "max_cpu_percent": 80.0,
@@ -142,6 +143,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 0.5,
         "progress_seconds": 0.0,
         "max_ui_event_gap_seconds": 2.0,
+        "max_ui_event_process_seconds": 2.0,
         "max_active_threads": 40,
         "max_memory_growth_mb": 96.0,
         "max_cpu_percent": 250.0,
@@ -158,6 +160,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 2.0,
+        "max_ui_event_process_seconds": 2.0,
         "max_active_threads": 40,
         "max_memory_growth_mb": 96.0,
         "max_cpu_percent": 80.0,
@@ -174,6 +177,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 5.0,
         "progress_seconds": 300.0,
         "max_ui_event_gap_seconds": 2.0,
+        "max_ui_event_process_seconds": 2.0,
         "max_active_threads": 40,
         "max_memory_growth_mb": 128.0,
         "max_cpu_percent": 70.0,
@@ -190,6 +194,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 10.0,
         "progress_seconds": 600.0,
         "max_ui_event_gap_seconds": 2.0,
+        "max_ui_event_process_seconds": 2.0,
         "max_active_threads": 40,
         "max_memory_growth_mb": 160.0,
         "max_cpu_percent": 70.0,
@@ -206,6 +211,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 30.0,
         "progress_seconds": 1800.0,
         "max_ui_event_gap_seconds": 2.0,
+        "max_ui_event_process_seconds": 2.0,
         "max_active_threads": 40,
         "max_memory_growth_mb": 256.0,
         "max_cpu_percent": 70.0,
@@ -222,6 +228,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 0.5,
         "progress_seconds": 10.0,
         "max_ui_event_gap_seconds": 2.0,
+        "max_ui_event_process_seconds": 0.5,
         "max_active_threads": 40,
         "max_memory_growth_mb": 96.0,
         "max_cpu_percent": 250.0,
@@ -238,6 +245,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 0.2,
+        "max_ui_event_process_seconds": 0.2,
         "max_active_threads": 32,
         "max_memory_growth_mb": 96.0,
         "max_cpu_percent": 200.0,
@@ -254,6 +262,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 0.2,
+        "max_ui_event_process_seconds": 0.2,
         "max_active_threads": 36,
         "max_memory_growth_mb": 96.0,
         "max_cpu_percent": 200.0,
@@ -270,6 +279,7 @@ SOAK_PROFILES: dict[str, dict[str, object]] = {
         "sample_seconds": 1.0,
         "progress_seconds": 60.0,
         "max_ui_event_gap_seconds": 0.2,
+        "max_ui_event_process_seconds": 0.2,
         "max_active_threads": 40,
         "max_memory_growth_mb": 128.0,
         "max_cpu_percent": 250.0,
@@ -474,6 +484,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-update-gap-seconds", type=float)
     parser.add_argument("--max-average-update-gap-seconds", type=float)
     parser.add_argument("--max-ui-event-gap-seconds", type=float, default=profile_defaults["max_ui_event_gap_seconds"])
+    parser.add_argument(
+        "--max-ui-event-process-seconds",
+        type=float,
+        default=profile_defaults["max_ui_event_process_seconds"],
+    )
     parser.add_argument("--max-log-queue-depth", type=int)
     parser.add_argument("--max-pending-pings", type=int)
     parser.add_argument("--max-active-threads", type=int, default=profile_defaults["max_active_threads"])
@@ -716,6 +731,11 @@ def evaluate_summary(summary: dict[str, Any], args: argparse.Namespace) -> list[
         failures.append(
             f"UI event gap too high: {summary['max_ui_event_gap_seconds']:.3f}s > "
             f"{args.max_ui_event_gap_seconds:.3f}s"
+        )
+    if summary["max_ui_event_process_seconds"] > args.max_ui_event_process_seconds:
+        failures.append(
+            f"UI event processing too slow: {summary['max_ui_event_process_seconds']:.3f}s > "
+            f"{args.max_ui_event_process_seconds:.3f}s"
         )
     if summary["max_pending_ping_count"] > max_pending_pings:
         failures.append(f"pending ping count too high: {summary['max_pending_ping_count']} > {max_pending_pings}")

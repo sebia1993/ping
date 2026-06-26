@@ -1,0 +1,197 @@
+name: Manual Stability Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      profiles:
+        description: "Space-separated soak profiles, for example: release ui10"
+        required: true
+        default: "release"
+      runner_mode:
+        description: "Use GitHub-hosted Windows for short checks, or a self-hosted Windows runner for 8h/24h runs."
+        required: true
+        type: choice
+        default: "github-hosted-windows"
+        options:
+          - github-hosted-windows
+          - self-hosted-windows
+      run_id:
+        description: "Optional stable run id. Leave empty to use the current timestamp."
+        required: false
+        default: ""
+      override_duration_seconds:
+        description: "Smoke-only override. Leave empty for real evidence."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stability-soak-${{ github.ref }}-${{ inputs.runner_mode }}
+  cancel-in-progress: false
+
+jobs:
+  github_hosted_windows:
+    if: ${{ inputs.runner_mode == 'github-hosted-windows' }}
+    name: GitHub-hosted Windows soak
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run stability soak suite
+        id: soak
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $profiles = "${{ inputs.profiles }}" -split '\s+' | Where-Object { $_ }
+          if (-not $profiles) {
+            throw 'profiles input is empty'
+          }
+          $runId = "${{ inputs.run_id }}"
+          if ([string]::IsNullOrWhiteSpace($runId)) {
+            $runId = Get-Date -Format 'yyyyMMdd_HHmmss'
+          }
+          $argsList = @(
+            'scripts\run_stability_soak_suite.py',
+            '--run-id',
+            $runId,
+            '--output-dir',
+            'artifacts\stability_soak_suite',
+            '--profiles'
+          ) + $profiles
+          $override = "${{ inputs.override_duration_seconds }}"
+          if (-not [string]::IsNullOrWhiteSpace($override)) {
+            $argsList += @('--override-duration-seconds', $override)
+          }
+          python @argsList
+          "run_id=$runId" >> $env:GITHUB_OUTPUT
+
+      - name: Write run summary
+        if: always()
+        shell: pwsh
+        run: |
+          $runId = "${{ steps.soak.outputs.run_id }}"
+          if ([string]::IsNullOrWhiteSpace($runId)) {
+            $runId = "${{ inputs.run_id }}"
+          }
+          $manifest = "artifacts\stability_soak_suite\$runId\stability_soak_suite.json"
+          if (-not (Test-Path $manifest)) {
+            Add-Content $env:GITHUB_STEP_SUMMARY "No stability soak manifest was created."
+            exit 0
+          }
+          $payload = Get-Content $manifest -Raw | ConvertFrom-Json
+          Add-Content $env:GITHUB_STEP_SUMMARY "# Stability Soak"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Run ID: ``$runId``"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Passed: ``$($payload.passed)``"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Profiles: ``$($payload.profiles_requested -join ' ')``"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Profile | Status | Duration | Max UI Gap | Max UI Process | Memory Growth |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| --- | --- | ---: | ---: | ---: | ---: |"
+          foreach ($result in $payload.results) {
+            Add-Content $env:GITHUB_STEP_SUMMARY "| $($result.profile) | $($result.status) | $($result.duration_seconds) | $($result.max_ui_event_gap_seconds) | $($result.max_ui_event_process_seconds) | $($result.memory_growth_bytes) |"
+          }
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stability-soak-${{ github.run_id }}-${{ inputs.runner_mode }}
+          path: artifacts/stability_soak_suite
+          if-no-files-found: warn
+
+  self_hosted_windows:
+    if: ${{ inputs.runner_mode == 'self-hosted-windows' }}
+    name: Self-hosted Windows soak
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 1500
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run stability soak suite
+        id: soak
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $profiles = "${{ inputs.profiles }}" -split '\s+' | Where-Object { $_ }
+          if (-not $profiles) {
+            throw 'profiles input is empty'
+          }
+          $runId = "${{ inputs.run_id }}"
+          if ([string]::IsNullOrWhiteSpace($runId)) {
+            $runId = Get-Date -Format 'yyyyMMdd_HHmmss'
+          }
+          $argsList = @(
+            'scripts\run_stability_soak_suite.py',
+            '--run-id',
+            $runId,
+            '--output-dir',
+            'artifacts\stability_soak_suite',
+            '--profiles'
+          ) + $profiles
+          $override = "${{ inputs.override_duration_seconds }}"
+          if (-not [string]::IsNullOrWhiteSpace($override)) {
+            $argsList += @('--override-duration-seconds', $override)
+          }
+          python @argsList
+          "run_id=$runId" >> $env:GITHUB_OUTPUT
+
+      - name: Write run summary
+        if: always()
+        shell: pwsh
+        run: |
+          $runId = "${{ steps.soak.outputs.run_id }}"
+          if ([string]::IsNullOrWhiteSpace($runId)) {
+            $runId = "${{ inputs.run_id }}"
+          }
+          $manifest = "artifacts\stability_soak_suite\$runId\stability_soak_suite.json"
+          if (-not (Test-Path $manifest)) {
+            Add-Content $env:GITHUB_STEP_SUMMARY "No stability soak manifest was created."
+            exit 0
+          }
+          $payload = Get-Content $manifest -Raw | ConvertFrom-Json
+          Add-Content $env:GITHUB_STEP_SUMMARY "# Stability Soak"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Run ID: ``$runId``"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Passed: ``$($payload.passed)``"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Profiles: ``$($payload.profiles_requested -join ' ')``"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Profile | Status | Duration | Max UI Gap | Max UI Process | Memory Growth |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| --- | --- | ---: | ---: | ---: | ---: |"
+          foreach ($result in $payload.results) {
+            Add-Content $env:GITHUB_STEP_SUMMARY "| $($result.profile) | $($result.status) | $($result.duration_seconds) | $($result.max_ui_event_gap_seconds) | $($result.max_ui_event_process_seconds) | $($result.memory_growth_bytes) |"
+          }
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stability-soak-${{ github.run_id }}-${{ inputs.runner_mode }}
+          path: artifacts/stability_soak_suite
+          if-no-files-found: warn

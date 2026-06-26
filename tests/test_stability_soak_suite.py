@@ -6,6 +6,9 @@ from pathlib import Path
 from scripts import run_stability_soak_suite as suite
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def test_soak_suite_defaults_cover_long_and_ui_profiles() -> None:
     args = suite.parse_args([])
 
@@ -191,6 +194,17 @@ def test_soak_suite_loads_latest_summary(tmp_path) -> None:
     assert summary["data"]["failures"] == []
 
 
+def test_manual_stability_soak_workflow_is_manual_only() -> None:
+    text = (ROOT / ".github" / "workflows" / "stability-soak.yml").read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in text
+    assert "\n  push:" not in text
+    assert "\n  schedule:" not in text
+    assert "self-hosted-windows" in text
+    assert "actions/upload-artifact@v4" in text
+    assert "--override-duration-seconds" in text
+
+
 def _summary(
     profile: str,
     *,
@@ -224,6 +238,7 @@ def _summary(
         "max_update_gap_seconds": 1.0,
         "avg_update_gap_seconds": 1.0,
         "max_ui_event_gap_seconds": 0.02,
+        "max_ui_event_process_seconds": 0.01,
         "diagnostic_samples": expected_updates,
         "max_pending_ping_count": 0,
         "max_log_queue_depth": 1,

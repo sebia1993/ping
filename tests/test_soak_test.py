@@ -21,6 +21,7 @@ def test_soak_release_profile_sets_fast_fifty_target_defaults() -> None:
     assert args.max_cpu_percent == 250.0
     assert args.with_ui is False
     assert args.event_process_max_milliseconds == 0
+    assert args.max_ui_event_process_seconds == 2.0
 
 
 def test_soak_long_profile_sets_thirty_minute_fifty_target_defaults() -> None:
@@ -74,6 +75,9 @@ def test_soak_ui_freeze_profiles_measure_ten_twenty_and_fifty_targets() -> None:
     assert ten.max_ui_event_gap_seconds == 0.2
     assert twenty.max_ui_event_gap_seconds == 0.2
     assert fifty.max_ui_event_gap_seconds == 0.2
+    assert ten.max_ui_event_process_seconds == 0.2
+    assert twenty.max_ui_event_process_seconds == 0.2
+    assert fifty.max_ui_event_process_seconds == 0.2
     assert ten.event_process_max_milliseconds == 10
     assert twenty.event_process_max_milliseconds == 10
     assert fifty.event_process_max_milliseconds == 10
@@ -168,6 +172,21 @@ def test_soak_evaluation_rejects_slow_average_ui_updates() -> None:
     assert any("average update gap too high" in failure for failure in failures)
 
 
+def test_soak_evaluation_rejects_slow_ui_event_processing() -> None:
+    args = _args()
+    summary = _summary(
+        updates=1778,
+        diagnostic_samples=1778,
+        max_update_gap_seconds=2.031,
+        avg_update_gap_seconds=1.013,
+        max_ui_event_process_seconds=0.35,
+    )
+
+    failures = evaluate_summary(summary, args)
+
+    assert any("UI event processing too slow" in failure for failure in failures)
+
+
 def test_soak_evaluation_rejects_missing_session_persistence() -> None:
     args = _args()
     summary = _summary(
@@ -249,6 +268,7 @@ def _args() -> Namespace:
         max_update_gap_seconds=None,
         max_average_update_gap_seconds=None,
         max_ui_event_gap_seconds=2.0,
+        max_ui_event_process_seconds=0.2,
         max_pending_pings=None,
         max_log_queue_depth=None,
         max_active_threads=40,
@@ -274,6 +294,7 @@ def _summary(
     max_active_threads: int = 24,
     memory_growth_bytes: int = 5_100_000,
     cpu_percent: float = 2.7,
+    max_ui_event_process_seconds: float = 0.075,
 ) -> dict[str, object]:
     completed = ping_calls if ping_results is None else ping_results
     return {
@@ -284,6 +305,7 @@ def _summary(
         "max_update_gap_seconds": max_update_gap_seconds,
         "avg_update_gap_seconds": avg_update_gap_seconds,
         "max_ui_event_gap_seconds": 0.075,
+        "max_ui_event_process_seconds": max_ui_event_process_seconds,
         "max_pending_ping_count": max_pending_ping_count,
         "max_log_queue_depth": max_log_queue_depth,
         "max_active_threads": max_active_threads,

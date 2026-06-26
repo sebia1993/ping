@@ -145,6 +145,7 @@ def run_profile(profile: str, *, args: argparse.Namespace, run_root: Path) -> di
         result["failures"] = summary["data"].get("failures", [])
         result["duration_seconds"] = summary["data"].get("duration_seconds")
         result["max_ui_event_gap_seconds"] = summary["data"].get("max_ui_event_gap_seconds")
+        result["max_ui_event_process_seconds"] = summary["data"].get("max_ui_event_process_seconds")
         result["memory_growth_bytes"] = summary["data"].get("memory_growth_bytes")
         result["active_threads_final"] = summary["data"].get("active_threads_final")
         result["session_log_rows"] = summary["data"].get("session_log_rows")
