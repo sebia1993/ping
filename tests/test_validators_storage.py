@@ -883,6 +883,47 @@ def test_session_index_reconcile_does_not_reduce_configured_target_count(tmp_pat
     assert refreshed.target_count == 5
 
 
+def test_session_index_reconcile_can_update_only_selected_session(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    first_path = tmp_path / "198.51.100.10" / "2026-01" / "first.samples.csv"
+    second_path = tmp_path / "203.0.113.10" / "2026-01" / "second.samples.csv"
+    with SessionLogWriter(first_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    with SessionLogWriter(second_path) as writer:
+        writer.write_many([HopObservation(now, 0, "203.0.113.10", "Target", True, 20.0, STATUS_OK, True)])
+    first = store.register_session(
+        target="198.51.100.10",
+        sample_path=first_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    second = store.register_session(
+        target="203.0.113.10",
+        sample_path=second_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(first.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+    store.finish_session(second.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+
+    reconciled = store.reconcile_session_log_metadata(first.session_id)
+
+    assert [item.session_id for item in reconciled] == [first.session_id]
+    refreshed_first = store.find_session(first.session_id)
+    refreshed_second = store.find_session(second.session_id)
+    assert refreshed_first is not None
+    assert refreshed_second is not None
+    assert refreshed_first.samples == 1
+    assert refreshed_second.samples == 0
+
+
 def test_session_index_reconciles_missing_session_files_as_will_delete(tmp_path) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 1, 12, 0, 0)

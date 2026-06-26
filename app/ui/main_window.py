@@ -3832,6 +3832,12 @@ class MainWindow(QMainWindow):
         if not record.sample_path.exists():
             self.status_label.setText(f"세션 로그를 찾을 수 없습니다: {record.sample_path}")
             return
+        try:
+            reconciled = self.session_index_store.reconcile_session_log_metadata(record.session_id)
+        except OSError:
+            reconciled = []
+        if reconciled:
+            record = reconciled[0]
         observations = list(iter_observations(record.sample_path))
         self.current_target = record.target
         self.current_targets = [record.target]
@@ -3871,7 +3877,10 @@ class MainWindow(QMainWindow):
         self._sync_focus_controls()
         self._render_current_view(force_graph=True)
         self._set_state_chip("불러옴", "active")
-        self.status_label.setText(f"세션 불러오기 완료: {record.target}, 샘플 {len(observations)}개")
+        status_text = f"세션 불러오기 완료: {record.target}, 샘플 {len(observations)}개"
+        if record.last_error:
+            status_text += f" | {record.last_error}"
+        self.status_label.setText(status_text)
         self._sync_sessions_box()
 
     def _prepare_session_resume(self, record: TraceSessionRecord) -> None:

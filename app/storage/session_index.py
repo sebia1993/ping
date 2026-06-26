@@ -297,13 +297,14 @@ class SessionIndexStore:
                 self._write_records(kept)
         return removed_records
 
-    def reconcile_session_log_metadata(self) -> list[TraceSessionRecord]:
+    def reconcile_session_log_metadata(self, session_id: str | None = None) -> list[TraceSessionRecord]:
         """이미 등록된 세션의 요약 정보를 실제 CSV 세그먼트 기준으로 다시 맞춥니다.
 
         강제 종료나 일시적인 인덱스 쓰기 실패가 있으면 `session_index.json`에는
         세션이 남아 있어도 샘플 수/세그먼트 목록이 실제 CSV보다 뒤처질 수 있습니다.
         수동 새로고침에서 이 보정을 수행하면 Session Manager가 저장된 로그를 더
-        정확하게 보여줄 수 있습니다.
+        정확하게 보여줄 수 있습니다. `session_id`가 있으면 선택한 세션만 확인해
+        세션 열기 같은 짧은 흐름에서 전체 로그를 다시 훑지 않게 합니다.
         """
 
         reconciled: list[TraceSessionRecord] = []
@@ -311,6 +312,9 @@ class SessionIndexStore:
             records = self._read_records()
             updated: list[TraceSessionRecord] = []
             for record in records:
+                if session_id is not None and record.session_id != session_id:
+                    updated.append(record)
+                    continue
                 refreshed = _record_with_reconciled_log_metadata(record)
                 if refreshed != record:
                     reconciled.append(refreshed)

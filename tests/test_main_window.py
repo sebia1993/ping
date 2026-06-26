@@ -19,6 +19,7 @@ from app.storage.route_log import RouteLogWriter, route_log_path_for_session
 from app.storage import session_index as session_index_module
 from app.storage.session_index import (
     SESSION_DELETE_FILES_FAILED_CODE,
+    SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE,
     SESSION_STATE_ARCHIVED,
     SESSION_STATE_PAUSED,
     SESSION_STATE_WILL_DELETE,
@@ -714,6 +715,46 @@ def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) 
         assert window.graph._points == window.target_history
         assert window.csv_button.isEnabled() is True
         assert "세션 불러오기 완료" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_open_session_records_skipped_rows_for_partial_log(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "partial.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        ])
+    with sample_path.open("a", encoding="utf-8") as handle:
+        handle.write("not-a-timestamp,broken,Target,not-a-hop,,,,\n")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+
+        window.open_selected_session()
+
+        refreshed = store.find_session(record.session_id)
+        assert refreshed is not None
+        assert refreshed.last_error.startswith(SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE)
+        assert "skipped_rows=1" in refreshed.last_error
+        assert "partial.samples.csv" in refreshed.last_error
+        assert SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE in window.status_label.text()
+        assert "skipped_rows=1" in window.status_label.text()
     finally:
         window.close()
 
