@@ -325,6 +325,38 @@ def test_alert_action_log_appends_comment_and_annotation_actions(tmp_path) -> No
     assert rows[0]["actions"] == "timeline_annotation;comment"
 
 
+def test_alert_action_log_round_trips_korean_windows_path_and_text(tmp_path) -> None:
+    path = tmp_path / "한글 알림 로그" / "세션.alerts.csv"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    event = AlertEvent(
+        key="target:198.51.100.10:target_sample_condition",
+        timestamp=now,
+        start=now,
+        end=now + timedelta(seconds=30),
+        severity="critical",
+        title="샘플 불량 경고",
+        message="장비A 회선에서 응답 없음이 반복되었습니다.",
+        series_key="198.51.100.10",
+    )
+
+    append_alert_action(path, event, actions=["log", "comment"])
+    rows = read_alert_actions(path)
+
+    assert path.exists()
+    assert rows == [
+        {
+            "timestamp": "2026-01-01T12:00:00",
+            "start": "2026-01-01T12:00:00",
+            "end": "2026-01-01T12:00:30",
+            "source": "alert",
+            "severity": "critical",
+            "title": "샘플 불량 경고",
+            "message": "장비A 회선에서 응답 없음이 반복되었습니다.",
+            "actions": "log;comment",
+        }
+    ]
+
+
 def test_alert_action_log_read_returns_empty_when_file_is_locked(tmp_path, monkeypatch) -> None:
     path = tmp_path / "alerts.csv"
     path.write_text("timestamp,title\n", encoding="utf-8")
