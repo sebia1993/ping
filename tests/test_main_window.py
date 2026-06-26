@@ -44,6 +44,7 @@ from app.ui.main_window import (
     TABLE_HEADERS,
     TARGET_GROUP_PRESET_VERSION,
     TARGET_HEADERS,
+    TARGET_GRAPH_ROW_CREATE_BATCH,
 )
 from app.ui.worker import (
     MEASUREMENT_MODE_FINAL_HOP_ONLY,
@@ -2303,6 +2304,54 @@ def test_main_window_all_range_uses_session_log_start_beyond_live_buffer(qt_app,
         window.close()
 
 
+def test_main_window_recent_running_graph_uses_live_cache_without_session_log_reads(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    later = start + timedelta(minutes=10)
+    target = "198.51.100.10"
+    snapshot = _snapshot(0, target, None, latency=12.0, is_target=True)
+    worker = _FakeWorker(target, 1, None, [target])
+    worker.start()
+
+    def fail_if_session_log_is_read(*_args, **_kwargs):
+        raise AssertionError("recent running graph should use live cache")
+
+    monkeypatch.setattr(main_window_module, "session_log_bounds", fail_if_session_log_is_read)
+    monkeypatch.setattr(main_window_module, "iter_observations_in_range", fail_if_session_log_is_read)
+
+    try:
+        window.worker = worker
+        window.current_target = target
+        window.current_targets = [target]
+        window.session_log_path = tmp_path / "session.csv"
+        window.on_measurement_updated(
+            [],
+            snapshot,
+            [snapshot],
+            ["live"],
+            [HopObservation(start, 0, target, "Target", True, 10.0, STATUS_OK, True)],
+            [],
+        )
+        window.on_measurement_updated(
+            [],
+            snapshot,
+            [snapshot],
+            ["live"],
+            [HopObservation(later, 0, target, "Target", True, 12.0, STATUS_OK, True)],
+            [],
+        )
+
+        assert [point.timestamp for point in window.graph._points] == [start, later]
+        assert window.graph.visible_datetime_range() == (start, later)
+        assert window.main_graph_time_status_label.text().endswith("12:10:00")
+    finally:
+        window.close()
+
+
 def test_main_window_falls_back_to_live_buffer_when_session_log_has_no_bounds(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -2455,18 +2504,51 @@ def test_main_window_throttles_many_target_graph_rows_but_updates_table(qt_app) 
         window.on_measurement_updated([], first_snapshots[0], first_snapshots, ["live"], first_observations, [])
 
         assert window.graph._points == [first_observations[0]]
+        assert window.target_graph_layout_order == targets
 
         window.on_measurement_updated([], second_snapshots[0], second_snapshots, ["live"], second_observations, [])
 
         current_column = TARGET_HEADERS.index("현재 지연")
         assert window._pending_graph_render is True
         assert window.graph._points == [first_observations[0]]
+        assert window.target_graph_layout_order == targets
         assert window.target_table.item(0, current_column).text() == "101.0"
 
         window._render_pending_graph()
 
         assert window._pending_graph_render is False
         assert window.graph._points == [second_observations[0]]
+        assert window.target_graph_layout_order == targets
+    finally:
+        window.close()
+
+
+def test_main_window_batches_initial_large_target_graph_row_creation(qt_app) -> None:
+    window = MainWindow()
+    now = datetime.now()
+    targets = [f"10.0.2.{index}" for index in range(1, 36)]
+    snapshots = [
+        _snapshot(0, target, None, latency=float(index), is_target=True)
+        for index, target in enumerate(targets, start=1)
+    ]
+    observations = [
+        HopObservation(now, 0, target, "Target", True, float(index), STATUS_OK, True)
+        for index, target in enumerate(targets, start=1)
+    ]
+
+    try:
+        window.current_target = targets[0]
+        window.on_measurement_updated([], snapshots[0], snapshots, ["live"], observations, [])
+
+        assert len(window.target_graph_rows) == TARGET_GRAPH_ROW_CREATE_BATCH
+        assert window._pending_graph_render is True
+        assert window.target_graph_layout_order == targets[:TARGET_GRAPH_ROW_CREATE_BATCH]
+
+        window._render_pending_graph()
+
+        assert len(window.target_graph_rows) == len(targets)
+        assert window._pending_graph_render is False
+        assert window.target_graph_layout_order == targets
     finally:
         window.close()
 

@@ -48,6 +48,9 @@ class LatencyGraphWidget(QWidget):
         self._zoom_fraction = 1.0
         self._view_end_timestamp: float | None = None
         self._external_visible_range: tuple[float, float] | None = None
+        self._full_time_range_cache: tuple[float | None, float | None] | None = None
+        self._visible_points_cache: dict[tuple[str, float | None, float | None], list[HopObservation]] = {}
+        self._failure_spans_cache: dict[tuple[str, float, float], list[tuple[float, float]]] = {}
         self._main_graph_mode = False
         self._time_axis_mode = TIME_AXIS_MODE_RECENT
         self._drag_started_at: float | None = None
@@ -81,6 +84,7 @@ class LatencyGraphWidget(QWidget):
         if self._external_visible_range == next_range:
             return
         self._external_visible_range = next_range
+        self._clear_visible_render_caches()
         self.update()
 
     def set_series(
@@ -95,6 +99,7 @@ class LatencyGraphWidget(QWidget):
         ]
         self._points = self._series[0].points if self._series else []
         self._annotations = list(annotations or [])
+        self._clear_render_caches()
         self._view_end_timestamp = self._clamp_view_end(self._view_end_timestamp)
         self._selection = self._clamp_selection(self._selection)
         self.update()
@@ -115,6 +120,7 @@ class LatencyGraphWidget(QWidget):
     def reset_zoom(self) -> None:
         self._zoom_fraction = 1.0
         self._view_end_timestamp = None
+        self._clear_visible_render_caches()
         self.update()
 
     def pan_left(self) -> None:
@@ -125,6 +131,7 @@ class LatencyGraphWidget(QWidget):
 
     def reset_to_current(self) -> None:
         self._view_end_timestamp = None
+        self._clear_visible_render_caches()
         self.update()
 
     def visible_datetime_range(self) -> tuple[datetime, datetime] | None:
@@ -254,7 +261,7 @@ class LatencyGraphWidget(QWidget):
             painter.drawLine(rect.left(), int(y), rect.right(), int(y))
 
     def _draw_single_series(self, painter: QPainter, rect: QRect, series: TimelineSeries) -> None:
-        visible = self._visible_points(series.points)
+        visible = self._visible_points_for_series(series)
         successful = [point for point in visible if point.success and point.latency_ms is not None]
         max_latency = max((point.latency_ms or 0 for point in successful), default=1)
         max_latency = max(max_latency, 1)
@@ -263,7 +270,7 @@ class LatencyGraphWidget(QWidget):
         painter.drawText(4, rect.top() + 10, f"{max_latency:.0f} ms")
         painter.drawText(10, rect.bottom(), "0 ms")
 
-        self._draw_failure_markers(painter, series.points, rect, rect.top() + 2, rect.bottom())
+        self._draw_failure_markers(painter, series, rect, rect.top() + 2, rect.bottom())
         line_points: list[QPointF] = []
         for point in visible:
             x = self._x_for_time(point.timestamp.timestamp(), rect)
@@ -279,7 +286,7 @@ class LatencyGraphWidget(QWidget):
                 painter.drawLine(start, end)
 
     def _draw_multi_series(self, painter: QPainter, rect: QRect) -> None:
-        visible_by_series = [(series, self._visible_points(series.points)) for series in self._series]
+        visible_by_series = [(series, self._visible_points_for_series(series)) for series in self._series]
         all_successful = [
             point
             for _series, points in visible_by_series
@@ -299,7 +306,7 @@ class LatencyGraphWidget(QWidget):
             painter.setPen(QPen(QColor("#edf0f4"), 1))
             painter.drawLine(rect.left(), int(bottom), rect.right(), int(bottom))
 
-            self._draw_failure_markers(painter, series.points, rect, top + 2, bottom - 2)
+            self._draw_failure_markers(painter, series, rect, top + 2, bottom - 2)
             line_points: list[QPointF] = []
             for point in points:
                 x = self._x_for_time(point.timestamp.timestamp(), rect)
@@ -317,7 +324,7 @@ class LatencyGraphWidget(QWidget):
     def _draw_failure_markers(
         self,
         painter: QPainter,
-        points: list[HopObservation],
+        series: TimelineSeries,
         rect: QRect,
         top: float,
         bottom: float,
@@ -325,7 +332,7 @@ class LatencyGraphWidget(QWidget):
         visible_start, visible_end = self._visible_range()
         if visible_start is None or visible_end is None:
             return
-        for start, end in _failure_marker_spans(points, visible_start, visible_end):
+        for start, end in self._failure_marker_spans_for_series(series, visible_start, visible_end):
             start_x = self._x_for_time(start, rect)
             end_x = self._x_for_time(end, rect)
             if start_x is None or end_x is None:
@@ -412,7 +419,7 @@ class LatencyGraphWidget(QWidget):
         visible_timestamps = [
             point.timestamp
             for series in self._series
-            for point in self._visible_points(series.points)
+            for point in self._visible_points_for_series(series)
         ]
         if visible_timestamps:
             start = min(visible_timestamps)
@@ -432,6 +439,30 @@ class LatencyGraphWidget(QWidget):
             if visible_start <= point.timestamp.timestamp() <= visible_end
         ]
 
+    def _visible_points_for_series(self, series: TimelineSeries) -> list[HopObservation]:
+        visible_start, visible_end = self._visible_range()
+        cache_key = (series.key, visible_start, visible_end)
+        cached = self._visible_points_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        visible = self._visible_points(series.points)
+        self._visible_points_cache[cache_key] = visible
+        return visible
+
+    def _failure_marker_spans_for_series(
+        self,
+        series: TimelineSeries,
+        visible_start: float,
+        visible_end: float,
+    ) -> list[tuple[float, float]]:
+        cache_key = (series.key, visible_start, visible_end)
+        cached = self._failure_spans_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        spans = _failure_marker_spans(series.points, visible_start, visible_end)
+        self._failure_spans_cache[cache_key] = spans
+        return spans
+
     def _visible_range(self) -> tuple[float | None, float | None]:
         if self._external_visible_range is not None:
             return self._external_visible_range
@@ -445,14 +476,18 @@ class LatencyGraphWidget(QWidget):
         return visible_end - visible_span, visible_end
 
     def _full_time_range(self) -> tuple[float | None, float | None]:
+        if self._full_time_range_cache is not None:
+            return self._full_time_range_cache
         timestamps = [
             point.timestamp.timestamp()
             for series in self._series
             for point in series.points
         ]
         if not timestamps:
-            return None, None
-        return min(timestamps), max(timestamps)
+            self._full_time_range_cache = (None, None)
+            return self._full_time_range_cache
+        self._full_time_range_cache = (min(timestamps), max(timestamps))
+        return self._full_time_range_cache
 
     def _pan(self, direction: float) -> None:
         visible_start, visible_end = self._visible_range()
@@ -472,6 +507,7 @@ class LatencyGraphWidget(QWidget):
         next_end = current_end + (visible_span * direction)
         next_end = min(max(next_end, full_start + visible_span), full_end)
         self._view_end_timestamp = None if next_end >= full_end else next_end
+        self._clear_visible_render_caches()
         self.update()
 
     def _zoom_at_x(self, x: float | None, factor: float) -> None:
@@ -499,6 +535,7 @@ class LatencyGraphWidget(QWidget):
             self._view_end_timestamp = self._clamp_view_end(desired_end)
         else:
             self._view_end_timestamp = self._clamp_view_end(self._view_end_timestamp)
+        self._clear_visible_render_caches()
         self.update()
 
     def _is_pan_drag_event(self, event) -> bool:
@@ -538,6 +575,7 @@ class LatencyGraphWidget(QWidget):
         pixel_delta = x - self._pan_drag_anchor_x
         next_end = self._pan_drag_anchor_view_end - pixel_delta * seconds_per_pixel
         self._view_end_timestamp = self._clamp_view_end(next_end)
+        self._clear_visible_render_caches()
         self.update()
 
     def _finish_pan_drag(self) -> None:
@@ -573,6 +611,14 @@ class LatencyGraphWidget(QWidget):
             return None
         ratio = min(max((x - rect.left()) / max(rect.width(), 1), 0.0), 1.0)
         return visible_start + (visible_end - visible_start) * ratio
+
+    def _clear_render_caches(self) -> None:
+        self._full_time_range_cache = None
+        self._clear_visible_render_caches()
+
+    def _clear_visible_render_caches(self) -> None:
+        self._visible_points_cache.clear()
+        self._failure_spans_cache.clear()
 
     def _clamp_selection(self, selection: tuple[float, float] | None) -> tuple[float, float] | None:
         if selection is None:

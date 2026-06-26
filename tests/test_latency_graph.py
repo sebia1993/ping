@@ -71,6 +71,42 @@ def test_latency_graph_downsamples_long_series_without_losing_time_bounds(qt_app
     assert graph._series[0].points[-1].timestamp == points[-1].timestamp
 
 
+def test_latency_graph_reuses_and_clears_render_caches(qt_app) -> None:
+    graph = LatencyGraphWidget()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    points = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 1.0, STATUS_OK, True)
+        for index in range(20)
+    ]
+
+    graph.set_series([TimelineSeries("target", "Target", points)])
+    series = graph._series[0]
+
+    first_visible = graph._visible_points_for_series(series)
+    second_visible = graph._visible_points_for_series(series)
+    first_full_range = graph._full_time_range()
+    second_full_range = graph._full_time_range()
+
+    assert first_visible is second_visible
+    assert first_full_range == second_full_range
+    assert graph._visible_points_cache
+    assert graph._full_time_range_cache == first_full_range
+
+    graph.set_visible_time_range(now + timedelta(seconds=5), now + timedelta(seconds=10))
+
+    assert graph._visible_points_cache == {}
+    assert graph._failure_spans_cache == {}
+    assert graph._full_time_range_cache == first_full_range
+    assert graph._visible_points_for_series(series) == points[5:11]
+
+    next_points = points[:5]
+    graph.set_series([TimelineSeries("target", "Target", next_points)])
+
+    assert graph._visible_points_cache == {}
+    assert graph._failure_spans_cache == {}
+    assert graph._full_time_range_cache is None
+
+
 def test_latency_graph_renders_explicit_series_color(qt_app) -> None:
     graph = LatencyGraphWidget()
     graph.resize(360, 200)

@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -138,7 +139,11 @@ TARGET_GROUP_PRESET_VERSION = 2
 ALERT_RULE_PRESET_VERSION = 2
 GRAPH_RENDER_THROTTLE_TARGET_COUNT = 5
 GRAPH_RENDER_THROTTLE_SECONDS = 2.0
+TARGET_GRAPH_ROW_BATCH_THRESHOLD = 30
+TARGET_GRAPH_ROW_CREATE_BATCH = 18
 MAIN_GRAPH_DEFAULT_RANGE_SECONDS = 600
+LIVE_GRAPH_OBSERVATION_RETENTION_SECONDS = 3_900
+LIVE_GRAPH_OBSERVATION_LIMIT = 250_000
 MAIN_GRAPH_RANGE_RECENT = "recent"
 MAIN_GRAPH_RANGE_ALL = "all"
 MAIN_GRAPH_RANGE_OPTIONS: tuple[tuple[str, int | str], ...] = (
@@ -228,6 +233,13 @@ class MainWindow(QMainWindow):
         self.target_snapshot: MetricSnapshot | None = None
         self.target_snapshots: list[MetricSnapshot] = []
         self.observations: list[HopObservation] = []
+        self.live_graph_observations: deque[HopObservation] = deque()
+        self.live_graph_observations_by_address: dict[str, deque[HopObservation]] = {}
+        self.live_graph_observation_keys: set[HopObservation] = set()
+        self.live_graph_measurement_start: datetime | None = None
+        self.live_graph_latest_timestamp: datetime | None = None
+        self.session_log_bounds_cache_path: Path | None = None
+        self.session_log_bounds_cache: tuple[datetime, datetime] | None = None
         self.target_history: list[HopObservation] = []
         self.selected_hop_index: int | None = None
         self.analysis: list[str] = []
@@ -268,6 +280,7 @@ class MainWindow(QMainWindow):
         self.target_graph_pause_buttons: dict[str, QPushButton] = {}
         self.target_graph_remove_buttons: dict[str, QPushButton] = {}
         self.target_graph_render_keys: dict[str, tuple[object, ...]] = {}
+        self.target_graph_layout_order: list[str] = []
         self.paused_target_addresses: set[str] = set()
         self.main_graph_range_mode = MAIN_GRAPH_RANGE_RECENT
         self.main_graph_range_seconds = MAIN_GRAPH_DEFAULT_RANGE_SECONDS
@@ -286,6 +299,133 @@ class MainWindow(QMainWindow):
         self._set_state_chip("대기", "neutral")
         self._update_target_summary(None)
         self._sync_sessions_box()
+
+    def _is_worker_running(self) -> bool:
+        worker = getattr(self, "worker", None)
+        return bool(worker is not None and worker.isRunning())
+
+    def _skip_hidden_running_widget_update(self, widget: QWidget | None) -> bool:
+        return bool(widget is not None and not widget.isVisible() and self._is_worker_running())
+
+    def _reset_live_graph_observation_cache(self) -> None:
+        self.live_graph_observations.clear()
+        self.live_graph_observations_by_address.clear()
+        self.live_graph_observation_keys.clear()
+        self.live_graph_measurement_start = None
+        self.live_graph_latest_timestamp = None
+
+    def _reset_session_log_bounds_cache(self) -> None:
+        self.session_log_bounds_cache_path = None
+        self.session_log_bounds_cache = None
+
+    def _remember_live_graph_observations(self, observations: list[HopObservation]) -> None:
+        if not observations:
+            return
+        for observation in observations:
+            if observation in self.live_graph_observation_keys:
+                continue
+            self.live_graph_observations.append(observation)
+            self.live_graph_observation_keys.add(observation)
+            if observation.address:
+                self.live_graph_observations_by_address.setdefault(observation.address, deque()).append(observation)
+            if (
+                self.live_graph_measurement_start is None
+                or observation.timestamp < self.live_graph_measurement_start
+            ):
+                self.live_graph_measurement_start = observation.timestamp
+            if (
+                self.live_graph_latest_timestamp is None
+                or observation.timestamp > self.live_graph_latest_timestamp
+            ):
+                self.live_graph_latest_timestamp = observation.timestamp
+        latest_timestamp = max(observation.timestamp for observation in observations)
+        cutoff = latest_timestamp - timedelta(seconds=LIVE_GRAPH_OBSERVATION_RETENTION_SECONDS)
+        while self.live_graph_observations and (
+            self.live_graph_observations[0].timestamp < cutoff
+            or len(self.live_graph_observations) > LIVE_GRAPH_OBSERVATION_LIMIT
+        ):
+            removed = self.live_graph_observations.popleft()
+            self.live_graph_observation_keys.discard(removed)
+            if removed.address:
+                address_points = self.live_graph_observations_by_address.get(removed.address)
+                if address_points:
+                    while address_points and address_points[0] == removed:
+                        address_points.popleft()
+                    if not address_points:
+                        self.live_graph_observations_by_address.pop(removed.address, None)
+
+    def _live_graph_observation_list(self) -> list[HopObservation]:
+        return list(self.live_graph_observations)
+
+    def _live_graph_observations_in_range(self, start: datetime, end: datetime) -> list[HopObservation]:
+        if end < start:
+            start, end = end, start
+        points: list[HopObservation] = []
+        for observation in reversed(self.live_graph_observations):
+            if observation.timestamp < start:
+                break
+            if observation.timestamp <= end:
+                points.append(observation)
+        points.reverse()
+        return points
+
+    def _live_graph_histories_by_address(
+        self,
+        start: datetime,
+        end: datetime,
+        addresses: list[str] | None = None,
+    ) -> dict[str, list[HopObservation]]:
+        if end < start:
+            start, end = end, start
+        selected_addresses = addresses or list(self.live_graph_observations_by_address)
+        histories: dict[str, list[HopObservation]] = {}
+        for address in selected_addresses:
+            address_points = self.live_graph_observations_by_address.get(address)
+            if not address_points:
+                continue
+            points: list[HopObservation] = []
+            for observation in reversed(address_points):
+                if observation.timestamp < start:
+                    break
+                if observation.timestamp <= end:
+                    points.append(observation)
+            if points:
+                points.reverse()
+                histories[address] = points
+        return histories
+
+    def _live_graph_data_bounds(self) -> tuple[datetime, datetime] | None:
+        if self.live_graph_latest_timestamp is None:
+            return None
+        start = self.live_graph_measurement_start or self.live_graph_latest_timestamp
+        session_start = self._session_log_start_for_live_graph()
+        if session_start is not None:
+            start = min(start, session_start)
+        return min(start, self.live_graph_latest_timestamp), self.live_graph_latest_timestamp
+
+    def _session_log_start_for_live_graph(self) -> datetime | None:
+        if self.session_log_path is None:
+            return None
+        if not self.session_log_path.exists():
+            return None
+        if (
+            self.session_log_bounds_cache_path == self.session_log_path
+            and self.session_log_bounds_cache is not None
+        ):
+            return self.session_log_bounds_cache[0]
+        bounds = session_log_bounds(self.session_log_path)
+        self.session_log_bounds_cache_path = self.session_log_path
+        self.session_log_bounds_cache = bounds
+        return bounds[0] if bounds is not None else None
+
+    def _should_use_live_graph_cache(self) -> bool:
+        return (
+            self.timeline_range is None
+            and self.focus_range is None
+            and self.main_graph_range_mode == MAIN_GRAPH_RANGE_RECENT
+            and bool(self.live_graph_observations)
+            and (self._is_worker_running() or self.session_log_path is not None)
+        )
 
     def _build_ui(self) -> None:
         """상단 입력, 왼쪽 그래프/표, 오른쪽 세션/알림 영역을 조립합니다."""
@@ -449,6 +589,7 @@ class MainWindow(QMainWindow):
         self.target_graph_scroll = QScrollArea()
         self.target_graph_scroll.setWidgetResizable(True)
         self.target_graph_scroll.setFrameShape(QFrame.NoFrame)
+        self.target_graph_scroll.verticalScrollBar().valueChanged.connect(self._on_target_graph_scroll_changed)
         self.target_graph_container = QWidget()
         self.target_graph_container.setObjectName("targetGraphContainer")
         self.target_graph_layout = QVBoxLayout(self.target_graph_container)
@@ -1121,10 +1262,12 @@ class MainWindow(QMainWindow):
         self.session_log_path = None
         self.route_log_path = None
         self.alert_action_log_path = None
+        self._reset_session_log_bounds_cache()
         self.snapshots = []
         self.target_snapshot = None
         self.target_snapshots = []
         self.observations = []
+        self._reset_live_graph_observation_cache()
         self.target_history = []
         self.selected_hop_index = None
         self.analysis = []
@@ -1276,6 +1419,8 @@ class MainWindow(QMainWindow):
             self.target_snapshots = []
             self.target_snapshot = None
             self.observations = []
+            self._reset_live_graph_observation_cache()
+            self._reset_session_log_bounds_cache()
             self.target_history = []
             self.main_graph_live_end_time = None
             self._clear_target_graph_rows()
@@ -1580,6 +1725,7 @@ class MainWindow(QMainWindow):
         self.target_snapshot = self._target_snapshot_for_address(self.current_target) or target_snapshot
         self.analysis = analyze_path(self.snapshots, self.target_snapshot) if self.target_snapshot is not target_snapshot else list(analysis)
         self.observations = list(observations)
+        self._remember_live_graph_observations(self.observations)
         self.target_history = self._target_history_from_observations(self.observations) or list(target_history)
         self._record_metric_alerts()
 
@@ -1599,7 +1745,8 @@ class MainWindow(QMainWindow):
         analysis = self._display_analysis()
         interval_seconds_by_target, interval_source_by_target = self._target_interval_display_maps(target_snapshots)
 
-        update_hop_table(self.table, snapshots)
+        if not self._skip_hidden_running_widget_update(getattr(self, "hop_table_panel", None)):
+            update_hop_table(self.table, snapshots)
         update_target_table(
             self.target_table,
             target_snapshots,
@@ -1614,7 +1761,10 @@ class MainWindow(QMainWindow):
         self._request_graph_render(force=force_graph or bool(self.pending_alert_image_keys))
         self._sync_graph_panel_visibility()
         self._save_pending_alert_images()
-        self.analysis_box.setPlainText("\n".join(f"- {line}" for line in analysis))
+        if not self._skip_hidden_running_widget_update(getattr(self, "analysis_box", None)):
+            analysis_text = "\n".join(f"- {line}" for line in analysis)
+            if self.analysis_box.toPlainText() != analysis_text:
+                self.analysis_box.setPlainText(analysis_text)
         self._set_export_enabled(self._has_export_data())
 
     def _display_snapshots(self) -> list[MetricSnapshot]:
@@ -1719,6 +1869,11 @@ class MainWindow(QMainWindow):
         visible_addresses = {snapshot.address for snapshot in snapshots if snapshot.address}
         if not visible_addresses:
             return None
+        if self._should_use_live_graph_cache():
+            for observation in reversed(self.live_graph_observations):
+                if observation.address in visible_addresses:
+                    return observation.timestamp
+            return None
         timestamps = [
             observation.timestamp
             for observation in self._graph_observations_for_rows()
@@ -1730,6 +1885,7 @@ class MainWindow(QMainWindow):
         """Worker가 만든 세션 CSV 경로를 받아 Session Manager와 export 기능을 연결합니다."""
 
         self.session_log_path = Path(path)
+        self._reset_session_log_bounds_cache()
         self.route_log_path = route_log_path_for_session(self.session_log_path)
         self.alert_action_log_path = alert_action_log_path_for_session(self.session_log_path)
         self.session_index_store = SessionIndexStore.create(session_index_root_for_sample_path(self.session_log_path))
@@ -1740,6 +1896,8 @@ class MainWindow(QMainWindow):
         self._set_export_enabled(self._has_export_data())
 
     def on_diagnostics_updated(self, diagnostics: object) -> None:
+        if self._skip_hidden_running_widget_update(getattr(self, "diagnostics_box", None)):
+            return
         lines = [
             f"대상 엔진: {_probe_status_text(getattr(diagnostics, 'target_probe_engine', 'ICMP'))}",
             f"경로 엔진: {_probe_status_text(getattr(diagnostics, 'route_probe_engine', 'tracert/ICMP'))}",
@@ -1878,6 +2036,12 @@ class MainWindow(QMainWindow):
             return self.timeline_observations
         if self.focus_range is not None:
             return self.focus_observations
+        if self._should_use_live_graph_cache():
+            visible_range = self._main_graph_visible_time_range(self._live_graph_data_bounds())
+            if visible_range is None:
+                return self._live_graph_observation_list()
+            start, end = visible_range
+            return self._live_graph_observations_in_range(start, end)
         if self.session_log_path is not None and session_log_bounds(self.session_log_path) is not None:
             visible_range = self._main_graph_visible_time_range()
             if visible_range is None:
@@ -1926,6 +2090,9 @@ class MainWindow(QMainWindow):
         if self._pending_graph_render:
             self._render_graph_now()
 
+    def _on_target_graph_scroll_changed(self, _value: int) -> None:
+        self._request_graph_render(force=True)
+
     def _render_graph_now(self) -> None:
         if not hasattr(self, "target_graph_layout"):
             return
@@ -1939,8 +2106,10 @@ class MainWindow(QMainWindow):
     def _sync_target_graph_rows(self, target_snapshots: list[MetricSnapshot]) -> None:
         if not hasattr(self, "target_graph_layout"):
             return
-        histories = self._target_histories_by_address(self._graph_observations_for_rows())
         addresses = _unique_addresses(snapshot.address for snapshot in target_snapshots)
+        data_bounds = self._main_graph_data_bounds()
+        visible_range = self._main_graph_visible_time_range(data_bounds)
+        histories = self._graph_histories_for_rows(visible_range, addresses)
         if not addresses:
             addresses = _unique_addresses(histories.keys())
         if not addresses:
@@ -1962,18 +2131,19 @@ class MainWindow(QMainWindow):
             if address not in addresses:
                 self._remove_target_graph_row(address)
 
-        for address in addresses:
-            if address not in self.target_graph_rows:
-                self._create_target_graph_row(address, use_primary_graph=address == primary_address)
+        missing_addresses = [address for address in addresses if address not in self.target_graph_rows]
+        create_batch_size = self._target_graph_create_batch_size(addresses, missing_addresses)
+        for address in missing_addresses[:create_batch_size]:
+            self._create_target_graph_row(address, use_primary_graph=address == primary_address)
+        has_pending_row_creation = len(missing_addresses) > create_batch_size
 
-        for address in addresses:
-            self.target_graph_layout.addWidget(self.target_graph_rows[address])
+        self._sync_target_graph_layout_order(addresses)
 
         snapshot_by_address = {snapshot.address: snapshot for snapshot in target_snapshots if snapshot.address}
-        data_bounds = self._main_graph_data_bounds()
-        visible_range = self._main_graph_visible_time_range(data_bounds)
         self._sync_main_graph_time_status(visible_range, data_bounds)
-        for address in addresses:
+        row_addresses = [address for address in addresses if address in self.target_graph_rows]
+        visible_graph_addresses = set(self._visible_target_graph_addresses(row_addresses))
+        for address in row_addresses:
             history = histories.get(address, [])
             snapshot = snapshot_by_address.get(address)
             graph_state = self._target_graph_health_state(address, snapshot, history)
@@ -1981,26 +2151,86 @@ class MainWindow(QMainWindow):
             graph = self.target_graph_widgets[address]
             render_key = self._target_graph_render_key(snapshot, history, graph_state)
             self._sync_target_graph_alias_label(address)
-            if self.target_graph_render_keys.get(address) != render_key:
-                if history:
-                    graph.set_series([TimelineSeries(address, address, history, graph_color)])
-                else:
-                    graph.set_points([])
+            should_render_graph = address in visible_graph_addresses
+            needs_render_update = self.target_graph_render_keys.get(address) != render_key
+            if needs_render_update:
+                if should_render_graph:
+                    if history:
+                        graph.set_series([TimelineSeries(address, address, history, graph_color)])
+                    else:
+                        graph.set_points([])
+                    self.target_graph_render_keys[address] = render_key
                 self.target_graph_metric_labels[address].setText(
                     self._target_graph_metric_text(snapshot, history)
                 )
                 self._set_target_graph_status_label(address, graph_state)
-                self.target_graph_render_keys[address] = render_key
             self._sync_target_graph_action_buttons(address, snapshot)
-            self._apply_main_graph_time_range_to_widget(graph, visible_range)
-            graph.set_annotations(
-                self._main_graph_annotations(
-                    target=address,
-                    include_route=address == self.current_target,
+            if should_render_graph:
+                self._apply_main_graph_time_range_to_widget(graph, visible_range)
+                graph.set_annotations(
+                    self._main_graph_annotations(
+                        target=address,
+                        include_route=address == self.current_target,
+                    )
                 )
-            )
 
         self.target_graph_empty_label.setVisible(False)
+        if has_pending_row_creation:
+            self._schedule_graph_render_soon()
+
+    def _target_graph_create_batch_size(self, addresses: list[str], missing_addresses: list[str]) -> int:
+        if len(addresses) < TARGET_GRAPH_ROW_BATCH_THRESHOLD:
+            return len(missing_addresses)
+        return min(len(missing_addresses), TARGET_GRAPH_ROW_CREATE_BATCH)
+
+    def _schedule_graph_render_soon(self) -> None:
+        self._pending_graph_render = True
+        if not self._graph_render_timer.isActive():
+            self._graph_render_timer.start(1)
+
+    def _graph_histories_for_rows(
+        self,
+        visible_range: tuple[datetime, datetime] | None,
+        addresses: list[str],
+    ) -> dict[str, list[HopObservation]]:
+        if (
+            self._should_use_live_graph_cache()
+            and visible_range is not None
+            and self.live_graph_observations_by_address
+        ):
+            _visible_start, end = visible_range
+            start = self.live_graph_observations[0].timestamp
+            return self._live_graph_histories_by_address(start, end, addresses or None)
+        return self._target_histories_by_address(self._graph_observations_for_rows())
+
+    def _sync_target_graph_layout_order(self, addresses: list[str]) -> None:
+        ordered = [address for address in addresses if address in self.target_graph_rows]
+        if self.target_graph_layout_order == ordered:
+            return
+        for address in ordered:
+            self.target_graph_layout.addWidget(self.target_graph_rows[address])
+        self.target_graph_layout_order = ordered
+
+    def _visible_target_graph_addresses(self, addresses: list[str]) -> list[str]:
+        if not getattr(self, "target_graph_scroll", None) or not self.target_graph_scroll.isVisible():
+            return list(addresses)
+        viewport = self.target_graph_scroll.viewport()
+        if viewport is None or viewport.height() <= 0:
+            return list(addresses)
+        scrollbar = self.target_graph_scroll.verticalScrollBar()
+        visible_top = scrollbar.value()
+        visible_bottom = visible_top + viewport.height()
+        margin = 160
+        visible: list[str] = []
+        for address in addresses:
+            row = self.target_graph_rows.get(address)
+            if row is None:
+                continue
+            row_top = row.y()
+            row_bottom = row_top + row.height()
+            if row_bottom >= visible_top - margin and row_top <= visible_bottom + margin:
+                visible.append(address)
+        return visible or list(addresses[: min(len(addresses), 6)])
 
     def _target_graph_render_key(
         self,
@@ -2323,6 +2553,8 @@ class MainWindow(QMainWindow):
         label.setToolTip(text)
 
     def _main_graph_data_bounds(self) -> tuple[datetime, datetime] | None:
+        if self._should_use_live_graph_cache():
+            return self._live_graph_data_bounds()
         if self.timeline_range is None and self.focus_range is None:
             log_bounds = session_log_bounds(self.session_log_path)
             if log_bounds is not None:
@@ -2385,6 +2617,9 @@ class MainWindow(QMainWindow):
         self.target_graph_pause_buttons.pop(address, None)
         self.target_graph_remove_buttons.pop(address, None)
         self.target_graph_render_keys.pop(address, None)
+        self.target_graph_layout_order = [
+            existing for existing in self.target_graph_layout_order if existing != address
+        ]
         self.paused_target_addresses.discard(address)
         if graph is self.graph:
             self.graph.setParent(None)
@@ -2397,6 +2632,7 @@ class MainWindow(QMainWindow):
             self._remove_target_graph_row(address)
         self.primary_graph_address = None
         self.target_graph_render_keys.clear()
+        self.target_graph_layout_order = []
 
     def _target_graph_metric_text(
         self,
@@ -3180,6 +3416,8 @@ class MainWindow(QMainWindow):
 
         if not hasattr(self, "alerts_box"):
             return
+        if self._skip_hidden_running_widget_update(getattr(self, "right_panel", None)):
+            return
         if hasattr(self, "alert_table"):
             update_alert_table(self.alert_table, self.alert_events, self.alert_event_actions)
         if not self.alert_events:
@@ -3586,6 +3824,7 @@ class MainWindow(QMainWindow):
         self.session_log_path = None
         self.route_log_path = None
         self.alert_action_log_path = None
+        self._reset_session_log_bounds_cache()
         self.timeline_status = "그래프 데이터: 실시간 버퍼"
         self._sync_timeline_controls()
 
@@ -3601,10 +3840,12 @@ class MainWindow(QMainWindow):
         self.refresh_trace_targets()
         self.trace_target_combo.setCurrentText(record.target)
         self.session_log_path = record.sample_path
+        self._reset_session_log_bounds_cache()
         self.route_log_path = record.route_path or route_log_path_for_session(record.sample_path)
         self.alert_action_log_path = alert_action_log_path_for_session(record.sample_path)
         self.session_index_store = SessionIndexStore.create(session_index_root_for_sample_path(record.sample_path))
         self.observations = observations
+        self._reset_live_graph_observation_cache()
         self.target_history = self._target_history_from_observations(observations)
         focus_set = build_focus_snapshots(observations, current_target=record.target)
         self.snapshots = focus_set.hop_snapshots
