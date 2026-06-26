@@ -868,6 +868,36 @@ def test_worker_stop_request_with_slow_active_pings_finishes_without_deadlock() 
     assert worker.isRunning() is False
 
 
+def test_worker_stop_request_is_bounded_by_active_probe_timeout() -> None:
+    _app()
+    targets = [f"198.51.100.{index}" for index in range(1, 21)]
+    calls: list[tuple[str, int]] = []
+
+    worker = MeasurementWorker(
+        targets[0],
+        interval_seconds=1,
+        max_cycles=None,
+        timeout_ms=120,
+        targets=targets,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        ping_probe_factory=lambda timeout_ms: _TimeoutBoundPingRunner(timeout_ms, calls),
+    )
+
+    worker.start()
+    deadline = time.monotonic() + 2.0
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    stopped_at = time.monotonic()
+    worker.request_stop()
+
+    assert worker.wait(2500) is True
+    assert time.monotonic() - stopped_at < 2.0
+    assert calls
+    assert {timeout_ms for _target, timeout_ms in calls} == {120}
+    assert worker.isRunning() is False
+
+
 def test_worker_cancels_pending_measurement_futures_on_shutdown() -> None:
     trace_future: Future[list[HopInfo]] = Future()
     target_future: Future[PingResult] = Future()
@@ -1173,6 +1203,17 @@ class _StopDelayPingRunner:
     def ping(self, target: str) -> PingResult:
         self.calls.append(target)
         time.sleep(self.delay_seconds)
+        return PingResult(target, False, None, STATUS_TIMEOUT, datetime.now())
+
+
+class _TimeoutBoundPingRunner:
+    def __init__(self, timeout_ms: int, calls: list[tuple[str, int]]) -> None:
+        self.timeout_ms = timeout_ms
+        self.calls = calls
+
+    def ping(self, target: str) -> PingResult:
+        self.calls.append((target, self.timeout_ms))
+        time.sleep(self.timeout_ms / 1000)
         return PingResult(target, False, None, STATUS_TIMEOUT, datetime.now())
 
 
