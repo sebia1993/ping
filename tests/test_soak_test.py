@@ -4,7 +4,7 @@ from argparse import Namespace
 
 import pytest
 
-from scripts.soak_test import EventLoopStats, evaluate_summary, parse_args
+from scripts.soak_test import EventLoopStats, build_summary, evaluate_summary, parse_args
 
 
 def test_soak_release_profile_sets_fast_fifty_target_defaults() -> None:
@@ -220,6 +220,40 @@ def test_soak_evaluation_allows_in_flight_pings_at_shutdown() -> None:
     )
 
     assert evaluate_summary(summary, args) == []
+
+
+def test_soak_summary_reports_session_log_row_delta(tmp_path) -> None:
+    args = parse_args([
+        "--profile",
+        "release",
+        "--output-dir",
+        str(tmp_path),
+        "--session-log-root",
+        str(tmp_path / "session_logs"),
+    ])
+
+    summary = build_summary(
+        args=args,
+        elapsed=5.0,
+        updates=[],
+        diagnostics_rows=[],
+        health_rows=[{"current_memory_bytes": 1000, "active_threads": 1}],
+        event_loop_stats=EventLoopStats(),
+        errors=[],
+        session_log_paths=[],
+        ping_calls={"198.51.100.1": 5},
+        ping_results={"198.51.100.1": 4},
+        traceroute_calls=1,
+        cpu_seconds=0.1,
+        current_memory_bytes=1200,
+        peak_memory_bytes=1500,
+        diagnostics_csv_path=tmp_path / "diagnostics.csv",
+        health_csv_path=tmp_path / "health.csv",
+        stopped_cleanly=True,
+    )
+
+    assert summary["session_log_min_expected_rows"] == 4
+    assert summary["session_log_row_delta"] == -4
 
 
 def test_soak_evaluation_rejects_resource_pressure() -> None:

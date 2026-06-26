@@ -640,6 +640,9 @@ def build_summary(
     max_loop_delay_ms = max_float(diagnostics_rows, "average_loop_delay_ms")
     max_threads = max_int(health_rows, "active_threads")
     cpu_percent = (cpu_seconds / elapsed * 100.0) if elapsed > 0 else 0.0
+    completed_ping_results = sum(ping_results.values())
+    session_log_min_expected_rows = completed_ping_results
+    session_log_row_delta = session_stats["rows"] - session_log_min_expected_rows
     return {
         "profile": args.profile,
         "targets": args.targets,
@@ -653,7 +656,9 @@ def build_summary(
         "session_log_rows": session_stats["rows"],
         "session_log_segments": session_stats["segments"],
         "ping_calls": sum(ping_calls.values()),
-        "ping_results": sum(ping_results.values()),
+        "ping_results": completed_ping_results,
+        "session_log_min_expected_rows": session_log_min_expected_rows,
+        "session_log_row_delta": session_log_row_delta,
         "traceroute_calls": traceroute_calls,
         "active_threads_final": threading.active_count(),
         "max_active_threads": max_threads,
