@@ -12,7 +12,7 @@ ROOT = Path(__file__).absolute().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.soak_test import SOAK_PROFILES
+from scripts.soak_test import SOAK_PROFILES, evaluate_summary, parse_args as parse_soak_args
 
 
 DEFAULT_PROFILES = ("long4h", "long8h", "long24h", "ui10", "ui20", "ui50")
@@ -256,23 +256,29 @@ def validate_manifest_payload(
 def validate_summary(profile: str, summary: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     profile_defaults = SOAK_PROFILES[profile]
+    soak_args = parse_soak_args(["--profile", profile])
     expected_duration = float(profile_defaults["duration_seconds"])
     minimum_duration = expected_duration * 0.95
     actual_duration = float(summary.get("duration_seconds", 0.0) or 0.0)
+    if summary.get("profile") != profile:
+        failures.append(f"{profile}: summary profile mismatch: {summary.get('profile')!r}")
+    if int(summary.get("targets", 0) or 0) != int(profile_defaults["targets"]):
+        failures.append(f"{profile}: target count mismatch: {summary.get('targets')!r}")
+    if bool(summary.get("with_ui")) != bool(profile_defaults["with_ui"]):
+        failures.append(f"{profile}: UI mode mismatch: {summary.get('with_ui')!r}")
     if summary.get("failures"):
         failures.append(f"{profile}: summary failures: {summary['failures']}")
     if actual_duration < minimum_duration:
         failures.append(f"{profile}: duration too short: {actual_duration:.1f}s < {minimum_duration:.1f}s")
-    if not summary.get("stopped_cleanly"):
-        failures.append(f"{profile}: worker did not stop cleanly")
-    if int(summary.get("session_log_segments", 0) or 0) < 1:
-        failures.append(f"{profile}: session log was not created")
-    if int(summary.get("session_log_rows", 0) or 0) < 1:
-        failures.append(f"{profile}: session log rows missing")
-    max_ui_event_gap = float(summary.get("max_ui_event_gap_seconds", 0.0) or 0.0)
-    allowed_ui_event_gap = float(profile_defaults["max_ui_event_gap_seconds"])
-    if max_ui_event_gap > allowed_ui_event_gap:
-        failures.append(f"{profile}: UI event gap too high: {max_ui_event_gap:.3f}s > {allowed_ui_event_gap:.3f}s")
+    try:
+        failures.extend(f"{profile}: {failure}" for failure in evaluate_summary(summary, soak_args))
+    except (KeyError, TypeError, ValueError) as exc:
+        failures.append(f"{profile}: summary is missing or has invalid stability fields: {exc}")
+    if int(summary.get("active_threads_final", 0) or 0) > int(profile_defaults["max_active_threads"]):
+        failures.append(
+            f"{profile}: final active thread count too high: "
+            f"{summary.get('active_threads_final')} > {profile_defaults['max_active_threads']}"
+        )
     return failures
 
 

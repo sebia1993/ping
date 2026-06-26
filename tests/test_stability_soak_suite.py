@@ -123,6 +123,20 @@ def test_soak_suite_validate_rejects_short_long_run(tmp_path) -> None:
     assert any("duration too short" in failure for failure in failures)
 
 
+def test_soak_suite_validate_rejects_session_log_row_loss() -> None:
+    summary = _summary("release", duration_seconds=5.0, ping_results=200, session_log_rows=10)
+
+    failures = suite.validate_summary("release", summary)
+
+    assert any("session log rows too low" in failure for failure in failures)
+
+
+def test_soak_suite_validate_rejects_missing_stability_fields() -> None:
+    failures = suite.validate_summary("release", {"profile": "release", "duration_seconds": 5.0})
+
+    assert any("summary is missing or has invalid stability fields" in failure for failure in failures)
+
+
 def test_soak_suite_resume_reuses_existing_passed_profile(tmp_path, monkeypatch) -> None:
     run_root = tmp_path / "resume-run"
     run_root.mkdir()
@@ -177,13 +191,41 @@ def test_soak_suite_loads_latest_summary(tmp_path) -> None:
     assert summary["data"]["failures"] == []
 
 
-def _summary(profile: str, *, duration_seconds: float) -> dict[str, object]:
+def _summary(
+    profile: str,
+    *,
+    duration_seconds: float,
+    ping_results: int = 10,
+    session_log_rows: int | None = None,
+) -> dict[str, object]:
+    profile_defaults = suite.SOAK_PROFILES[profile]
+    interval_seconds = int(profile_defaults["interval_seconds"])
+    expected_updates = max(int(float(profile_defaults["duration_seconds"]) // max(interval_seconds, 1)), 1)
+    rows = ping_results if session_log_rows is None else session_log_rows
     return {
         "profile": profile,
+        "targets": profile_defaults["targets"],
+        "timeout_ratio": profile_defaults["timeout_ratio"],
         "duration_seconds": duration_seconds,
+        "with_ui": profile_defaults["with_ui"],
+        "updates": expected_updates,
+        "errors": [],
         "failures": [],
         "stopped_cleanly": True,
-        "session_log_rows": 10,
+        "session_log_rows": rows,
         "session_log_segments": 1,
+        "ping_calls": ping_results,
+        "ping_results": ping_results,
+        "traceroute_calls": max(int(float(profile_defaults["duration_seconds"]) // 30.0), 1),
+        "active_threads_final": 1,
+        "max_active_threads": min(int(profile_defaults["max_active_threads"]), 24),
+        "cpu_percent": 1.0,
+        "memory_growth_bytes": 1024,
+        "max_update_gap_seconds": 1.0,
+        "avg_update_gap_seconds": 1.0,
         "max_ui_event_gap_seconds": 0.02,
+        "diagnostic_samples": expected_updates,
+        "max_pending_ping_count": 0,
+        "max_log_queue_depth": 1,
+        "max_backoff_target_count": 1,
     }

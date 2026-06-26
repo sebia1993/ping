@@ -33,6 +33,9 @@ python scripts\run_stability_soak_suite.py --resume --run-id <RUN_ID>
 python scripts\run_stability_soak_suite.py --validate-only --run-id <RUN_ID>
 ```
 
+`--validate-only`는 manifest만 보는 것이 아니라 각 프로필의 summary JSON을 다시 읽어 duration,
+UI event gap, CPU, memory, thread, pending ping, log queue, session log row 기준을 재검증합니다.
+
 개별 프로필만 따로 실행할 수도 있습니다.
 
 ```powershell

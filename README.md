@@ -95,6 +95,9 @@ python scripts\run_stability_soak_suite.py
 python scripts\run_stability_soak_suite.py --resume --run-id <RUN_ID>
 python scripts\run_stability_soak_suite.py --validate-only --run-id <RUN_ID>
 
+# validate-only는 duration, UI event gap, CPU, memory, thread, pending ping,
+# log queue, session log row 기준을 summary JSON에서 다시 확인합니다.
+
 # 30분 50-target 안정성 검증
 python scripts\soak_test.py --profile long
 
