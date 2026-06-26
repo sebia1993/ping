@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Keep repository instructions versioned so they follow GitHub/MacBook/Windows clones.
+!AGENTS.md
+
 build/
 dist/
 *.spec
