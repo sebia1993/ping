@@ -57,7 +57,7 @@ jobs:
             $base64 = $base64.Insert(28821, 'j')
           }
           $sha = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::ASCII.GetBytes($base64))).Replace('-', '').ToLowerInvariant()
-          if ($sha -ne 'a215255bbc5510e2375f897bde329cc18f2ced4b0eef056f57dc') {
+          if ($sha -ne 'a215255bbc5510e2375f897bde329cc18ab605969df18f2ced4b0eef056f57dc') {
             throw "Patch payload SHA mismatch: $sha"
           }
           [System.IO.File]::WriteAllBytes('local-release-changes.patch.gz', [System.Convert]::FromBase64String($base64))
