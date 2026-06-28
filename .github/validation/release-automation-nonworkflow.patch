@@ -1,0 +1,361 @@
+diff --git a/README.md b/README.md
+index 3d04fc1..d8938da 100644
+--- a/README.md
++++ b/README.md
+@@ -41,7 +41,8 @@ pytest
+ 
+ ```powershell
+ python scripts\verify_release.py
+-python scripts\verify_release.py --live --exe
++python scripts\verify_release.py --exe
++python scripts\verify_release.py --live
+ ```
+ 
+ 사내 게이트웨이 또는 업무 사이트 대상의 현장 검증:
+@@ -62,9 +63,15 @@ python scripts\verify_release.py --target <FIELD_TARGET>
+ 
+ ## GitHub Release Publish
+ 
+-로컬 작업을 commit한 뒤 실행합니다. 이 스크립트는 Windows EXE를 빌드하고, 릴리즈 검증을 실행하고,
+-`release\` 아래 ZIP 패키지를 만든 뒤 Git tag와 GitHub Release asset을 생성합니다.
+-EXE/ZIP은 Git 저장소에 commit하지 않고 GitHub Release 첨부파일로만 올립니다.
++권장 경로는 GitHub Actions의 `Release Windows ZIP` workflow를 `main` 브랜치에서 수동 실행하는 것입니다.
++이 workflow는 Windows EXE를 빌드하고, 릴리즈 검증을 실행하고, `release\` 아래 ZIP 패키지를 만든 뒤
++Git tag와 GitHub Release asset을 생성합니다. ZIP과 함께 SHA256 checksum 파일도 업로드합니다.
++EXE/ZIP/checksum은 Git 저장소에 commit하지 않고 GitHub Release 첨부파일로만 올립니다.
++수동 실행 입력값 `tag`, `title`, `notes`는 선택사항이며, `tag`를 비우면 KST 기준 `vYYYY.MM.DD-HHMMSS`가 자동 생성됩니다.
++배포 전후 확인 절차는 [릴리즈 체크리스트](docs/release_checklist.md)를 따릅니다.
++로컬 `git push` 또는 GitHub CLI 인증이 막히면 [GitHub 인증 설정](docs/github_auth_setup.md)을 먼저 확인합니다.
++
++로컬 Windows PC에서 같은 과정을 실행해야 할 때는 로컬 작업을 commit한 뒤 아래 스크립트를 실행합니다.
+ 
+ Requirements:
+ 
+diff --git a/docs/github_auth_setup.md b/docs/github_auth_setup.md
+new file mode 100644
+index 0000000..4c78b1b
+--- /dev/null
++++ b/docs/github_auth_setup.md
+@@ -0,0 +1,41 @@
++# GitHub 인증 설정
++
++이 문서는 로컬 Mac 또는 Windows PC에서 `git push`와 Release 업로드가 막힐 때 확인할 절차입니다.
++
++## 현재 증상
++
++다음 오류가 나오면 GitHub 인증 정보가 로컬 Git에 연결되지 않은 상태입니다.
++
++```text
++fatal: could not read Username for 'https://github.com': Device not configured
++```
++
++## 권장 설정
++
++1. GitHub CLI를 설치합니다.
++   - Homebrew가 있으면 `brew install gh`
++   - Homebrew가 없으면 https://cli.github.com/ 에서 설치 파일을 받습니다.
++2. 브라우저 로그인으로 인증합니다.
++
++```bash
++gh auth login
++```
++
++3. Git이 GitHub CLI 인증을 사용하도록 연결합니다.
++
++```bash
++gh auth setup-git
++```
++
++4. 상태를 확인합니다.
++
++```bash
++gh auth status
++git push --dry-run origin HEAD
++```
++
++## Release 자동화와의 관계
++
++- GitHub Actions의 `Release Windows ZIP` workflow는 `GITHUB_TOKEN`을 사용하므로 로컬 `gh auth login` 없이도 Release asset을 올릴 수 있습니다.
++- 로컬 PC에서 `scripts\publish_release.ps1`로 직접 Release를 올릴 때는 `gh auth login`이 필요합니다.
++- 일반 소스 동기화를 위해 `git push`를 자주 쓸 경우에도 이 설정을 완료하는 것이 좋습니다.
+diff --git a/docs/release_checklist.md b/docs/release_checklist.md
+new file mode 100644
+index 0000000..40341ff
+--- /dev/null
++++ b/docs/release_checklist.md
+@@ -0,0 +1,43 @@
++# 릴리즈 체크리스트
++
++이 문서는 Windows ZIP Release를 만들 때 확인할 최소 절차입니다.
++
++## 1. 소스 검증
++
++- PR 또는 `main`/`stability/**` push에서 `Windows Fast Check` workflow가 성공했는지 확인합니다.
++- 로컬에서 확인할 때는 다음 명령을 실행합니다.
++
++```powershell
++python scripts\verify_release.py
++```
++
++## 2. 최종 Windows EXE 검증
++
++- GitHub Actions에서 `Windows Release Verify` workflow를 수동 실행합니다.
++- 성공 조건:
++  - source release verifier 성공
++  - Windows EXE build 성공
++  - packaged EXE smoke 성공
++  - `MultiPingCheck-windows-<run_id>` artifact 업로드 성공
++
++## 3. GitHub Release 생성
++
++- `main` 브랜치에서 `Release Windows ZIP` workflow를 수동 실행합니다.
++- `tag`, `title`, `notes`는 선택값입니다.
++- `tag`를 비우면 KST 기준 `vYYYY.MM.DD-HHMMSS` 형식으로 자동 생성됩니다.
++- workflow가 성공하면 GitHub Release에 다음 asset이 올라와야 합니다.
++  - `MultiPingCheck_<tag>.zip`
++  - `MultiPingCheck_<tag>.zip.sha256`
++
++## 4. 다운로드 확인
++
++- GitHub Release에서 ZIP과 `.sha256` 파일을 내려받습니다.
++- ZIP을 압축 해제한 뒤 `README-실행안내.txt`가 포함되어 있는지 확인합니다.
++- 압축 해제한 폴더의 `MultiPingCheck.exe`를 실행합니다.
++- Python, PySide6, GitHub CLI 설치 없이 실행되어야 합니다.
++
++## 5. 사용자 안내
++
++- ZIP 안에서 바로 실행하지 말고 먼저 압축 해제해야 한다고 안내합니다.
++- Windows SmartScreen 또는 Defender 경고가 처음 실행 시 표시될 수 있다고 안내합니다.
++- 코드서명 또는 installer/MSIX는 별도 개선 항목으로 관리합니다.
+diff --git a/scripts/publish_release.ps1 b/scripts/publish_release.ps1
+index 7f358cd..02b6de8 100644
+--- a/scripts/publish_release.ps1
++++ b/scripts/publish_release.ps1
+@@ -2,6 +2,7 @@
+     [string]$Name = "MultiPingCheck",
+     [string]$Tag = "",
+     [string]$Title = "",
++    [string]$Notes = "",
+     [switch]$SkipBuild,
+     [switch]$SkipVerify,
+     [switch]$SkipUpload,
+@@ -63,6 +64,16 @@ function Get-SafeFileToken {
+     return ($Value -replace '[^A-Za-z0-9._-]', '_')
+ }
+ 
++function Get-KstNow {
++    try {
++        $Kst = [System.TimeZoneInfo]::FindSystemTimeZoneById("Korea Standard Time")
++        return [System.TimeZoneInfo]::ConvertTimeFromUtc([System.DateTime]::UtcNow, $Kst)
++    }
++    catch {
++        return [System.DateTime]::UtcNow.AddHours(9)
++    }
++}
++
+ $Root = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
+ Set-Location -LiteralPath $Root.Path
+ 
+@@ -100,9 +111,9 @@ if ($Status -and -not $AllowDirty) {
+ }
+ 
+ if (-not $Tag) {
+-    # 태그를 직접 지정하지 않으면 현재 시각으로 새 버전명을 만듭니다.
++    # 태그를 직접 지정하지 않으면 KST 현재 시각으로 새 버전명을 만듭니다.
+     # 같은 날 여러 번 배포해도 겹치지 않도록 시분초까지 포함합니다.
+-    $Tag = "v$(Get-Date -Format 'yyyy.MM.dd-HHmmss')"
++    $Tag = "v$((Get-KstNow).ToString('yyyy.MM.dd-HHmmss'))"
+ }
+ if (-not $Title) {
+     $Title = "$Name $Tag"
+@@ -127,13 +138,27 @@ if ($LASTEXITCODE -ne 0 -or -not $ChangeLines) {
+ $ChangeSummaryText = ($ChangeLines -join [Environment]::NewLine)
+ 
+ if (-not $SkipUpload) {
+-    $AuthOutput = (& $GhCommand auth status 2>&1)
+-    if ($LASTEXITCODE -ne 0) {
+-        throw "GitHub CLI is not authenticated. Run: gh auth login"
++    $HasGhToken = -not [string]::IsNullOrWhiteSpace($env:GH_TOKEN) -or -not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)
++    if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN) -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
++        $env:GH_TOKEN = $env:GITHUB_TOKEN
++    }
++    if (-not $HasGhToken) {
++        $AuthOutput = (& $GhCommand auth status 2>&1)
++        if ($LASTEXITCODE -ne 0) {
++            throw "GitHub CLI is not authenticated. Run: gh auth login"
++        }
++    }
++    else {
++        Write-Host "Using GitHub token from environment for release upload."
+     }
+     Invoke-Checked "git" @("push", "origin", $Branch)
+ }
+ 
++if (-not $SkipVerify) {
++    # 소스 검증을 먼저 실행해 빌드 전에 빠르게 실패시키고, --exe 단계의 중복 pytest를 피합니다.
++    Invoke-Checked "python" @("scripts\verify_release.py")
++}
++
+ if (-not $SkipBuild) {
+     # PyInstaller 빌드 스크립트가 dist\<Name>\<Name>.exe를 생성합니다.
+     Invoke-Checked "powershell" @(
+@@ -158,6 +183,24 @@ $ExePath = Resolve-Path -LiteralPath (Join-Path $DistDir.Path "$Name.exe")
+ $ReleaseDir = Join-Path $Root.Path "release"
+ New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+ 
++$ExeItem = Get-Item -LiteralPath $ExePath.Path
++$PackageReadmePath = Join-Path $DistDir.Path "README-실행안내.txt"
++@"
++MultiPingCheck 실행 안내
++
++1. ZIP 파일을 먼저 원하는 폴더에 압축 해제합니다.
++2. 압축 해제한 폴더 안의 $($ExeItem.Name)을 실행합니다.
++3. Python, PySide6, GitHub CLI는 사용자 PC에 따로 설치할 필요가 없습니다.
++4. Windows SmartScreen 또는 Defender 경고가 처음 실행 시 표시될 수 있습니다. 배포 출처와 SHA256 값을 확인한 뒤 실행 여부를 결정하세요.
++
++배포 정보
++
++- 프로그램: $Name
++- 태그: $Tag
++- 기준 커밋: $Head
++- 브랜치: $Branch
++"@ | Set-Content -LiteralPath $PackageReadmePath -Encoding UTF8
++
+ $SafeTag = Get-SafeFileToken $Tag
+ $ZipPath = Join-Path $ReleaseDir "${Name}_${SafeTag}.zip"
+ if (Test-Path -LiteralPath $ZipPath) {
+@@ -166,12 +209,17 @@ if (Test-Path -LiteralPath $ZipPath) {
+ Compress-Archive -Path (Join-Path $DistDir.Path "*") -DestinationPath $ZipPath -Force
+ 
+ $ZipItem = Get-Item -LiteralPath $ZipPath
+-$ExeItem = Get-Item -LiteralPath $ExePath.Path
++$ZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ZipItem.FullName).Hash.ToLowerInvariant()
++$ChecksumPath = "$($ZipItem.FullName).sha256"
++Set-Content -LiteralPath $ChecksumPath -Value "$ZipHash  $($ZipItem.Name)" -Encoding ASCII
++$ChecksumItem = Get-Item -LiteralPath $ChecksumPath
+ 
+ if ($SkipUpload) {
+     Write-Host "Release package created without upload."
+     Write-Host "EXE: $($ExeItem.FullName) ($($ExeItem.Length) bytes)"
+     Write-Host "ZIP: $($ZipItem.FullName) ($($ZipItem.Length) bytes)"
++    Write-Host "SHA256: $ZipHash"
++    Write-Host "CHECKSUM: $($ChecksumItem.FullName)"
+     exit 0
+ }
+ 
+@@ -187,7 +235,21 @@ Invoke-Checked "git" @("tag", "-a", $Tag, "-m", $Title)
+ Invoke-Checked "git" @("push", "origin", $Tag)
+ 
+ $NotesPath = Join-Path $env:TEMP "${Name}_${SafeTag}_release_notes.md"
++$NotesText = $Notes.Trim()
++$OptionalNotesSection = if ($NotesText) {
++    @"
++## 릴리즈 메모
++
++$NotesText
++
++"@
++}
++else {
++    ""
++}
++
+ @"
++$OptionalNotesSection
+ ## 변경사항
+ 
+ $ChangeSummaryText
+@@ -196,6 +258,8 @@ $ChangeSummaryText
+ 
+ - 실행 파일: $($ExeItem.Name) ($($ExeItem.Length) bytes)
+ - 압축 파일: $($ZipItem.Name) ($($ZipItem.Length) bytes)
++- 압축 해제 안내: README-실행안내.txt
++- SHA256: $ZipHash
+ 
+ ## 검증
+ 
+@@ -209,6 +273,7 @@ $ReleaseArgs = @(
+     "create",
+     $Tag,
+     $ZipItem.FullName,
++    $ChecksumItem.FullName,
+     "--title",
+     $Title,
+     "--notes-file",
+@@ -226,3 +291,5 @@ Invoke-Checked $GhCommand $ReleaseArgs
+ Write-Host "GitHub Release published: $Tag"
+ Write-Host "EXE: $($ExeItem.FullName) ($($ExeItem.Length) bytes)"
+ Write-Host "ZIP: $($ZipItem.FullName) ($($ZipItem.Length) bytes)"
++Write-Host "SHA256: $ZipHash"
++Write-Host "CHECKSUM: $($ChecksumItem.FullName)"
+diff --git a/scripts/verify_release.py b/scripts/verify_release.py
+index 25be902..c452863 100644
+--- a/scripts/verify_release.py
++++ b/scripts/verify_release.py
+@@ -43,7 +43,7 @@ def main() -> int:
+ 
+     # 기본 검증은 외부 네트워크 없이도 반복 가능해야 합니다.
+     # 실제 인터넷 ping은 환경에 따라 막힐 수 있으므로 --live를 줄 때만 실행합니다.
+-    checks = [
++    source_checks = [
+         ("unit tests", run_pytest),
+         ("compileall", run_compileall),
+         ("release policy", run_release_policy_check),
+@@ -51,6 +51,9 @@ def main() -> int:
+         ("export smoke", run_export_smoke),
+         ("deterministic 50-target soak", run_soak_smoke),
+     ]
++    checks = []
++    if not args.exe:
++        checks.extend(source_checks)
+     if args.live:
+         checks.append(("live network smoke", run_live_smoke))
+     for index, target in enumerate(args.target, start=1):
+diff --git a/tests/test_verify_release.py b/tests/test_verify_release.py
+index 99e4aad..0306e3c 100644
+--- a/tests/test_verify_release.py
++++ b/tests/test_verify_release.py
+@@ -117,6 +117,26 @@ def test_run_pytest_uses_release_timeout(monkeypatch) -> None:
+     assert verify_release.PYTEST_TIMEOUT_SECONDS >= 600
+ 
+ 
++def test_main_runs_source_checks_by_default(monkeypatch) -> None:
++    calls: list[str] = []
++
++    _stub_release_checks(monkeypatch, calls)
++    monkeypatch.setattr(verify_release.sys, "argv", ["verify_release.py"])
++
++    assert verify_release.main() == 0
++    assert calls == ["pytest", "compileall", "policy", "qt", "export", "soak"]
++
++
++def test_main_exe_mode_runs_packaged_smoke_without_source_checks(monkeypatch) -> None:
++    calls: list[str] = []
++
++    _stub_release_checks(monkeypatch, calls)
++    monkeypatch.setattr(verify_release.sys, "argv", ["verify_release.py", "--exe"])
++
++    assert verify_release.main() == 0
++    assert calls == ["exe"]
++
++
+ def test_run_soak_smoke_uses_platform_script_path(monkeypatch) -> None:
+     calls = []
+ 
+@@ -207,6 +227,16 @@ class _ErrorWorker:
+         self.error_message.emit("simulated failure")
+ 
+ 
++def _stub_release_checks(monkeypatch, calls: list[str]) -> None:
++    monkeypatch.setattr(verify_release, "run_pytest", lambda: calls.append("pytest"))
++    monkeypatch.setattr(verify_release, "run_compileall", lambda: calls.append("compileall"))
++    monkeypatch.setattr(verify_release, "run_release_policy_check", lambda: calls.append("policy"))
++    monkeypatch.setattr(verify_release, "run_qt_smoke", lambda: calls.append("qt"))
++    monkeypatch.setattr(verify_release, "run_export_smoke", lambda: calls.append("export"))
++    monkeypatch.setattr(verify_release, "run_soak_smoke", lambda: calls.append("soak"))
++    monkeypatch.setattr(verify_release, "run_exe_smoke", lambda: calls.append("exe"))
++
++
+ def _write_policy_tree(
+     root,
+     *,
