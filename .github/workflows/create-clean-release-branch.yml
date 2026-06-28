@@ -37,15 +37,26 @@ jobs:
           CLEAN_BRANCH: stability/windows-release-automation-clean-20260629
         run: |
           $ErrorActionPreference = 'Stop'
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          function Invoke-Checked {
+            param(
+              [Parameter(Mandatory = $true)][string]$Command,
+              [Parameter(Mandatory = $true)][string[]]$Arguments
+            )
+            & $Command @Arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "Command failed: $Command $($Arguments -join ' ')"
+            }
+          }
+
+          Invoke-Checked git @("config", "user.name", "github-actions[bot]")
+          Invoke-Checked git @("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
 
           $patchDir = Join-Path $env:RUNNER_TEMP "validation-patches"
           New-Item -ItemType Directory -Force -Path $patchDir | Out-Null
           Copy-Item -Recurse -Force .github\validation\* $patchDir
 
-          git fetch origin main
-          git switch --detach origin/main
+          Invoke-Checked git @("fetch", "origin", "main")
+          Invoke-Checked git @("switch", "--detach", "origin/main")
 
           $parts = Get-ChildItem -Path $patchDir -Filter 'local-release-changes.patch.b64.part*' | Sort-Object Name
           if ($parts.Count -ne 6) {
@@ -66,6 +77,9 @@ jobs:
           import gzip
           Path("local-release-changes.patch").write_bytes(gzip.decompress(Path("local-release-changes.patch.gz").read_bytes()))
           '@ | python -
+          if ($LASTEXITCODE -ne 0) {
+            throw "Command failed: python decompress local-release-changes.patch.gz"
+          }
 
           $patches = @(
             "local-release-changes.patch",
@@ -76,14 +90,14 @@ jobs:
             (Join-Path $patchDir "release-automation-workflow-files.patch")
           )
           foreach ($patch in $patches) {
-            git apply --check $patch
-            git apply $patch
+            Invoke-Checked git @("apply", "--check", $patch)
+            Invoke-Checked git @("apply", $patch)
           }
 
           Remove-Item -Force local-release-changes.patch, local-release-changes.patch.gz -ErrorAction SilentlyContinue
-          git diff --check
-          git add -A
-          git diff --cached --stat
-          git commit -m "Automate Windows release publishing"
-          git push --force origin "HEAD:$env:CLEAN_BRANCH"
-          git rev-parse HEAD
+          Invoke-Checked git @("diff", "--check")
+          Invoke-Checked git @("add", "-A")
+          Invoke-Checked git @("diff", "--cached", "--stat")
+          Invoke-Checked git @("commit", "-m", "Automate Windows release publishing")
+          Invoke-Checked git @("push", "--force", "origin", "HEAD:refs/heads/$($env:CLEAN_BRANCH)")
+          Invoke-Checked git @("rev-parse", "HEAD")
