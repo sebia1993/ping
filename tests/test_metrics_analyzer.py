@@ -45,6 +45,31 @@ def test_focus_snapshot_builder_recalculates_selected_range() -> None:
     assert focus.target_snapshot.loss_percent == 50.0
 
 
+def test_focus_snapshot_builder_uses_latest_observation_without_materializing_groups() -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+
+    def observations():
+        yield HopObservation(now + timedelta(seconds=20), 1, "192.0.2.1", "gw", True, 30.0, STATUS_OK)
+        yield HopObservation(now, 1, "192.0.2.1", "gw", True, 10.0, STATUS_OK)
+        yield HopObservation(now + timedelta(seconds=10), 1, "192.0.2.1", "gw", False, None, STATUS_TIMEOUT)
+        yield HopObservation(now + timedelta(seconds=30), 0, "198.51.100.10", "Target", False, None, STATUS_TIMEOUT, True)
+        yield HopObservation(now + timedelta(seconds=25), 0, "198.51.100.10", "Target", True, 20.0, STATUS_OK, True)
+
+    focus = build_focus_snapshots(observations(), current_target="198.51.100.10")
+
+    hop = focus.hop_snapshots[0]
+    assert hop.sent == 3
+    assert hop.received == 2
+    assert hop.current_latency_ms == 30.0
+    assert hop.status == STATUS_OK
+    assert hop.avg_latency_ms == 20.0
+    assert round(hop.jitter_ms or 0, 3) == 14.142
+    assert focus.target_snapshot is not None
+    assert focus.target_snapshot.sent == 2
+    assert focus.target_snapshot.current_latency_ms is None
+    assert focus.target_snapshot.status == STATUS_TIMEOUT
+
+
 def test_analyzer_flags_isolated_middle_hop_loss_as_icmp_limit() -> None:
     snapshots = [
         _snapshot(1, loss=0, status=STATUS_OK),

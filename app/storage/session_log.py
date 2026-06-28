@@ -23,7 +23,7 @@ OBSERVATION_HEADERS = [
     "latency_ms",
     "status",
 ]
-SEGMENT_INDEX_VERSION = 1
+SEGMENT_INDEX_VERSION = 2
 SEGMENT_INDEX_IO_RETRY_ATTEMPTS = 5
 SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
 
@@ -76,12 +76,17 @@ class SessionLogWriter:
             self._record_segment_observation(observation)
             wrote = True
         if wrote:
-            self._handle.flush()
+            _flush_with_retries(self._handle)
             self._write_segment_index()
 
     def close(self) -> None:
-        self._handle.close()
-        self._write_segment_index()
+        if self._handle.closed:
+            return
+        try:
+            _flush_with_retries(self._handle)
+            self._write_segment_index()
+        finally:
+            _close_handle_suppressing_errors(self._handle)
 
     def __enter__(self) -> "SessionLogWriter":
         return self
@@ -90,7 +95,7 @@ class SessionLogWriter:
         self.close()
 
     def _open_segment(self, path: Path) -> None:
-        self._handle = path.open("w", newline="", encoding="utf-8")
+        self._handle = _open_csv_write_handle(path)
         self._writer = csv.writer(self._handle)
         self._writer.writerow(OBSERVATION_HEADERS)
         self._segment_count = 0
@@ -99,7 +104,8 @@ class SessionLogWriter:
     def _rotate_if_needed(self) -> None:
         if self.max_rows_per_file is None or self._segment_count < self.max_rows_per_file:
             return
-        self._handle.close()
+        _flush_with_retries(self._handle)
+        _close_handle_suppressing_errors(self._handle)
         self._segment_index += 1
         rotated_path = self.path.with_name(f"{self.path.stem}.part{self._segment_index:03d}{self.path.suffix}")
         self.paths.append(rotated_path)
@@ -126,6 +132,7 @@ class SessionLogWriter:
                     "start": segment.start.isoformat(timespec="seconds") if segment.start else "",
                     "end": segment.end.isoformat(timespec="seconds") if segment.end else "",
                     "rows": segment.rows,
+                    **_segment_file_state(segment.path),
                 }
                 for segment in self._segment_metadata
             ],
@@ -171,7 +178,7 @@ def session_log_read_summary(path: Path | None) -> SessionLogReadSummary:
     skipped_row_files: list[Path] = []
     seen_skipped_files: set[Path] = set()
     for segment_path in session_log_segments(path):
-        with segment_path.open("r", newline="", encoding="utf-8") as handle:
+        with _open_csv_read_handle(segment_path) as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 try:
@@ -194,7 +201,7 @@ def iter_observations(path: Path | None) -> Iterator[HopObservation]:
     if path is None:
         return
     for segment_path in session_log_segments(path):
-        with segment_path.open("r", newline="", encoding="utf-8") as handle:
+        with _open_csv_read_handle(segment_path) as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 try:
@@ -237,7 +244,7 @@ def session_log_bounds(path: Path | None) -> tuple[datetime, datetime] | None:
 
 
 def iter_observations_from_segment(path: Path) -> Iterator[HopObservation]:
-    with path.open("r", newline="", encoding="utf-8") as handle:
+    with _open_csv_read_handle(path) as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             try:
@@ -276,7 +283,7 @@ def _read_segment_index_file(path: Path) -> list[SessionLogSegment] | None:
     if not index_path.exists():
         return None
     try:
-        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_text_with_retries(index_path))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or payload.get("version") != SEGMENT_INDEX_VERSION:
@@ -291,25 +298,29 @@ def _read_segment_index_file(path: Path) -> list[SessionLogSegment] | None:
     current_paths = session_log_segments(path)
     if [segment.path for segment in indexed] != current_paths:
         return None
+    if not _segment_file_states_match(path.parent, rows):
+        return None
     return indexed
 
 
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     # 장시간 측정 중 전원 종료나 파일 잠금이 생겨도 기존 segment index가 반쯤 깨지지 않게 교체합니다.
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        delete=False,
-        dir=path.parent,
-        encoding="utf-8",
-        newline="",
-    ) as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-        temp_path = Path(handle.name)
+    temp_path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            delete=False,
+            dir=path.parent,
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
         _replace_with_retries(temp_path, path)
-    except OSError:
-        temp_path.unlink(missing_ok=True)
+    except Exception:
+        if temp_path is not None:
+            _unlink_temp_path(temp_path)
         raise
 
 
@@ -321,12 +332,66 @@ def _replace_path(source: Path, target: Path) -> Path:
     return source.replace(target)
 
 
+def _unlink_temp_path(path: Path) -> None:
+    try:
+        _unlink_path(path)
+    except OSError:
+        pass
+
+
+def _unlink_path(path: Path) -> None:
+    path.unlink()
+
+
+def _read_text_with_retries(path: Path) -> str:
+    return _run_io_with_retries(lambda: _read_text_path(path))
+
+
+def _read_text_path(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _open_csv_read_handle(path: Path):
+    return _run_io_with_retries(lambda: _open_csv_read_path(path))
+
+
+def _open_csv_read_path(path: Path):
+    return path.open("r", newline="", encoding="utf-8")
+
+
+def _open_csv_write_handle(path: Path):
+    return _run_io_with_retries(lambda: _open_csv_write_path(path))
+
+
+def _open_csv_write_path(path: Path):
+    return path.open("w", newline="", encoding="utf-8")
+
+
+def _flush_with_retries(handle) -> None:
+    _run_io_with_retries(lambda: _flush_handle(handle))
+
+
+def _flush_handle(handle) -> None:
+    handle.flush()
+
+
+def _close_handle_suppressing_errors(handle) -> None:
+    try:
+        _close_handle(handle)
+    except OSError:
+        pass
+
+
+def _close_handle(handle) -> None:
+    handle.close()
+
+
 def _run_io_with_retries(operation):
     last_error: OSError | None = None
     for attempt in range(SEGMENT_INDEX_IO_RETRY_ATTEMPTS):
         try:
             return operation()
-        except PermissionError as exc:
+        except OSError as exc:
             last_error = exc
             if attempt == SEGMENT_INDEX_IO_RETRY_ATTEMPTS - 1:
                 break
@@ -348,6 +413,25 @@ def _segment_from_index_row(root: Path, row: object) -> SessionLogSegment:
         end=datetime.fromisoformat(end_value) if end_value else None,
         rows=int(row.get("rows") or 0),
     )
+
+
+def _segment_file_state(path: Path) -> dict[str, int]:
+    stat_result = path.stat()
+    return {"size": stat_result.st_size, "mtime_ns": stat_result.st_mtime_ns}
+
+
+def _segment_file_states_match(root: Path, rows: list[object]) -> bool:
+    for row in rows:
+        if not isinstance(row, dict):
+            return False
+        try:
+            path = root / str(row["path"])
+            state = _segment_file_state(path)
+            if int(row["size"]) != state["size"] or int(row["mtime_ns"]) != state["mtime_ns"]:
+                return False
+        except (KeyError, TypeError, ValueError, OSError):
+            return False
+    return True
 
 
 def row_to_observation(row: dict[str, str]) -> HopObservation:

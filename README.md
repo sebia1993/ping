@@ -41,7 +41,8 @@ pytest
 
 ```powershell
 python scripts\verify_release.py
-python scripts\verify_release.py --live --exe
+python scripts\verify_release.py --exe
+python scripts\verify_release.py --live
 ```
 
 사내 게이트웨이 또는 업무 사이트 대상의 현장 검증:
@@ -62,9 +63,15 @@ python scripts\verify_release.py --target <FIELD_TARGET>
 
 ## GitHub Release Publish
 
-로컬 작업을 commit한 뒤 실행합니다. 이 스크립트는 Windows EXE를 빌드하고, 릴리즈 검증을 실행하고,
-`release\` 아래 ZIP 패키지를 만든 뒤 Git tag와 GitHub Release asset을 생성합니다.
-EXE/ZIP은 Git 저장소에 commit하지 않고 GitHub Release 첨부파일로만 올립니다.
+권장 경로는 GitHub Actions의 `Release Windows ZIP` workflow를 `main` 브랜치에서 수동 실행하는 것입니다.
+이 workflow는 Windows EXE를 빌드하고, 릴리즈 검증을 실행하고, `release\` 아래 ZIP 패키지를 만든 뒤
+Git tag와 GitHub Release asset을 생성합니다. ZIP과 함께 SHA256 checksum 파일도 업로드합니다.
+EXE/ZIP/checksum은 Git 저장소에 commit하지 않고 GitHub Release 첨부파일로만 올립니다.
+수동 실행 입력값 `tag`, `title`, `notes`는 선택사항이며, `tag`를 비우면 KST 기준 `vYYYY.MM.DD-HHMMSS`가 자동 생성됩니다.
+배포 전후 확인 절차는 [릴리즈 체크리스트](docs/release_checklist.md)를 따릅니다.
+로컬 `git push` 또는 GitHub CLI 인증이 막히면 [GitHub 인증 설정](docs/github_auth_setup.md)을 먼저 확인합니다.
+
+로컬 Windows PC에서 같은 과정을 실행해야 할 때는 로컬 작업을 commit한 뒤 아래 스크립트를 실행합니다.
 
 Requirements:
 

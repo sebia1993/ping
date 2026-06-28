@@ -248,7 +248,10 @@ class CommandPingRunner:
     def close(self) -> None:
         close = getattr(self._runner, "close", None)
         if close:
-            close()
+            try:
+                close()
+            except Exception:
+                pass
 
     def __enter__(self) -> "CommandPingRunner":
         return self

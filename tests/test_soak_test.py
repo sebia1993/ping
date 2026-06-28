@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import threading
 from argparse import Namespace
 
 import pytest
 
-from scripts.soak_test import EventLoopStats, build_summary, evaluate_summary, parse_args
+from app.storage import atomic_write as atomic_write_module
+from scripts.soak_test import (
+    EventLoopStats,
+    SimulatedPingRunner,
+    build_summary,
+    evaluate_summary,
+    parse_args,
+    write_diagnostics_csv,
+    write_health_csv,
+    write_summary_json,
+)
 
 
 def test_soak_release_profile_sets_fast_fifty_target_defaults() -> None:
@@ -256,6 +267,75 @@ def test_soak_summary_reports_session_log_row_delta(tmp_path) -> None:
     assert summary["session_log_row_delta"] == -4
 
 
+def test_simulated_ping_runner_updates_counters_under_lock() -> None:
+    lock = threading.Lock()
+    calls = _LockCheckedCounter(lock)
+    results = _LockCheckedCounter(lock)
+    runner = SimulatedPingRunner(
+        timeout_ms=1000,
+        timeout_start_index=1,
+        timeout_delay_seconds=0,
+        calls=calls,
+        results=results,
+        counter_lock=lock,
+    )
+
+    runner.ping("198.51.100.1")
+
+    assert calls["198.51.100.1"] == 1
+    assert results["198.51.100.1"] == 1
+
+
+def test_soak_csv_writes_retry_transient_replace_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "diagnostics.csv"
+    attempts = 0
+    original_replace = atomic_write_module._replace_path
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if target == path and attempts < 3:
+            raise OSError("sharing violation")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", flaky_replace)
+
+    write_diagnostics_csv(path, [{"elapsed_seconds": 1.0, "timestamp": "2026-01-01T00:00:00"}])
+
+    assert attempts == 3
+    assert "elapsed_seconds" in path.read_text(encoding="utf-8")
+    assert list(tmp_path.glob(".diagnostics.csv.*")) == []
+
+
+def test_soak_summary_json_preserves_existing_file_after_replace_failure(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "soak_50_targets_20260101_010101.json"
+    path.write_text('{"status":"existing"}', encoding="utf-8")
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+
+    with pytest.raises(PermissionError):
+        write_summary_json(path, {"status": "new"})
+
+    assert path.read_text(encoding="utf-8") == '{"status":"existing"}'
+    assert list(tmp_path.glob(".soak_50_targets_20260101_010101.json.*")) == []
+
+
+def test_soak_health_csv_writes_atomically(tmp_path) -> None:
+    path = tmp_path / "health.csv"
+
+    write_health_csv(path, [{"elapsed_seconds": 1.0, "current_memory_bytes": 1024}])
+
+    assert "current_memory_bytes" in path.read_text(encoding="utf-8")
+
+
 def test_soak_evaluation_rejects_resource_pressure() -> None:
     args = _args()
     summary = _summary(
@@ -352,3 +432,17 @@ def _summary(
         "session_log_rows": session_log_rows,
         "session_log_segments": session_log_segments,
     }
+
+
+class _LockCheckedCounter(dict):
+    def __init__(self, lock: threading.Lock) -> None:
+        super().__init__()
+        self._lock = lock
+
+    def get(self, key, default=None):
+        assert self._lock.locked()
+        return super().get(key, default)
+
+    def __setitem__(self, key, value) -> None:
+        assert self._lock.locked()
+        super().__setitem__(key, value)

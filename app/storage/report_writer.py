@@ -6,6 +6,7 @@ from html import escape
 from pathlib import Path
 
 from app.core.models import MetricSnapshot
+from app.storage.atomic_write import atomic_write_path
 from app.storage.export_annotations import ExportAnnotation
 
 
@@ -24,7 +25,6 @@ def write_text_report(
     annotations: list[ExportAnnotation] | None = None,
     focus_range: tuple[datetime, datetime] | None = None,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = [
         "MultiPingCheck Report",
         f"Target: {target}",
@@ -64,7 +64,7 @@ def write_text_report(
                 status=snapshot.status,
             )
         )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_path(path, lambda temp_path: temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8"))
 
 
 def write_html_report(
@@ -75,7 +75,6 @@ def write_html_report(
     annotations: list[ExportAnnotation] | None = None,
     focus_range: tuple[datetime, datetime] | None = None,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() != ".html":
         path = path.with_suffix(".html")
     html = "\n".join([
@@ -113,7 +112,7 @@ def write_html_report(
         "</body>",
         "</html>",
     ])
-    path.write_text(html + "\n", encoding="utf-8")
+    atomic_write_path(path, lambda temp_path: temp_path.write_text(html + "\n", encoding="utf-8"))
 
 
 def _fmt(value: float | None) -> str:

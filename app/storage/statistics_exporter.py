@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from app.core.models import HopObservation
+from app.storage.atomic_write import atomic_write_path
 
 
 TIMEZONE_LOCAL = "local"
@@ -154,7 +155,10 @@ def export_statistics_csv(
     options: StatisticsExportOptions | None = None,
 ) -> None:
     rows = grouped_statistics(observations, options)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_path(path, lambda temp_path: _write_statistics_csv(temp_path, rows))
+
+
+def _write_statistics_csv(path: Path, rows: list[StatisticsRow]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         writer.writerow(STATISTICS_HEADERS)
@@ -175,7 +179,6 @@ def export_statistics_xlsx(
         raise RuntimeError("XLSX export requires the openpyxl package.") from exc
 
     rows = grouped_statistics(observations, options)
-    path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
     summary = workbook.active
     summary.title = "Summary"
@@ -197,7 +200,7 @@ def export_statistics_xlsx(
         sheet.append(_statistics_row_values(row))
     _autosize(sheet)
     _autosize(summary)
-    workbook.save(path)
+    atomic_write_path(path, workbook.save)
 
 
 def _statistics_row_values(row: StatisticsRow) -> list[object]:

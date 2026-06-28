@@ -117,6 +117,41 @@ def test_run_pytest_uses_release_timeout(monkeypatch) -> None:
     assert verify_release.PYTEST_TIMEOUT_SECONDS >= 600
 
 
+def test_main_runs_source_checks_by_default(monkeypatch) -> None:
+    calls: list[str] = []
+
+    _stub_release_checks(monkeypatch, calls)
+    monkeypatch.setattr(verify_release.sys, "argv", ["verify_release.py"])
+
+    assert verify_release.main() == 0
+    assert calls == ["pytest", "compileall", "policy", "qt", "export", "soak"]
+
+
+def test_main_exe_mode_runs_packaged_smoke_without_source_checks(monkeypatch) -> None:
+    calls: list[str] = []
+
+    _stub_release_checks(monkeypatch, calls)
+    monkeypatch.setattr(verify_release.sys, "argv", ["verify_release.py", "--exe"])
+
+    assert verify_release.main() == 0
+    assert calls == ["exe"]
+
+
+def test_run_soak_smoke_uses_platform_script_path(monkeypatch) -> None:
+    calls = []
+
+    def fake_run_command(command, *, timeout, env=None):
+        calls.append((command, timeout, env))
+
+    monkeypatch.setattr(verify_release, "run_command", fake_run_command)
+
+    verify_release.run_soak_smoke()
+
+    assert calls
+    assert calls[0][0][1] == str(Path("scripts") / "soak_test.py")
+    assert calls[0][1] == 90
+
+
 def test_field_verification_docs_match_current_graph_controls() -> None:
     text = (Path(__file__).resolve().parents[1] / "docs" / "field_verification.md").read_text(encoding="utf-8")
 
@@ -139,6 +174,50 @@ def test_field_verification_docs_match_current_graph_controls() -> None:
     assert "python scripts\\soak_test.py --profile ui50" in text
     assert "`max_active_threads`" in text
     assert "`max_pending_ping_count`" in text
+
+
+def test_publish_release_notes_include_traceable_zip_metadata() -> None:
+    text = (Path(__file__).resolve().parents[1] / "scripts" / "publish_release.ps1").read_text(encoding="utf-8-sig")
+
+    assert "git rev-parse HEAD" in text
+    assert "git rev-parse --short HEAD" not in text
+    assert "- ZIP SHA256: $ZipHash" in text
+    assert "- 기준 커밋 SHA: $Head" in text
+    assert "- 압축 파일: $($ZipItem.Name)" in text
+
+
+def test_release_windows_workflow_matches_publish_contract() -> None:
+    text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release-windows.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "workflow_dispatch:" in text
+    for input_name in ("tag:", "title:", "notes:"):
+        assert input_name in text
+    assert "contents: write" in text
+    assert "runs-on: windows-latest" in text
+    assert "fetch-depth: 0" in text
+    assert 'github.ref_name }}" -ne "main"' in text
+    assert "GH_TOKEN: ${{ github.token }}" in text
+    assert ".\\scripts\\publish_release.ps1 @releaseArgs" in text
+
+
+def test_windows_ci_workflows_keep_fast_and_final_checks_separate() -> None:
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    fast = (root / "windows-fast-check.yml").read_text(encoding="utf-8")
+    final = (root / "windows-release-verify.yml").read_text(encoding="utf-8")
+
+    assert "push:" in fast
+    assert "pull_request:" in fast
+    assert "python scripts\\verify_release.py" in fast
+    assert "build_windows_exe.ps1" not in fast
+
+    assert "workflow_dispatch:" in final
+    assert "push:" not in final
+    assert "pull_request:" not in final
+    assert "python scripts\\verify_release.py" in final
+    assert "build_windows_exe.ps1" in final
+    assert "python scripts\\verify_release.py --exe" in final
 
 
 class _Signal:
@@ -190,6 +269,16 @@ class _ErrorWorker:
 
     def run(self) -> None:
         self.error_message.emit("simulated failure")
+
+
+def _stub_release_checks(monkeypatch, calls: list[str]) -> None:
+    monkeypatch.setattr(verify_release, "run_pytest", lambda: calls.append("pytest"))
+    monkeypatch.setattr(verify_release, "run_compileall", lambda: calls.append("compileall"))
+    monkeypatch.setattr(verify_release, "run_release_policy_check", lambda: calls.append("policy"))
+    monkeypatch.setattr(verify_release, "run_qt_smoke", lambda: calls.append("qt"))
+    monkeypatch.setattr(verify_release, "run_export_smoke", lambda: calls.append("export"))
+    monkeypatch.setattr(verify_release, "run_soak_smoke", lambda: calls.append("soak"))
+    monkeypatch.setattr(verify_release, "run_exe_smoke", lambda: calls.append("exe"))
 
 
 def _write_policy_tree(

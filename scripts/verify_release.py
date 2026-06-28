@@ -43,7 +43,7 @@ def main() -> int:
 
     # 기본 검증은 외부 네트워크 없이도 반복 가능해야 합니다.
     # 실제 인터넷 ping은 환경에 따라 막힐 수 있으므로 --live를 줄 때만 실행합니다.
-    checks = [
+    source_checks = [
         ("unit tests", run_pytest),
         ("compileall", run_compileall),
         ("release policy", run_release_policy_check),
@@ -51,6 +51,9 @@ def main() -> int:
         ("export smoke", run_export_smoke),
         ("deterministic 50-target soak", run_soak_smoke),
     ]
+    checks = []
+    if not args.exe:
+        checks.extend(source_checks)
     if args.live:
         checks.append(("live network smoke", run_live_smoke))
     for index, target in enumerate(args.target, start=1):
@@ -195,7 +198,7 @@ def run_soak_smoke() -> None:
         run_command(
             [
                 sys.executable,
-                "scripts\\soak_test.py",
+                str(Path("scripts") / "soak_test.py"),
                 "--profile",
                 "release",
                 "--output-dir",

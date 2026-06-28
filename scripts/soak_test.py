@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, PingResult
+from app.storage.atomic_write import atomic_write_path
 from app.storage.session_log import iter_observations, session_log_segment_index
 from app.ui.worker import TRACE_REFRESH_SECONDS, MeasurementWorker
 
@@ -312,6 +313,7 @@ def main() -> int:
     session_log_paths: list[str] = []
     ping_calls: dict[str, int] = {}
     ping_results: dict[str, int] = {}
+    ping_counter_lock = threading.Lock()
     # 앞쪽 일부 IP는 정상 응답, 뒤쪽 IP는 timeout으로 만듭니다.
     # 예를 들어 targets=50, timeout_ratio=0.8이면 대략 40개가 timeout입니다.
     timeout_start_index = max(1, int(args.targets * (1 - args.timeout_ratio)) + 1)
@@ -324,6 +326,7 @@ def main() -> int:
             timeout_delay_seconds=args.timeout_delay_seconds,
             calls=ping_calls,
             results=ping_results,
+            counter_lock=ping_counter_lock,
         )
 
     # 실제 앱과 같은 MeasurementWorker를 사용하되, ping/tracert 실행기만 가짜로 바꿉니다.
@@ -434,7 +437,7 @@ def main() -> int:
 
     write_diagnostics_csv(diagnostics_csv_path, diagnostics_rows)
     write_health_csv(health_csv_path, health_rows)
-    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_summary_json(json_path, summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
     return 1 if failures else 0
@@ -569,23 +572,29 @@ class SimulatedPingRunner:
         timeout_delay_seconds: float,
         calls: dict[str, int],
         results: dict[str, int],
+        counter_lock: threading.Lock,
     ) -> None:
         self.timeout_ms = timeout_ms
         self.timeout_start_index = timeout_start_index
         self.timeout_delay_seconds = timeout_delay_seconds
         self.calls = calls
         self.results = results
+        self.counter_lock = counter_lock
 
     def ping(self, target: str) -> PingResult:
-        self.calls[target] = self.calls.get(target, 0) + 1
+        self._increment(self.calls, target)
         target_index = int(target.rsplit(".", 1)[1])
         if target_index >= self.timeout_start_index:
             time.sleep(self.timeout_delay_seconds)
-            self.results[target] = self.results.get(target, 0) + 1
+            self._increment(self.results, target)
             return PingResult(target, False, None, STATUS_TIMEOUT, datetime.now())
         time.sleep(0.01)
-        self.results[target] = self.results.get(target, 0) + 1
+        self._increment(self.results, target)
         return PingResult(target, True, 10.0, STATUS_OK, datetime.now())
+
+    def _increment(self, counters: dict[str, int], target: str) -> None:
+        with self.counter_lock:
+            counters[target] = counters.get(target, 0) + 1
 
 
 def diagnostics_to_row(diagnostics: object, elapsed_seconds: float) -> dict[str, object]:
@@ -794,32 +803,43 @@ def collect_session_log_stats(paths: list[str]) -> dict[str, int]:
 
 
 def write_diagnostics_csv(path: Path, rows: list[dict[str, object]]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        fieldnames = [
-            "elapsed_seconds",
-            "timestamp",
-            "active_ping_count",
-            "pending_ping_count",
-            "timeout_target_count",
-            "backoff_target_count",
-            "log_queue_depth",
-            "average_loop_delay_ms",
-            "tracert_status",
-        ]
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    fieldnames = [
+        "elapsed_seconds",
+        "timestamp",
+        "active_ping_count",
+        "pending_ping_count",
+        "timeout_target_count",
+        "backoff_target_count",
+        "log_queue_depth",
+        "average_loop_delay_ms",
+        "tracert_status",
+    ]
+    atomic_write_path(path, lambda temp_path: _write_csv(temp_path, fieldnames, rows))
 
 
 def write_health_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    fieldnames = [
+        "elapsed_seconds",
+        "current_memory_bytes",
+        "peak_memory_bytes",
+        "active_threads",
+        "event_process_seconds",
+    ]
+    atomic_write_path(path, lambda temp_path: _write_csv(temp_path, fieldnames, rows))
+
+
+def write_summary_json(path: Path, summary: dict[str, Any]) -> None:
+    atomic_write_path(
+        path,
+        lambda temp_path: temp_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        ),
+    )
+
+
+def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
-        fieldnames = [
-            "elapsed_seconds",
-            "current_memory_bytes",
-            "peak_memory_bytes",
-            "active_threads",
-            "event_process_seconds",
-        ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)

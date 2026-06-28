@@ -94,6 +94,7 @@ from app.ui.worker import (
     MeasurementWorker,
 )
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
+from app.storage.atomic_write import atomic_write_path, read_text_with_retries
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.route_log import route_changes_in_range, route_log_path_for_session
 from app.storage.session_index import (
@@ -318,6 +319,20 @@ class MainWindow(QMainWindow):
         self.session_log_bounds_cache_path = None
         self.session_log_bounds_cache = None
 
+    def _session_log_bounds_cached(self) -> tuple[datetime, datetime] | None:
+        if self.session_log_path is None or not self.session_log_path.exists():
+            return None
+        if self.session_log_bounds_cache_path == self.session_log_path:
+            return self.session_log_bounds_cache
+        try:
+            bounds = session_log_bounds(self.session_log_path)
+        except OSError as exc:
+            self.status_label.setText(_session_log_read_error_message(self.session_log_path, exc))
+            return None
+        self.session_log_bounds_cache_path = self.session_log_path
+        self.session_log_bounds_cache = bounds
+        return bounds
+
     def _remember_live_graph_observations(self, observations: list[HopObservation]) -> None:
         if not observations:
             return
@@ -404,18 +419,7 @@ class MainWindow(QMainWindow):
         return min(start, self.live_graph_latest_timestamp), self.live_graph_latest_timestamp
 
     def _session_log_start_for_live_graph(self) -> datetime | None:
-        if self.session_log_path is None:
-            return None
-        if not self.session_log_path.exists():
-            return None
-        if (
-            self.session_log_bounds_cache_path == self.session_log_path
-            and self.session_log_bounds_cache is not None
-        ):
-            return self.session_log_bounds_cache[0]
-        bounds = session_log_bounds(self.session_log_path)
-        self.session_log_bounds_cache_path = self.session_log_path
-        self.session_log_bounds_cache = bounds
+        bounds = self._session_log_bounds_cached()
         return bounds[0] if bounds is not None else None
 
     def _should_use_live_graph_cache(self) -> bool:
@@ -1118,9 +1122,8 @@ class MainWindow(QMainWindow):
         if path.suffix.lower() != ".json":
             path = path.with_suffix(".json")
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
             preset = self._target_group_preset(targets, name=path.stem, source=source)
-            path.write_text(json.dumps(preset, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_json_atomic(path, preset)
         except OSError as exc:
             QMessageBox.warning(self, "대상 그룹", str(exc))
             self.status_label.setText(str(exc))
@@ -1138,7 +1141,7 @@ class MainWindow(QMainWindow):
             return
         path = Path(selected)
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_with_retries(path, encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("대상 그룹 JSON은 객체 형식이어야 합니다.")
             targets = _target_group_targets(data)
@@ -1725,6 +1728,7 @@ class MainWindow(QMainWindow):
         self.target_snapshot = self._target_snapshot_for_address(self.current_target) or target_snapshot
         self.analysis = analyze_path(self.snapshots, self.target_snapshot) if self.target_snapshot is not target_snapshot else list(analysis)
         self.observations = list(observations)
+        self._reset_session_log_bounds_cache()
         self._remember_live_graph_observations(self.observations)
         self.target_history = self._target_history_from_observations(self.observations) or list(target_history)
         self._record_metric_alerts()
@@ -1999,7 +2003,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("포커스와 그래프 범위를 현재 시점으로 되돌렸습니다.")
 
     def _timeline_end_time(self) -> datetime | None:
-        bounds = session_log_bounds(self.session_log_path)
+        bounds = self._session_log_bounds_cached()
         if bounds is not None:
             return bounds[1]
         timestamps = [observation.timestamp for observation in [*self.observations, *self.target_history]]
@@ -2007,9 +2011,13 @@ class MainWindow(QMainWindow):
 
     def _observations_for_range(self, start: datetime, end: datetime) -> list[HopObservation]:
         if self.session_log_path is not None:
-            observations = list(iter_observations_in_range(self.session_log_path, start, end))
-            if observations:
-                return observations
+            try:
+                observations = list(iter_observations_in_range(self.session_log_path, start, end))
+            except OSError as exc:
+                self.status_label.setText(_session_log_read_error_message(self.session_log_path, exc))
+            else:
+                if observations:
+                    return observations
         return observations_in_range(self.observations, start, end)
 
     def _target_history_from_observations(self, observations: list[HopObservation]) -> list[HopObservation]:
@@ -2042,7 +2050,7 @@ class MainWindow(QMainWindow):
                 return self._live_graph_observation_list()
             start, end = visible_range
             return self._live_graph_observations_in_range(start, end)
-        if self.session_log_path is not None and session_log_bounds(self.session_log_path) is not None:
+        if self.session_log_path is not None and self._session_log_bounds_cached() is not None:
             visible_range = self._main_graph_visible_time_range()
             if visible_range is None:
                 return self.observations
@@ -2556,7 +2564,7 @@ class MainWindow(QMainWindow):
         if self._should_use_live_graph_cache():
             return self._live_graph_data_bounds()
         if self.timeline_range is None and self.focus_range is None:
-            log_bounds = session_log_bounds(self.session_log_path)
+            log_bounds = self._session_log_bounds_cached()
             if log_bounds is not None:
                 live_bounds = _observation_bounds(self.observations)
                 if live_bounds is None:
@@ -2948,9 +2956,8 @@ class MainWindow(QMainWindow):
         if path.suffix.lower() != ".json":
             path = path.with_suffix(".json")
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
             preset = self._alert_rule_preset(name=path.stem)
-            path.write_text(json.dumps(preset, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_json_atomic(path, preset)
         except OSError as exc:
             QMessageBox.warning(self, "알림 프리셋", str(exc))
             self.status_label.setText(str(exc))
@@ -2968,7 +2975,7 @@ class MainWindow(QMainWindow):
             return
         path = Path(selected)
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_with_retries(path, encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("알림 프리셋 JSON은 객체 형식이어야 합니다.")
             _validate_alert_rule_preset(data)
@@ -3458,7 +3465,7 @@ class MainWindow(QMainWindow):
             self.session_index_store.recover_stale_active_sessions(
                 stale_after=timedelta(seconds=STALE_ACTIVE_SESSION_RECOVERY_SECONDS)
             )
-            self.session_index_store.retry_pending_deletions()
+            self.session_index_store.retry_pending_deletions(failed_only=True)
             self.session_index_store.reconcile_missing_session_files()
         sessions = self.session_index_store.list_sessions()
         filtered_sessions = self._filtered_session_records(sessions)
@@ -3529,7 +3536,7 @@ class MainWindow(QMainWindow):
         return self._filtered_session_records(sessions)[:SESSION_MANAGER_DISPLAY_LIMIT]
 
     def refresh_saved_sessions(self) -> None:
-        removed_pending = self.session_index_store.retry_pending_deletions()
+        removed_pending = self.session_index_store.retry_pending_deletions(failed_only=True)
         self.session_index_store.recover_missing_sessions()
         self.session_index_store.reconcile_session_log_metadata()
         self._sync_sessions_box()
@@ -3644,8 +3651,11 @@ class MainWindow(QMainWindow):
         path = self._select_save_path("session.csv", "CSV 파일 (*.csv)", target=record.target)
         if not path:
             return
-        observations = list(iter_observations(record.sample_path))
-        snapshot_set = build_focus_snapshots(observations, current_target=record.target)
+        try:
+            snapshot_set = build_focus_snapshots(iter_observations(record.sample_path), current_target=record.target)
+        except OSError as exc:
+            self.status_label.setText(_session_log_read_error_message(record.sample_path, exc))
+            return
         snapshots = [*snapshot_set.hop_snapshots, *snapshot_set.target_snapshots]
         analysis = analyze_path(snapshot_set.hop_snapshots, snapshot_set.target_snapshot)
         self.export_worker = ExportWorker(
@@ -3691,7 +3701,14 @@ class MainWindow(QMainWindow):
     ) -> tuple[Path, int]:
         if path.suffix.lower() != ".zip":
             path = path.with_suffix(".zip")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        file_count = atomic_write_path(path, lambda temp_path: self._write_visible_sessions_zip_file(temp_path, records))
+        return path, file_count
+
+    def _write_visible_sessions_zip_file(
+        self,
+        path: Path,
+        records: list[TraceSessionRecord],
+    ) -> int:
         manifest_buffer = io.StringIO()
         fieldnames = [
             "session_id",
@@ -3747,7 +3764,7 @@ class MainWindow(QMainWindow):
                     }
                 )
             archive.writestr("session_manifest.csv", manifest_buffer.getvalue())
-        return path, file_count
+        return file_count
 
     def delete_selected_session(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -3838,7 +3855,11 @@ class MainWindow(QMainWindow):
             reconciled = []
         if reconciled:
             record = reconciled[0]
-        observations = list(iter_observations(record.sample_path))
+        try:
+            observations = list(iter_observations(record.sample_path))
+        except OSError as exc:
+            self.status_label.setText(_session_log_read_error_message(record.sample_path, exc))
+            return
         self.current_target = record.target
         self.current_targets = [record.target]
         self.target_aliases = {}
@@ -3866,7 +3887,7 @@ class MainWindow(QMainWindow):
         self.main_graph_live_end_time = None
         self._clear_focus_state()
         self._clear_timeline_state()
-        bounds = session_log_bounds(self.session_log_path)
+        bounds = self._session_log_bounds_cached()
         if bounds is not None:
             self._load_route_changes_for_range(*bounds)
         self._load_saved_alert_actions()
@@ -4099,7 +4120,7 @@ class MainWindow(QMainWindow):
         )
         try:
             saved_path = self._save_graph_png(path, scope=scope)
-        except RuntimeError as exc:
+        except (OSError, RuntimeError) as exc:
             QMessageBox.warning(self, "내보내기 오류", str(exc))
             self.status_label.setText(str(exc))
             return
@@ -4108,12 +4129,10 @@ class MainWindow(QMainWindow):
     def _save_graph_png(self, path: Path, *, scope: str = GRAPH_PNG_SCOPE_TIMELINE) -> Path:
         if path.suffix.lower() != ".png":
             path = path.with_suffix(".png")
-        path.parent.mkdir(parents=True, exist_ok=True)
         pixmap = self._graph_png_pixmap(scope)
         if pixmap.isNull():
             raise RuntimeError(f"PNG 캡처 실패: {path}")
-        if not pixmap.save(str(path), "PNG"):
-            raise RuntimeError(f"PNG 저장 실패: {path}")
+        _write_png_atomic(path, pixmap)
         return path
 
     def _graph_png_pixmap(self, scope: str) -> QPixmap:
@@ -4576,19 +4595,50 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self._closing:
-            super().closeEvent(event)
+            if self._shutdown_threads_still_running():
+                self.status_label.setText("종료 대기 중입니다. 실행 중인 작업이 끝나면 다시 종료할 수 있습니다.")
+                event.ignore()
+                return
+            self._finish_close_event(event)
             return
         self._closing = True
         if self._graph_render_timer.isActive():
             self._graph_render_timer.stop()
-        if self.worker and self.worker.isRunning():
-            self.worker.request_stop()
-            self.worker.wait(3000)
-        if self.export_worker and self.export_worker.isRunning():
-            self.export_worker.wait(3000)
+        if not self._wait_for_measurement_shutdown_on_close():
+            event.ignore()
+            return
+        if not self._wait_for_export_shutdown_on_close():
+            event.ignore()
+            return
+        self._finish_close_event(event)
+
+    def _finish_close_event(self, event) -> None:
         if self.graph_detail_window is not None:
             self.graph_detail_window.close()
         super().closeEvent(event)
+
+    def _shutdown_threads_still_running(self) -> bool:
+        return bool(
+            (self.worker and self.worker.isRunning())
+            or (self.export_worker and self.export_worker.isRunning())
+        )
+
+    def _wait_for_measurement_shutdown_on_close(self) -> bool:
+        if not self.worker or not self.worker.isRunning():
+            return True
+        self.worker.request_stop()
+        if self.worker.wait(3000) or not self.worker.isRunning():
+            return True
+        self.status_label.setText("측정 작업 종료를 기다리는 중입니다. 종료가 완료되면 다시 닫으세요.")
+        return False
+
+    def _wait_for_export_shutdown_on_close(self) -> bool:
+        if not self.export_worker or not self.export_worker.isRunning():
+            return True
+        if self.export_worker.wait(3000) or not self.export_worker.isRunning():
+            return True
+        self.status_label.setText("내보내기 저장이 끝날 때까지 종료를 보류합니다.")
+        return False
 
 
 def _panel(name: str) -> QFrame:
@@ -4681,6 +4731,10 @@ def _all_targets_summary_line(snapshots: list[MetricSnapshot], *, total_count: i
     max_latency_text = f"{fmt_ms(max_latency)} ms" if max_latency is not None else "-"
     parts.extend([f"최대 손실 {worst_loss:.1f}%", f"최대 지연 {max_latency_text}"])
     return " | ".join(parts)
+
+
+def _session_log_read_error_message(path: Path, exc: OSError) -> str:
+    return f"세션 로그를 읽을 수 없습니다: {path} ({type(exc).__name__}: {exc})"
 
 
 def _alert_severity_text(severity: str) -> str:
@@ -4868,6 +4922,19 @@ ALERT_ACTION_ENABLED_KEYS = (
 )
 ALERT_ACTION_PHASE_KEYS = ("start", "end")
 ALERT_EXTERNAL_ACTION_KEYS = ("email", "rest", "executable")
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    atomic_write_path(path, lambda temp_path: temp_path.write_text(text, encoding="utf-8"))
+
+
+def _write_png_atomic(path: Path, pixmap) -> None:
+    def write_temp(temp_path: Path) -> None:
+        if not pixmap.save(str(temp_path), "PNG"):
+            raise RuntimeError(f"PNG 저장 실패: {path}")
+
+    atomic_write_path(path, write_temp)
 
 
 def _alert_preset_summary(rules: object, actions: object) -> dict[str, object]:

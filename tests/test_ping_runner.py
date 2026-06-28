@@ -58,6 +58,28 @@ def test_command_ping_runner_can_use_subprocess_fallback() -> None:
     assert isinstance(runner._runner, SubprocessPingRunner)
 
 
+def test_command_ping_runner_close_suppresses_inner_close_error() -> None:
+    runner = CommandPingRunner(1000, prefer_native=False)
+    inner = _CloseFailingRunner()
+    runner._runner = inner
+
+    runner.close()
+    runner.close()
+
+    assert inner.close_calls == 2
+
+
+def test_command_ping_runner_context_exit_suppresses_inner_close_error() -> None:
+    runner = CommandPingRunner(1000, prefer_native=False)
+    inner = _CloseFailingRunner()
+    runner._runner = inner
+
+    with runner:
+        pass
+
+    assert inner.close_calls == 1
+
+
 def test_tcp_connect_runner_reports_open_port_reachable(monkeypatch) -> None:
     calls: list[tuple[tuple[str, int], float]] = []
 
@@ -110,7 +132,7 @@ def test_tcp_connect_runner_maps_timeout_and_unreachable(monkeypatch) -> None:
 def test_icmp_ping_runner_reuses_handle(monkeypatch) -> None:
     fake_dll = _FakeIcmpDll()
     monkeypatch.setattr(ping_runner.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(ping_runner.ctypes, "WinDLL", lambda *_args, **_kwargs: fake_dll)
+    monkeypatch.setattr(ping_runner.ctypes, "WinDLL", lambda *_args, **_kwargs: fake_dll, raising=False)
 
     runner = IcmpPingRunner(1000)
 
@@ -139,6 +161,18 @@ class _FakeSocket:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         return
+
+
+class _CloseFailingRunner:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def ping(self, target: str):
+        raise AssertionError("ping should not be called")
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise PermissionError("close locked")
 
 
 class _FakeIcmpDll:
