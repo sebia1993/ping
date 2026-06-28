@@ -44,27 +44,18 @@ jobs:
           git fetch origin main
           git switch --detach origin/main
 
-          python - <<'PY'
-          from pathlib import Path
-          import base64
-          import gzip
-          import hashlib
-          import os
-
-          patch_dir = Path(os.environ["RUNNER_TEMP"]) / "validation-patches"
-          parts = sorted(patch_dir.glob("local-release-changes.patch.b64.part*"))
-          if len(parts) != 6:
-              raise SystemExit(f"Expected 6 patch chunks, found {len(parts)}")
-          payload = "".join(path.read_text().strip() for path in parts)
-          raw_sha = hashlib.sha256(payload.encode("ascii")).hexdigest()
-          if raw_sha == "f0e084c94dd78a4f850143d5b3e0850a349aaf2729dd61cc6d52021a2a7c8ca6":
-              payload = payload[:28821] + "j" + payload[28821:]
-          sha = hashlib.sha256(payload.encode("ascii")).hexdigest()
-          expected = "a215255bbc5510e2375f897bde329cc18ab605969df18f2ced4b0eef056f57dc"
-          if sha != expected:
-              raise SystemExit(f"Patch payload SHA mismatch: {sha}")
-          Path("local-release-changes.patch").write_bytes(gzip.decompress(base64.b64decode(payload)))
-          PY
+          cat "$patch_dir"/local-release-changes.patch.b64.part* > local-release-changes.patch.b64
+          raw_sha="$(sha256sum local-release-changes.patch.b64 | awk '{print $1}')"
+          if [ "$raw_sha" = "f0e084c94dd78a4f850143d5b3e0850a349aaf2729dd61cc6d52021a2a7c8ca6" ]; then
+            python3 -c 'from pathlib import Path; p=Path("local-release-changes.patch.b64"); s=p.read_text().strip(); p.write_text(s[:28821] + "j" + s[28821:])'
+          fi
+          sha="$(sha256sum local-release-changes.patch.b64 | awk '{print $1}')"
+          expected="a215255bbc5510e2375f897bde329cc18ab605969df18f2ced4b0eef056f57dc"
+          if [ "$sha" != "$expected" ]; then
+            echo "Patch payload SHA mismatch: $sha"
+            exit 1
+          fi
+          base64 -d local-release-changes.patch.b64 | gzip -d > local-release-changes.patch
 
           patches=(
             "local-release-changes.patch"
@@ -79,7 +70,7 @@ jobs:
             git apply "$patch"
           done
 
-          rm -f local-release-changes.patch
+          rm -f local-release-changes.patch local-release-changes.patch.b64
           git diff --check
           git add -A
           git diff --cached --stat
