@@ -65,6 +65,8 @@ jobs:
           git apply .github\validation\windows-mtime-fix.patch
           git apply --check .github\validation\release-automation-nonworkflow.patch
           git apply .github\validation\release-automation-nonworkflow.patch
+          git apply --check .github\validation\release-automation-followup.patch
+          git apply .github\validation\release-automation-followup.patch
           git status --short
 
       - name: Install dependencies
@@ -104,4 +106,5 @@ jobs:
             local-release-changes.patch
             .github/validation/windows-mtime-fix.patch
             .github/validation/release-automation-nonworkflow.patch
+            .github/validation/release-automation-followup.patch
           if-no-files-found: ignore
