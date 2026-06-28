@@ -63,7 +63,6 @@ jobs:
             "$patch_dir/release-automation-nonworkflow.patch"
             "$patch_dir/release-automation-followup.patch"
             "$patch_dir/release-automation-contract-tests.patch"
-            "$patch_dir/release-automation-workflow-files.patch"
           )
           for patch in "${patches[@]}"; do
             git apply --check "$patch"
