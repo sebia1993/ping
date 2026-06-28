@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import threading
 import time
@@ -262,7 +263,7 @@ class SessionIndexStore:
                 self._write_records(updated)
         return updated_records
 
-    def retry_pending_deletions(self) -> list[TraceSessionRecord]:
+    def retry_pending_deletions(self, *, failed_only: bool = False) -> list[TraceSessionRecord]:
         """파일 잠금 때문에 삭제 예정으로 남은 세션을 다시 정리합니다."""
 
         removed_records: list[TraceSessionRecord] = []
@@ -274,7 +275,7 @@ class SessionIndexStore:
                 if record.state != SESSION_STATE_WILL_DELETE:
                     kept.append(record)
                     continue
-                if SESSION_DELETE_FILES_FAILED_CODE not in record.last_error:
+                if failed_only and SESSION_DELETE_FILES_FAILED_CODE not in record.last_error:
                     kept.append(record)
                     continue
                 _deleted, failures = _delete_session_files_with_failures(record, root=self.path.parent)
@@ -439,7 +440,12 @@ class SessionIndexStore:
         if not recovered:
             return records
         existing_ids = {record.session_id for record in records}
-        missing = [record for record in recovered if record.session_id not in existing_ids]
+        existing_sample_paths = {record.sample_path for record in records}
+        missing = [
+            record
+            for record in recovered
+            if record.session_id not in existing_ids and record.sample_path not in existing_sample_paths
+        ]
         if not missing:
             return records
         merged = [*records, *missing]
@@ -457,24 +463,28 @@ class SessionIndexStore:
             "sessions": [_record_to_row(record) for record in sorted(records, key=lambda item: item.start)],
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            dir=self.path.parent,
-            encoding="utf-8",
-            newline="",
-        ) as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            temp_path = Path(handle.name)
+        temp_path: Path | None = None
         try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                delete=False,
+                dir=self.path.parent,
+                encoding="utf-8",
+                newline="",
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
             _replace_with_retries(temp_path, self.path)
-        except OSError:
-            temp_path.unlink(missing_ok=True)
+        except Exception:
+            if temp_path is not None:
+                _unlink_temp_path(temp_path)
             raise
 
 
 def _session_id(sample_path: Path) -> str:
-    return sample_path.stem
+    path_key = "/".join(sample_path.parts[-3:])
+    digest = hashlib.blake2s(path_key.encode("utf-8"), digest_size=5).hexdigest()
+    return f"{sample_path.stem}-{digest}"
 
 
 def _recover_records_from_logs(root: Path) -> list[TraceSessionRecord]:
@@ -594,12 +604,19 @@ def _replace_path(source: Path, target: Path) -> Path:
     return source.replace(target)
 
 
+def _unlink_temp_path(path: Path) -> None:
+    try:
+        _unlink_path(path)
+    except OSError:
+        pass
+
+
 def _run_io_with_retries(operation):
     last_error: OSError | None = None
     for attempt in range(SESSION_INDEX_IO_RETRY_ATTEMPTS):
         try:
             return operation()
-        except PermissionError as exc:
+        except OSError as exc:
             last_error = exc
             if attempt == SESSION_INDEX_IO_RETRY_ATTEMPTS - 1:
                 break

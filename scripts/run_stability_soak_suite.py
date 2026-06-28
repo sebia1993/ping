@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,10 +13,12 @@ ROOT = Path(__file__).absolute().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.storage.atomic_write import atomic_write_path, read_text_with_retries
 from scripts.soak_test import SOAK_PROFILES, evaluate_summary, parse_args as parse_soak_args
 
 
 DEFAULT_PROFILES = ("long4h", "long8h", "long24h", "ui10", "ui20", "ui50")
+SUMMARY_MTIME_GRACE_SECONDS = 1.0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -158,10 +161,11 @@ def run_profile(profile: str, *, args: argparse.Namespace, run_root: Path) -> di
         result["finished_at"] = datetime.now().isoformat(timespec="seconds")
         return result
 
+    run_started_mtime = time.time()
     completed = subprocess.run(command, cwd=ROOT)
     result["returncode"] = completed.returncode
     result["finished_at"] = datetime.now().isoformat(timespec="seconds")
-    summary = load_latest_summary(profile_output_dir)
+    summary = load_latest_summary(profile_output_dir, since=run_started_mtime)
     if summary is not None:
         result["summary_json"] = _manifest_path_value(summary["path"], run_root=run_root)
         result["failures"] = summary["data"].get("failures", [])
@@ -174,7 +178,7 @@ def run_profile(profile: str, *, args: argparse.Namespace, run_root: Path) -> di
         result["session_log_rows"] = summary["data"].get("session_log_rows")
         result["session_log_min_expected_rows"] = summary["data"].get("session_log_min_expected_rows")
         result["session_log_row_delta"] = summary["data"].get("session_log_row_delta")
-    if completed.returncode == 0 and not result["failures"]:
+    if completed.returncode == 0 and summary is not None and not result["failures"]:
         result["status"] = "passed"
     else:
         result["status"] = "failed"
@@ -192,7 +196,7 @@ def build_profile_command(
 ) -> list[str]:
     command = [
         python_executable,
-        "scripts\\soak_test.py",
+        str(Path("scripts") / "soak_test.py"),
         "--profile",
         profile,
         "--output-dir",
@@ -220,21 +224,24 @@ def profile_thresholds(profile: str) -> dict[str, object]:
     }
 
 
-def load_latest_summary(output_dir: Path) -> dict[str, Any] | None:
-    candidates = sorted(
-        output_dir.glob("soak_*_targets_*.json"),
-        key=lambda path: (path.stat().st_mtime, path.name),
-    )
+def load_latest_summary(output_dir: Path, *, since: float | None = None) -> dict[str, Any] | None:
+    candidates = []
+    for path in output_dir.glob("soak_*_targets_*.json"):
+        mtime = path.stat().st_mtime
+        if since is not None and mtime + SUMMARY_MTIME_GRACE_SECONDS < since:
+            continue
+        candidates.append((mtime, path.name, path))
+    candidates.sort()
     if not candidates:
         return None
-    path = candidates[-1]
-    return {"path": path, "data": json.loads(path.read_text(encoding="utf-8"))}
+    path = candidates[-1][2]
+    return {"path": path, "data": _load_json(path)}
 
 
 def load_manifest(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _load_json(path)
 
 
 def _manifest_path_value(path: Path, *, run_root: Path) -> str:
@@ -261,7 +268,7 @@ def latest_passed_result(
     summary_path = resolve_recorded_path(result.get("summary_json"), manifest_path=manifest_path)
     if summary_path is None or not summary_path.exists():
         return None
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary = _load_json(summary_path)
     if validate_summary(profile, summary):
         return None
     return result
@@ -298,7 +305,7 @@ def validate_manifest_payload(
         if summary_path is None or not summary_path.exists():
             failures.append(f"{profile}: summary JSON missing")
             continue
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary = _load_json(summary_path)
         failures.extend(validate_summary(profile, summary))
     return failures
 
@@ -386,15 +393,21 @@ def build_evidence_report(
 def emit_evidence_report(report: dict[str, Any], *, report_path: Path | None = None) -> None:
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if report_path is not None:
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(text + "\n", encoding="utf-8")
+        atomic_write_path(
+            report_path,
+            lambda temp_path: temp_path.write_text(text + "\n", encoding="utf-8"),
+        )
     print(text)
 
 
 def _load_summary_if_available(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _load_json(path)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(read_text_with_retries(path, encoding="utf-8"))
 
 
 def _evidence_measurements(result: dict[str, Any], summary: dict[str, Any]) -> dict[str, object]:
@@ -530,7 +543,13 @@ def write_manifest(
         ),
         "results": results,
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_path(
+        path,
+        lambda temp_path: temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        ),
+    )
 
 
 if __name__ == "__main__":

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import csv
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation, MetricSnapshot
 from app.core.alerts import AlertEvent
+from app.storage import atomic_write as atomic_write_module
+from app.storage import alert_action_log as alert_action_log_module
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.csv_exporter import export_csv
 from app.storage.excel_exporter import export_xlsx
@@ -42,7 +47,8 @@ from app.storage.statistics_exporter import (
 )
 from app.ui import export_worker as export_worker_module
 from app.ui.export_worker import ExportWorker
-from app.utils.filename import safe_target_name
+from app.utils import filename as filename_module
+from app.utils.filename import default_export_path, safe_target_name
 from app.utils.validators import parse_ipv4_targets, validate_target
 
 
@@ -80,6 +86,28 @@ def test_safe_target_name_removes_unsafe_characters() -> None:
     assert safe_target_name("host/name:443") == "host_name_443"
 
 
+def test_default_export_path_avoids_overwriting_existing_file(tmp_path, monkeypatch) -> None:
+    fixed_now = datetime(2026, 1, 1, 12, 0, 0)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(filename_module, "datetime", FixedDatetime)
+    first = default_export_path("198.51.100.10", "samples.csv", tmp_path)
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_text("existing\n", encoding="utf-8")
+
+    second = default_export_path("198.51.100.10", "samples.csv", tmp_path)
+    second.write_text("existing 2\n", encoding="utf-8")
+    third = default_export_path("198.51.100.10", "samples.csv", tmp_path)
+
+    assert first.name == "network_trace_198.51.100.10_20260101_120000.samples.csv"
+    assert second.name == "network_trace_198.51.100.10_20260101_120000.samples_2.csv"
+    assert third.name == "network_trace_198.51.100.10_20260101_120000.samples_3.csv"
+
+
 def test_export_csv_writes_summary_and_samples(tmp_path) -> None:
     path = tmp_path / "result.csv"
     snapshot = MetricSnapshot(
@@ -115,6 +143,48 @@ def test_export_csv_writes_summary_and_samples(tmp_path) -> None:
     assert "192.168.0.1" in text
     assert "대상IP" in text
     assert "hostname" not in text.lower()
+
+
+def test_export_csv_retries_transient_replace_os_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "result.csv"
+    attempts = 0
+    original_replace = atomic_write_module._replace_path
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if target == path and attempts < 3:
+            raise OSError("sharing violation")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", flaky_replace)
+
+    export_csv(path, [_sample_observation()], [_sample_snapshot()], ["정상"])
+
+    assert attempts == 3
+    assert "Summary" in path.read_text(encoding="utf-8-sig")
+    assert list(tmp_path.glob(".result.csv.*")) == []
+
+
+def test_export_csv_preserves_existing_file_after_persistent_replace_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "result.csv"
+    path.write_text("existing export\n", encoding="utf-8-sig")
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+
+    with pytest.raises(PermissionError):
+        export_csv(path, [_sample_observation()], [_sample_snapshot()], ["new export"])
+
+    assert path.read_text(encoding="utf-8-sig") == "existing export\n"
+    assert list(tmp_path.glob(".result.csv.*")) == []
 
 
 def test_export_csv_writes_evidence_annotations(tmp_path) -> None:
@@ -357,6 +427,143 @@ def test_alert_action_log_round_trips_korean_windows_path_and_text(tmp_path) -> 
     ]
 
 
+def test_alert_action_log_read_skips_embedded_headers_and_blank_rows(tmp_path) -> None:
+    path = tmp_path / "alerts.csv"
+    headers = alert_action_log_module.ALERT_ACTION_HEADERS
+    first = {
+        "timestamp": "2026-01-01T12:00:00",
+        "start": "2026-01-01T12:00:00",
+        "end": "2026-01-01T12:00:00",
+        "source": "alert",
+        "severity": "warning",
+        "title": "지연 경고",
+        "message": "현재 지연 125.0 ms가 기준 100 ms 이상입니다.",
+        "actions": "log",
+    }
+    second = {
+        "timestamp": "2026-01-01T12:01:00",
+        "start": "2026-01-01T12:01:00",
+        "end": "2026-01-01T12:01:00",
+        "source": "route",
+        "severity": "warning",
+        "title": "경로 변경",
+        "message": "Hop 1 changed",
+        "actions": "comment",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        writer.writerow(first)
+        writer.writerow(dict(zip(headers, headers, strict=True)))
+        handle.write("\n")
+        writer.writerow(second)
+
+    rows = read_alert_actions(path)
+
+    assert rows == [first, second]
+
+
+def test_alert_action_log_retries_transient_append_os_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "alerts.csv"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    event = AlertEvent(
+        key="target_latency_100ms",
+        timestamp=now,
+        start=now,
+        end=now,
+        severity="warning",
+        title="지연 경고",
+        message="현재 지연 125.0 ms가 기준 100 ms 이상입니다.",
+    )
+    attempts = 0
+    original_open = alert_action_log_module._open_alert_action_append_path
+
+    def flaky_open(write_path):
+        nonlocal attempts
+        attempts += 1
+        if write_path == path and attempts < 3:
+            raise OSError("sharing violation")
+        return original_open(write_path)
+
+    monkeypatch.setattr(alert_action_log_module, "ALERT_ACTION_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(alert_action_log_module, "_open_alert_action_append_path", flaky_open)
+
+    append_alert_action(path, event, actions=["log"])
+    rows = read_alert_actions(path)
+
+    assert attempts == 3
+    assert rows[0]["title"] == "지연 경고"
+    assert rows[0]["actions"] == "log"
+
+
+def test_alert_action_log_flush_retry_does_not_duplicate_row(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "alerts.csv"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    event = AlertEvent(
+        key="target_latency_100ms",
+        timestamp=now,
+        start=now,
+        end=now,
+        severity="warning",
+        title="지연 경고",
+        message="현재 지연 125.0 ms가 기준 100 ms 이상입니다.",
+    )
+    attempts = 0
+    original_flush = alert_action_log_module._flush_handle
+
+    def flaky_flush(handle):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("sharing violation")
+        return original_flush(handle)
+
+    monkeypatch.setattr(alert_action_log_module, "ALERT_ACTION_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(alert_action_log_module, "_flush_handle", flaky_flush)
+
+    append_alert_action(path, event, actions=["log"])
+    rows = read_alert_actions(path)
+
+    assert attempts == 3
+    assert len(rows) == 1
+    assert rows[0]["title"] == "지연 경고"
+    assert rows[0]["actions"] == "log"
+
+
+def test_alert_action_log_read_retries_transient_open_os_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "alerts.csv"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    event = AlertEvent(
+        key="target_latency_100ms",
+        timestamp=now,
+        start=now,
+        end=now,
+        severity="warning",
+        title="지연 경고",
+        message="현재 지연 125.0 ms가 기준 100 ms 이상입니다.",
+    )
+    append_alert_action(path, event, actions=["log"])
+    attempts = 0
+    original_read_once = alert_action_log_module._read_alert_actions_once
+
+    def flaky_read_once(read_path):
+        nonlocal attempts
+        attempts += 1
+        if read_path == path and attempts < 3:
+            raise OSError("sharing violation")
+        return original_read_once(read_path)
+
+    monkeypatch.setattr(alert_action_log_module, "ALERT_ACTION_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(alert_action_log_module, "_read_alert_actions_once", flaky_read_once)
+
+    rows = read_alert_actions(path)
+
+    assert attempts == 3
+    assert rows[0]["title"] == "지연 경고"
+    assert rows[0]["actions"] == "log"
+
+
 def test_alert_action_log_read_returns_empty_when_file_is_locked(tmp_path, monkeypatch) -> None:
     path = tmp_path / "alerts.csv"
     path.write_text("timestamp,title\n", encoding="utf-8")
@@ -383,6 +590,135 @@ def test_session_log_round_trips_observations(tmp_path) -> None:
     assert len(observations) == 1
     assert observations[0].address == "192.168.0.1"
     assert observations[0].success is True
+
+
+def test_session_log_writer_retries_transient_open_permission_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    attempts = 0
+    original_open = session_log_module._open_csv_write_path
+
+    def flaky_open(write_path):
+        nonlocal attempts
+        attempts += 1
+        if write_path == path and attempts < 3:
+            raise PermissionError("temporarily locked")
+        return original_open(write_path)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_open_csv_write_path", flaky_open)
+
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation()])
+    writer.close()
+
+    assert attempts == 3
+    assert len(read_observations(path)) == 1
+
+
+def test_session_log_writer_retries_transient_flush_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    attempts = 0
+    original_flush = session_log_module._flush_handle
+
+    def flaky_flush(handle):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("temporarily locked")
+        return original_flush(handle)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_flush_handle", flaky_flush)
+
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation()])
+    assert attempts == 3
+    monkeypatch.setattr(session_log_module, "_flush_handle", original_flush)
+    writer.close()
+
+    assert len(read_observations(path)) == 1
+    assert session_log_segment_index_path(path).exists()
+
+
+def test_session_log_writer_close_suppresses_close_error_after_flush_and_index(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    original_close = session_log_module._close_handle
+
+    def close_then_fail(handle):
+        original_close(handle)
+        raise PermissionError("locked during close")
+
+    monkeypatch.setattr(session_log_module, "_close_handle", close_then_fail)
+
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation()])
+    writer.close()
+
+    assert len(read_observations(path)) == 1
+    assert session_log_segment_index_path(path).exists()
+
+
+def test_session_log_writer_close_is_idempotent(tmp_path) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation()])
+
+    writer.close()
+    writer.close()
+
+    assert len(read_observations(path)) == 1
+    assert session_log_segment_index_path(path).exists()
+
+
+def test_session_log_writer_suppresses_close_error_after_rotation_flush(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    rotated_path = tmp_path / "session.part001.csv"
+    original_close = session_log_module._close_handle
+    close_attempts = 0
+
+    def close_then_fail(handle):
+        nonlocal close_attempts
+        close_attempts += 1
+        original_close(handle)
+        if close_attempts == 1:
+            raise PermissionError("locked during close")
+
+    monkeypatch.setattr(session_log_module, "_close_handle", close_then_fail)
+
+    writer = SessionLogWriter(path, max_rows_per_file=1)
+    writer.write_many([_sample_observation(), _sample_observation(address="192.168.0.2")])
+    writer.close()
+
+    assert close_attempts == 2
+    assert writer.paths == [path, rotated_path]
+    assert [observation.address for observation in read_observations(path)] == ["192.168.0.1", "192.168.0.2"]
+    assert session_log_segment_index_path(path).exists()
+
+
+def test_session_log_writer_retries_transient_rotated_segment_open_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    rotated_path = tmp_path / "session.part001.csv"
+    attempts = 0
+    original_open = session_log_module._open_csv_write_path
+
+    def flaky_open(write_path):
+        nonlocal attempts
+        if write_path == rotated_path:
+            attempts += 1
+            if attempts < 3:
+                raise OSError("sharing violation")
+        return original_open(write_path)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_open_csv_write_path", flaky_open)
+
+    writer = SessionLogWriter(path, max_rows_per_file=1)
+    writer.write_many([_sample_observation(), _sample_observation(address="192.168.0.2")])
+    writer.close()
+
+    assert attempts == 3
+    assert writer.paths == [path, rotated_path]
+    assert [observation.address for observation in read_observations(path)] == ["192.168.0.1", "192.168.0.2"]
 
 
 def test_session_log_rotates_and_reads_all_segments(tmp_path) -> None:
@@ -416,6 +752,56 @@ def test_session_log_recovers_valid_rows_after_malformed_tail(tmp_path) -> None:
     assert summary.skipped_row_files == (path,)
 
 
+def test_session_log_read_retries_transient_open_permission_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation()])
+    writer.close()
+    attempts = 0
+    original_open = session_log_module._open_csv_read_path
+
+    def flaky_open(read_path):
+        nonlocal attempts
+        attempts += 1
+        if read_path == path and attempts < 3:
+            raise PermissionError("temporarily locked")
+        return original_open(read_path)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_open_csv_read_path", flaky_open)
+
+    observations = read_observations(path)
+
+    assert attempts == 3
+    assert len(observations) == 1
+    assert observations[0].address == "192.168.0.1"
+
+
+def test_session_log_read_summary_retries_transient_open_os_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation()])
+    writer.close()
+    attempts = 0
+    original_open = session_log_module._open_csv_read_path
+
+    def flaky_open(read_path):
+        nonlocal attempts
+        attempts += 1
+        if read_path == path and attempts < 3:
+            raise OSError("sharing violation")
+        return original_open(read_path)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_open_csv_read_path", flaky_open)
+
+    summary = session_log_read_summary(path)
+
+    assert attempts == 3
+    assert summary.rows == 1
+    assert summary.skipped_rows == 0
+
+
 def test_session_log_reads_observations_in_selected_range(tmp_path) -> None:
     now = datetime.now()
     path = tmp_path / "session.csv"
@@ -430,6 +816,34 @@ def test_session_log_reads_observations_in_selected_range(tmp_path) -> None:
     observations = list(iter_observations_in_range(path, now + timedelta(seconds=5), now + timedelta(seconds=15)))
 
     assert [observation.address for observation in observations] == ["192.168.0.2"]
+
+
+def test_session_log_range_read_retries_transient_segment_open_error(tmp_path, monkeypatch) -> None:
+    now = datetime.now().replace(microsecond=0)
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    writer.write_many([
+        _sample_observation(timestamp=now),
+        _sample_observation(timestamp=now + timedelta(seconds=10), address="192.168.0.2"),
+    ])
+    writer.close()
+    attempts = 0
+    original_open = session_log_module._open_csv_read_path
+
+    def flaky_open(read_path):
+        nonlocal attempts
+        attempts += 1
+        if read_path == path and attempts < 3:
+            raise PermissionError("temporarily locked")
+        return original_open(read_path)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_open_csv_read_path", flaky_open)
+
+    observations = list(iter_observations_in_range(path, now, now + timedelta(seconds=10)))
+
+    assert attempts == 3
+    assert [observation.address for observation in observations] == ["192.168.0.1", "192.168.0.2"]
 
 
 def test_session_log_segment_index_reports_bounds_and_skips_ranges(tmp_path) -> None:
@@ -481,6 +895,39 @@ def test_session_log_segment_index_uses_persisted_metadata(tmp_path, monkeypatch
     ]
 
 
+def test_session_log_segment_index_retries_transient_read_os_error(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path, max_rows_per_file=2)
+    writer.write_many([
+        _sample_observation(timestamp=now, address="192.168.0.1"),
+        _sample_observation(timestamp=now + timedelta(seconds=1), address="192.168.0.2"),
+        _sample_observation(timestamp=now + timedelta(hours=1), address="192.168.0.3"),
+    ])
+    writer.close()
+    attempts = 0
+    original_read = session_log_module._read_text_path
+
+    def flaky_read(read_path):
+        nonlocal attempts
+        attempts += 1
+        if read_path == session_log_segment_index_path(path) and attempts < 3:
+            raise OSError("sharing violation")
+        return original_read(read_path)
+
+    def fail_scan(_path):
+        raise AssertionError("CSV segment scan should not run after transient metadata read errors")
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_read_text_path", flaky_read)
+    monkeypatch.setattr(session_log_module, "_index_segment", fail_scan)
+
+    segments = session_log_segment_index(path)
+
+    assert attempts == 3
+    assert [segment.rows for segment in segments] == [2, 1]
+
+
 def test_session_log_segment_index_falls_back_when_metadata_is_stale(tmp_path) -> None:
     now = datetime(2026, 1, 1, 12, 0, 0)
     path = tmp_path / "session.csv"
@@ -502,6 +949,27 @@ def test_session_log_segment_index_falls_back_when_metadata_is_stale(tmp_path) -
     assert segments[-1].end == now + timedelta(hours=1)
 
 
+def test_session_log_segment_index_falls_back_when_metadata_file_state_is_stale(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation(timestamp=now, address="192.168.0.1")])
+    writer.close()
+    index_payload = json.loads(session_log_segment_index_path(path).read_text(encoding="utf-8"))
+    late_observation = _sample_observation(timestamp=now + timedelta(seconds=10), address="192.168.0.2")
+
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        csv.writer(handle).writerow(session_log_module.observation_to_row(late_observation))
+
+    observations = list(iter_observations_in_range(path, now + timedelta(seconds=5), now + timedelta(seconds=15)))
+    segments = session_log_segment_index(path)
+
+    assert index_payload["version"] == 2
+    assert [observation.address for observation in observations] == ["192.168.0.2"]
+    assert [segment.rows for segment in segments] == [2]
+    assert segments[0].end == now + timedelta(seconds=10)
+
+
 def test_session_log_segment_index_retries_transient_replace_permission_error(tmp_path, monkeypatch) -> None:
     path = tmp_path / "session.csv"
     writer = SessionLogWriter(path)
@@ -513,6 +981,32 @@ def test_session_log_segment_index_retries_transient_replace_permission_error(tm
         attempts += 1
         if attempts < 3:
             raise PermissionError("temporarily locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_replace_path", flaky_replace)
+
+    try:
+        writer.write_many([_sample_observation()])
+
+        assert attempts == 3
+        assert session_log_segment_index_path(path).exists()
+    finally:
+        monkeypatch.setattr(session_log_module, "_replace_path", original_replace)
+        writer.close()
+
+
+def test_session_log_segment_index_retries_transient_replace_os_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    attempts = 0
+    original_replace = session_log_module._replace_path
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("sharing violation")
         return original_replace(source, target)
 
     monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
@@ -561,6 +1055,52 @@ def test_session_log_segment_index_preserves_existing_file_after_persistent_repl
         writer.close()
 
 
+def test_session_log_segment_index_preserves_replace_error_when_temp_cleanup_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    original_replace = session_log_module._replace_path
+
+    def locked_replace(_source, _target):
+        raise PermissionError("replace locked")
+
+    def locked_unlink(_path):
+        raise PermissionError("cleanup locked")
+
+    monkeypatch.setattr(session_log_module, "SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_log_module, "_replace_path", locked_replace)
+    monkeypatch.setattr(session_log_module, "_unlink_path", locked_unlink)
+
+    try:
+        with pytest.raises(PermissionError, match="replace locked"):
+            writer.write_many([_sample_observation()])
+    finally:
+        monkeypatch.setattr(session_log_module, "_replace_path", original_replace)
+        writer.close()
+
+
+def test_session_log_segment_index_cleans_temp_file_after_json_dump_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    original_dump = session_log_module.json.dump
+
+    def failing_dump(*_args, **_kwargs):
+        raise OSError("dump failed")
+
+    monkeypatch.setattr(session_log_module.json, "dump", failing_dump)
+
+    try:
+        with pytest.raises(OSError, match="dump failed"):
+            writer.write_many([_sample_observation()])
+
+        assert [item for item in tmp_path.iterdir() if item.name.startswith("tmp")] == []
+    finally:
+        monkeypatch.setattr(session_log_module.json, "dump", original_dump)
+        writer.close()
+
+
 def test_session_log_create_uses_target_month_flex_directory(tmp_path) -> None:
     writer = SessionLogWriter.create("198.51.100.10", root=tmp_path)
     try:
@@ -571,6 +1111,37 @@ def test_session_log_create_uses_target_month_flex_directory(tmp_path) -> None:
         assert writer.path.name.endswith(".samples.csv")
     finally:
         writer.close()
+
+
+def test_session_log_create_does_not_overwrite_existing_same_second_log(tmp_path, monkeypatch) -> None:
+    fixed_now = datetime(2026, 1, 1, 12, 0, 0)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(filename_module, "datetime", FixedDatetime)
+    monkeypatch.setattr(session_log_module, "datetime", FixedDatetime)
+
+    first = SessionLogWriter.create("198.51.100.10", root=tmp_path)
+    try:
+        first.write_many([_sample_observation(timestamp=fixed_now)])
+    finally:
+        first.close()
+    original_text = first.path.read_text(encoding="utf-8")
+
+    second = SessionLogWriter.create("198.51.100.10", root=tmp_path)
+    try:
+        second.write_many([_sample_observation(timestamp=fixed_now + timedelta(seconds=1), address="192.168.0.2")])
+    finally:
+        second.close()
+
+    assert second.path != first.path
+    assert second.path.name.endswith(".samples_2.csv")
+    assert first.path.read_text(encoding="utf-8") == original_text
+    assert len(read_observations(first.path)) == 1
+    assert len(read_observations(second.path)) == 1
 
 
 def test_session_index_registers_updates_and_filters_sessions(tmp_path) -> None:
@@ -603,6 +1174,47 @@ def test_session_index_registers_updates_and_filters_sessions(tmp_path) -> None:
     assert sessions[0].tcp_port is None
     assert sessions[0].route_probe_engine == "tracert/ICMP"
     assert active_sessions == []
+
+
+def test_session_index_keeps_same_filename_sessions_separate(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    first_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    second_path = tmp_path / "203.0.113.20" / "2026-01" / "session.samples.csv"
+
+    first = store.register_session(
+        target="198.51.100.10",
+        sample_path=first_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    second = store.register_session(
+        target="203.0.113.20",
+        sample_path=second_path,
+        route_path=None,
+        started_at=now + timedelta(seconds=1),
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    store.add_samples(first.session_id, 3, now + timedelta(seconds=2), segments=[first_path])
+
+    sessions = store.list_sessions()
+    refreshed_first = store.find_session(first.session_id)
+    refreshed_second = store.find_session(second.session_id)
+
+    assert first.session_id != second.session_id
+    assert first.session_id.startswith("session.samples-")
+    assert second.session_id.startswith("session.samples-")
+    assert {session.sample_path for session in sessions} == {first_path, second_path}
+    assert refreshed_first is not None
+    assert refreshed_first.samples == 3
+    assert refreshed_second is not None
+    assert refreshed_second.samples == 0
 
 
 def test_session_index_persists_structured_probe_fields(tmp_path) -> None:
@@ -992,6 +1604,23 @@ def test_session_index_recovers_sessions_from_existing_logs_when_index_missing(t
     assert store.find_session(record.session_id) is not None
 
 
+def test_session_index_recovers_same_filename_logs_as_distinct_sessions(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    first_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    second_path = tmp_path / "203.0.113.20" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(first_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    with SessionLogWriter(second_path) as writer:
+        writer.write_many([HopObservation(now, 0, "203.0.113.20", "Target", True, 20.0, STATUS_OK, True)])
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 2
+    assert len({session.session_id for session in sessions}) == 2
+    assert {session.sample_path for session in sessions} == {first_path, second_path}
+
+
 def test_session_index_recovers_sessions_from_logs_when_index_is_corrupt(tmp_path) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -1088,13 +1717,50 @@ def test_session_index_merges_missing_log_sessions_into_valid_index(tmp_path) ->
 
     assert {session.target for session in sessions} == {"198.51.100.10", "203.0.113.20"}
     indexed_session = store.find_session(indexed.session_id)
-    orphan_session = store.find_session(orphan_path.stem)
+    orphan_session = next((session for session in sessions if session.sample_path == orphan_path), None)
     assert indexed_session is not None
     assert indexed_session.interval_seconds == 5
     assert orphan_session is not None
     assert orphan_session.samples == 2
     assert orphan_session.target_count == 2
     assert orphan_session.last_error == f"{SESSION_INDEX_REBUILT_CODE}: recovered_rows=2"
+
+
+def test_session_index_recover_missing_does_not_duplicate_legacy_same_path_record(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "legacy.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    payload = {
+        "version": 1,
+        "sessions": [
+            {
+                "session_id": sample_path.stem,
+                "target": "198.51.100.10",
+                "sample_path": str(sample_path),
+                "route_path": "",
+                "start": now.isoformat(),
+                "end": now.isoformat(),
+                "samples": 1,
+                "state": SESSION_STATE_ARCHIVED,
+                "interval_seconds": 5,
+                "measurement_mode": "full_route",
+                "target_count": 1,
+                "segments": [str(sample_path)],
+                "last_error": "",
+            }
+        ],
+    }
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    sessions = store.list_sessions(recover_missing=True)
+
+    assert len(sessions) == 1
+    assert sessions[0].session_id == sample_path.stem
+    assert sessions[0].sample_path == sample_path
+    assert store.find_session(sample_path.stem) is not None
+    assert len(store.list_sessions()) == 1
 
 
 def test_session_index_retries_transient_replace_permission_error(tmp_path, monkeypatch) -> None:
@@ -1128,6 +1794,65 @@ def test_session_index_retries_transient_replace_permission_error(tmp_path, monk
     assert store.find_session(record.session_id) is not None
 
 
+def test_session_index_retries_transient_replace_os_error(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    attempts = 0
+    original_replace = session_index_module._replace_path
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("sharing violation")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(session_index_module, "SESSION_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_index_module, "_replace_path", flaky_replace)
+
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+
+    assert attempts == 3
+    assert store.find_session(record.session_id) is not None
+
+
+def test_session_index_cleans_temp_file_after_json_dump_error(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    original_dump = session_index_module.json.dump
+
+    def failing_dump(*_args, **_kwargs):
+        raise OSError("dump failed")
+
+    monkeypatch.setattr(session_index_module.json, "dump", failing_dump)
+
+    try:
+        with pytest.raises(OSError, match="dump failed"):
+            store.register_session(
+                target="198.51.100.10",
+                sample_path=sample_path,
+                route_path=sample_path.with_name("session.routes.csv"),
+                started_at=now,
+                interval_seconds=1,
+                measurement_mode="full_route",
+                target_count=1,
+            )
+
+        assert [item for item in tmp_path.iterdir() if item.name.startswith("tmp")] == []
+    finally:
+        monkeypatch.setattr(session_index_module.json, "dump", original_dump)
+
+
 def test_session_index_retries_transient_read_permission_error(tmp_path, monkeypatch) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -1149,6 +1874,36 @@ def test_session_index_retries_transient_read_permission_error(tmp_path, monkeyp
         attempts += 1
         if attempts < 3:
             raise PermissionError("temporarily locked")
+        return original_read(path)
+
+    monkeypatch.setattr(session_index_module, "SESSION_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_index_module, "_read_text_path", flaky_read)
+
+    assert store.find_session(record.session_id) is not None
+    assert attempts == 3
+
+
+def test_session_index_retries_transient_read_os_error(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    attempts = 0
+    original_read = session_index_module._read_text_path
+
+    def flaky_read(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("sharing violation")
         return original_read(path)
 
     monkeypatch.setattr(session_index_module, "SESSION_INDEX_IO_RETRY_DELAY_SECONDS", 0)
@@ -1186,6 +1941,33 @@ def test_session_index_cleans_temp_file_after_persistent_replace_error(tmp_path,
 
     temp_files = [path for path in tmp_path.iterdir() if path.name.startswith("tmp")]
     assert temp_files == []
+
+
+def test_session_index_preserves_replace_error_when_temp_cleanup_fails(tmp_path, monkeypatch) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+
+    def locked_replace(_source, _target):
+        raise PermissionError("replace locked")
+
+    def locked_unlink(_path):
+        raise PermissionError("cleanup locked")
+
+    monkeypatch.setattr(session_index_module, "SESSION_INDEX_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(session_index_module, "_replace_path", locked_replace)
+    monkeypatch.setattr(session_index_module, "_unlink_path", locked_unlink)
+
+    with pytest.raises(PermissionError, match="replace locked"):
+        store.register_session(
+            target="198.51.100.10",
+            sample_path=sample_path,
+            route_path=sample_path.with_name("session.routes.csv"),
+            started_at=now,
+            interval_seconds=1,
+            measurement_mode="full_route",
+            target_count=1,
+        )
 
 
 def test_session_index_delete_removes_record_and_managed_files(tmp_path) -> None:
@@ -1298,6 +2080,39 @@ def test_session_index_retry_pending_deletions_removes_session_after_lock_is_rel
     assert [item.session_id for item in removed] == [record.session_id]
     assert store.find_session(record.session_id) is None
     assert not sample_path.exists()
+
+
+def test_session_index_retry_pending_deletions_cleans_related_files_when_sample_is_missing(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "missing.samples.csv"
+    route_path = sample_path.with_name("missing.routes.csv")
+    alert_path = alert_action_log_path_for_session(sample_path)
+    segment_index_path = session_log_segment_index_path(sample_path)
+    sample_path.parent.mkdir(parents=True)
+    for path in (sample_path, route_path, alert_path, segment_index_path):
+        assert path is not None
+        path.write_text("managed\n", encoding="utf-8")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=route_path,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    sample_path.unlink()
+
+    marked = store.reconcile_missing_session_files()
+    removed = store.retry_pending_deletions()
+
+    assert [item.session_id for item in marked] == [record.session_id]
+    assert [item.session_id for item in removed] == [record.session_id]
+    assert store.find_session(record.session_id) is None
+    assert not route_path.exists()
+    assert alert_path is not None and not alert_path.exists()
+    assert not segment_index_path.exists()
 
 
 def test_session_index_retry_pending_deletions_keeps_session_when_file_is_still_locked(

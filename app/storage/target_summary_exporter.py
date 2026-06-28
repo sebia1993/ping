@@ -4,6 +4,8 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.storage.atomic_write import atomic_write_path
+
 
 TARGET_SUMMARY_HEADERS = [
     "target",
@@ -50,7 +52,11 @@ class TargetSummaryExportRow:
 def export_target_summary_csv(path: Path, rows: list[TargetSummaryExportRow]) -> Path:
     if path.suffix.lower() != ".csv":
         path = path.with_suffix(".csv")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_path(path, lambda temp_path: _write_target_summary_csv(temp_path, rows))
+    return path
+
+
+def _write_target_summary_csv(path: Path, rows: list[TargetSummaryExportRow]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         writer.writerow(TARGET_SUMMARY_HEADERS)
@@ -74,7 +80,6 @@ def export_target_summary_csv(path: Path, rows: list[TargetSummaryExportRow]) ->
                 row.interval_source,
                 f"{row.score:.3f}",
             ])
-    return path
 
 
 def _fmt(value: float | None) -> str:

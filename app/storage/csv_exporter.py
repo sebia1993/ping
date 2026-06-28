@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from app.core.models import HopObservation, MetricSnapshot
+from app.storage.atomic_write import atomic_write_path
 from app.storage.export_annotations import ExportAnnotation
 
 
@@ -15,7 +16,19 @@ def export_csv(
     analysis: list[str],
     annotations: list[ExportAnnotation] | None = None,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_path(
+        path,
+        lambda temp_path: _write_export_csv(temp_path, observations, snapshots, analysis, annotations),
+    )
+
+
+def _write_export_csv(
+    path: Path,
+    observations: Iterable[HopObservation],
+    snapshots: Iterable[MetricSnapshot],
+    analysis: list[str],
+    annotations: list[ExportAnnotation] | None = None,
+) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         writer.writerow(["Summary"])

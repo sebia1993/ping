@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import HopObservation, MetricSnapshot
+from app.storage.atomic_write import atomic_write_path
 from app.storage.session_log import OBSERVATION_HEADERS, observation_to_row
 from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries, series_color_hex
 from app.ui.table_panels import fmt_ms
@@ -208,10 +209,10 @@ class GraphDetailWindow(QMainWindow):
         annotate_button = QPushButton("메모 추가")
         annotate_button.clicked.connect(self.add_annotation_from_selection)
         save_png_button = QPushButton("PNG 저장")
-        save_png_button.clicked.connect(lambda: self.save_png())
+        save_png_button.clicked.connect(self._save_png_from_button)
         save_csv_button = QPushButton("CSV 저장")
         save_csv_button.setToolTip("현재 보이는 그래프 샘플을 CSV로 저장")
-        save_csv_button.clicked.connect(lambda: self.save_visible_csv())
+        save_csv_button.clicked.connect(self._save_visible_csv_from_button)
         clear_button = QPushButton("범위 해제")
         clear_button.clicked.connect(self.graph.clear_selection)
         apply_focus_button = QPushButton("포커스 적용")
@@ -502,16 +503,26 @@ class GraphDetailWindow(QMainWindow):
         if selection is not None:
             self.focus_applied.emit(selection)
 
+    def _save_png_from_button(self) -> None:
+        try:
+            self.save_png()
+        except (OSError, RuntimeError) as exc:
+            self.timeline_status_label.setText(str(exc))
+
+    def _save_visible_csv_from_button(self) -> None:
+        try:
+            self.save_visible_csv()
+        except (OSError, RuntimeError) as exc:
+            self.timeline_status_label.setText(str(exc))
+
     def save_png(self, path: Path | None = None) -> Path | None:
         selected_path = path or self._select_png_path()
         if selected_path is None:
             return None
         if selected_path.suffix.lower() != ".png":
             selected_path = selected_path.with_suffix(".png")
-        selected_path.parent.mkdir(parents=True, exist_ok=True)
         pixmap = self.centralWidget().grab()
-        if not pixmap.save(str(selected_path), "PNG"):
-            raise RuntimeError(f"PNG 저장 실패: {selected_path}")
+        _write_png_atomic(selected_path, pixmap)
         self.timeline_status_label.setText(f"PNG 저장 완료: {selected_path}")
         return selected_path
 
@@ -525,12 +536,7 @@ class GraphDetailWindow(QMainWindow):
             return None
         if selected_path.suffix.lower() != ".csv":
             selected_path = selected_path.with_suffix(".csv")
-        selected_path.parent.mkdir(parents=True, exist_ok=True)
-        with selected_path.open("w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["series_key", "series_label", *OBSERVATION_HEADERS])
-            for series, observation in rows:
-                writer.writerow([series.key, series.label, *observation_to_row(observation)])
+        atomic_write_path(selected_path, lambda temp_path: _write_visible_csv(temp_path, rows))
         self.timeline_status_label.setText(f"CSV 저장 완료: {selected_path} ({len(rows)}개 샘플)")
         return selected_path
 
@@ -612,6 +618,22 @@ class GraphDetailWindow(QMainWindow):
             }
         for key, value in values.items():
             self.metric_value_labels[key].setText(value)
+
+
+def _write_visible_csv(path: Path, rows: list[tuple[TimelineSeries, HopObservation]]) -> None:
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["series_key", "series_label", *OBSERVATION_HEADERS])
+        for series, observation in rows:
+            writer.writerow([series.key, series.label, *observation_to_row(observation)])
+
+
+def _write_png_atomic(path: Path, pixmap) -> None:
+    def write_temp(temp_path: Path) -> None:
+        if not pixmap.save(str(temp_path), "PNG"):
+            raise RuntimeError(f"PNG 저장 실패: {path}")
+
+    atomic_write_path(path, write_temp)
 
 
 def summarize_points(points: list[HopObservation]) -> RangeSummary:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import platform
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,7 +14,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.core.alerts import AlertEvent
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopInfo, HopObservation, MetricSnapshot
+from app.core.observation_stats import FocusSnapshotSet
 from app.core.route_history import RouteHistory
+from app.storage import atomic_write as atomic_write_module
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.route_log import RouteLogWriter, route_log_path_for_session
 from app.storage import session_index as session_index_module
@@ -63,7 +66,8 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.session_state_label.text() == "대기"
         assert window.status_label.text() == "대기 중"
         assert QApplication.instance().font().family() == "Malgun Gothic"
-        assert "Malgun Gothic" in set(QFontDatabase.families())
+        if platform.system().lower() == "windows":
+            assert "Malgun Gothic" in set(QFontDatabase.families())
         assert window.table.columnCount() == len(TABLE_HEADERS)
         assert window.target_table.columnCount() == len(TARGET_HEADERS)
         assert window.session_table.columnCount() == len(SESSION_HEADERS)
@@ -719,6 +723,50 @@ def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) 
         window.close()
 
 
+def test_main_window_open_session_reports_locked_log_without_crashing(qt_app, tmp_path, monkeypatch) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "locked.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        ])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("locked.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    store.add_samples(record.session_id, 1, now, segments=[sample_path])
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+    original_open = type(sample_path).open
+
+    def locked_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self == sample_path and "r" in mode:
+            raise PermissionError("locked")
+        return original_open(self, *args, **kwargs)
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+        monkeypatch.setattr(type(sample_path), "open", locked_open)
+
+        window.open_selected_session()
+
+        assert window.session_log_path is None
+        assert window.current_target == ""
+        assert "세션 로그를 읽을 수 없습니다" in window.status_label.text()
+        assert "PermissionError: locked" in window.status_label.text()
+    finally:
+        window.close()
+
+
 def test_main_window_open_session_records_skipped_rows_for_partial_log(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -964,6 +1012,129 @@ def test_main_window_exports_selected_saved_session(qt_app, tmp_path, monkeypatc
         window.close()
 
 
+def test_main_window_exports_selected_saved_session_without_materializing_log(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    created_workers: list[_FakeExportWorker] = []
+    captured: dict[str, object] = {}
+    export_path = tmp_path / "saved_session.csv"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "CSV Files (*.csv)"
+
+    def fake_export_worker(**kwargs):
+        worker = _FakeExportWorker(**kwargs)
+        created_workers.append(worker)
+        return worker
+
+    def fake_build_focus_snapshots(observations, *, current_target=""):
+        captured["received_list"] = isinstance(observations, list)
+        captured["rows"] = list(observations)
+        target_snapshot = _snapshot(0, current_target, None, latency=10.0, is_target=True)
+        return FocusSnapshotSet(hop_snapshots=[], target_snapshots=[target_snapshot], target_snapshot=target_snapshot)
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module, "ExportWorker", fake_export_worker)
+    monkeypatch.setattr(main_window_module, "build_focus_snapshots", fake_build_focus_snapshots)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+            HopObservation(now + timedelta(seconds=1), 0, "198.51.100.10", "Target", True, 11.0, STATUS_OK, True),
+        ])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    store.add_samples(record.session_id, 2, now + timedelta(seconds=1), segments=[sample_path])
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=1))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+
+        window.export_selected_session()
+
+        assert captured["received_list"] is False
+        assert len(captured["rows"]) == 2
+        assert len(created_workers) == 1
+        assert created_workers[0].kwargs["session_log_path"] == sample_path
+    finally:
+        window.close()
+
+
+def test_main_window_export_selected_session_reports_locked_log_before_worker(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    created_workers: list[_FakeExportWorker] = []
+    export_path = tmp_path / "saved_session.csv"
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "CSV Files (*.csv)"
+
+    def fake_export_worker(**kwargs):
+        worker = _FakeExportWorker(**kwargs)
+        created_workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module, "ExportWorker", fake_export_worker)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "locked.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        ])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("locked.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    store.add_samples(record.session_id, 1, now, segments=[sample_path])
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+    original_open = type(sample_path).open
+
+    def locked_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self == sample_path and "r" in mode:
+            raise PermissionError("locked")
+        return original_open(self, *args, **kwargs)
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+        window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
+        monkeypatch.setattr(type(sample_path), "open", locked_open)
+
+        window.export_selected_session()
+
+        assert created_workers == []
+        assert window.export_worker is None
+        assert "세션 로그를 읽을 수 없습니다" in window.status_label.text()
+        assert "PermissionError: locked" in window.status_label.text()
+    finally:
+        window.close()
+
+
 def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkeypatch) -> None:
     export_path = tmp_path / "visible_sessions.zip"
 
@@ -1025,6 +1196,62 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         assert any(name.endswith("/second.samples.csv") for name in names)
         assert not any(name.endswith("/first.samples.csv") for name in names)
         assert "표시 세션 ZIP 저장 완료" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_visible_sessions_zip_preserves_existing_file_after_replace_failure(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    export_path = tmp_path / "visible_sessions.zip"
+    with zipfile.ZipFile(export_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("session_manifest.csv", "old manifest")
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "ZIP Files (*.zip)"
+
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == export_path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    sample_path.parent.mkdir(parents=True, exist_ok=True)
+    sample_path.write_text("new session\n", encoding="utf-8")
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=sample_path.with_name("session.routes.csv"),
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="full_route",
+        target_count=1,
+    )
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(seconds=1))
+
+    try:
+        window.session_index_store = store
+        window._sync_sessions_box()
+
+        window.export_visible_sessions()
+
+        with zipfile.ZipFile(export_path) as archive:
+            assert archive.read("session_manifest.csv").decode("utf-8") == "old manifest"
+        assert warnings == ["locked"]
+        assert window.status_label.text() == "locked"
+        assert list(tmp_path.glob(".visible_sessions.zip.*")) == []
     finally:
         window.close()
 
@@ -1461,6 +1688,85 @@ def test_main_window_saves_and_loads_target_group_preset(qt_app, tmp_path, monke
             "203.0.113.20": "AP 장비",
         }
         assert window.status_label.text() == "대상 그룹 불러오기 완료: IP 2개 | target_group | 개별 주기 1개"
+    finally:
+        window.close()
+
+
+def test_main_window_target_group_preset_preserves_existing_file_after_replace_failure(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    preset_path = tmp_path / "target_group.json"
+    original_text = '{"status":"existing"}'
+    preset_path.write_text(original_text, encoding="utf-8")
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    def locked_replace(_source, _target):
+        raise PermissionError("locked")
+
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+    window = MainWindow()
+
+    try:
+        window.target_input.setText("198.51.100.10")
+
+        window.save_target_group_preset()
+
+        assert preset_path.read_text(encoding="utf-8") == original_text
+        assert not list(tmp_path.glob(f".{preset_path.name}.*{preset_path.suffix}"))
+        assert "locked" in warnings[-1]
+        assert "locked" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_load_target_group_preset_retries_transient_read_error(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    preset_path = tmp_path / "target_group.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": TARGET_GROUP_PRESET_VERSION,
+                "name": "target_group",
+                "summary": {"target_count": 2},
+                "targets": ["198.51.100.10", "203.0.113.20"],
+                "trace_target": "203.0.113.20",
+                "settings": {"interval_seconds": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_read = atomic_write_module._read_text_path
+    attempts = 0
+
+    def flaky_read(path, *, encoding):
+        nonlocal attempts
+        attempts += 1
+        if path == preset_path and attempts == 1:
+            raise PermissionError("temporarily locked")
+        return original_read(path, encoding=encoding)
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_read_text_path", flaky_read)
+    window = MainWindow()
+
+    try:
+        window.load_target_group_preset()
+
+        assert attempts == 2
+        assert window.target_input.toPlainText().splitlines() == ["198.51.100.10", "203.0.113.20"]
+        assert window.trace_target_combo.currentText() == "203.0.113.20"
+        assert window.status_label.text() == "대상 그룹 불러오기 완료: IP 2개 | target_group"
     finally:
         window.close()
 
@@ -2378,6 +2684,85 @@ def test_main_window_all_range_uses_session_log_start_beyond_live_buffer(qt_app,
         window.close()
 
 
+def test_main_window_reuses_session_log_bounds_cache_and_invalidates_on_update(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    start = datetime(2026, 1, 1, 9, 0, 0)
+    end = start + timedelta(hours=2)
+    target = "198.51.100.10"
+    session_path = tmp_path / "session.csv"
+    session_path.write_text("header\n", encoding="utf-8")
+    calls = 0
+
+    def fake_session_log_bounds(path):
+        nonlocal calls
+        calls += 1
+        assert path == session_path
+        return start, end
+
+    monkeypatch.setattr(main_window_module, "session_log_bounds", fake_session_log_bounds)
+
+    try:
+        window.current_target = target
+        window.current_targets = [target]
+        window.session_log_path = session_path
+
+        assert window._timeline_end_time() == end
+        assert window._main_graph_data_bounds() == (start, end)
+        assert calls == 1
+
+        snapshot = _snapshot(0, target, None, latency=12.0, is_target=True)
+        window.on_measurement_updated(
+            [],
+            snapshot,
+            [snapshot],
+            ["live"],
+            [HopObservation(end, 0, target, "Target", True, 12.0, STATUS_OK, True)],
+            [],
+        )
+        assert window._timeline_end_time() == end
+        assert calls == 2
+    finally:
+        window.close()
+
+
+def test_main_window_session_log_bounds_failure_falls_back_to_memory_observations(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    end = start + timedelta(minutes=10)
+    target = "198.51.100.10"
+    session_path = tmp_path / "locked.samples.csv"
+    session_path.write_text("header\n", encoding="utf-8")
+
+    def locked_bounds(_path):
+        raise PermissionError("session log locked")
+
+    monkeypatch.setattr(main_window_module, "session_log_bounds", locked_bounds)
+
+    try:
+        window.current_target = target
+        window.current_targets = [target]
+        window.session_log_path = session_path
+        window.observations = [
+            HopObservation(start, 0, target, "Target", True, 10.0, STATUS_OK, True),
+            HopObservation(end, 0, target, "Target", True, 12.0, STATUS_OK, True),
+        ]
+        window.target_history = list(window.observations)
+
+        assert window._timeline_end_time() == end
+        assert window._main_graph_data_bounds() == (start, end)
+        assert "세션 로그를 읽을 수 없습니다" in window.status_label.text()
+    finally:
+        window.close()
+
+
 def test_main_window_recent_running_graph_uses_live_cache_without_session_log_reads(
     qt_app,
     tmp_path,
@@ -3265,7 +3650,8 @@ def test_main_window_graph_png_helper_adds_suffix_and_saves_timeline_scope(qt_ap
         saved = window._save_graph_png(tmp_path / "timeline")
 
         assert saved == tmp_path / "timeline.png"
-        assert pixmap.saved == [(str(saved), "PNG")]
+        assert len(pixmap.saved) == 1
+        assert pixmap.saved[0][1] == "PNG"
         assert saved.read_bytes() == b"png"
     finally:
         window.close()
@@ -3292,8 +3678,53 @@ def test_main_window_graph_png_helper_saves_trace_scope(qt_app, tmp_path, monkey
         saved = window._save_graph_png(tmp_path / "trace", scope=GRAPH_PNG_SCOPE_TRACE)
 
         assert saved == tmp_path / "trace.png"
-        assert pixmap.saved == [(str(saved), "PNG")]
+        assert len(pixmap.saved) == 1
+        assert pixmap.saved[0][1] == "PNG"
         assert saved.read_bytes() == b"trace"
+    finally:
+        window.close()
+
+
+def test_main_window_graph_png_preserves_existing_file_after_replace_failure(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    class FakePixmap:
+        def isNull(self) -> bool:
+            return False
+
+        def save(self, path: str, fmt: str) -> bool:
+            Path(path).write_bytes(b"new png")
+            return True
+
+    export_path = tmp_path / "timeline.png"
+    original_bytes = b"old png"
+    export_path.write_bytes(original_bytes)
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(export_path), "PNG Files (*.png)"
+
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == export_path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+    monkeypatch.setattr(main_window_module.LatencyGraphWidget, "grab", lambda _widget: FakePixmap())
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+    window = MainWindow()
+
+    try:
+        window.save_graph_png()
+
+        assert export_path.read_bytes() == original_bytes
+        assert not list(tmp_path.glob(f".{export_path.name}.*{export_path.suffix}"))
+        assert "locked" in warnings[-1]
+        assert "locked" in window.status_label.text()
     finally:
         window.close()
 
@@ -3597,6 +4028,47 @@ def test_main_window_loads_graph_timeline_from_session_log_and_focuses_it(qt_app
         assert window.analysis_for_export()[0].startswith("포커스:")
         window.clear_timeline_range()
         assert window.timeline_label.text() == "그래프: 실시간"
+    finally:
+        window.close()
+
+
+def test_main_window_timeline_range_falls_back_to_memory_when_session_log_read_fails(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    target = "198.51.100.10"
+    session_path = tmp_path / "locked.samples.csv"
+    session_path.write_text("timestamp,address\n", encoding="utf-8")
+
+    def locked_range_read(*_args, **_kwargs):
+        raise PermissionError("session log locked")
+
+    monkeypatch.setattr(main_window_module, "iter_observations_in_range", locked_range_read)
+
+    try:
+        window.current_target = target
+        window.session_log_path = session_path
+        window.observations = [
+            HopObservation(now - timedelta(minutes=20), 0, target, "Target", True, 15.0, STATUS_OK, True),
+            HopObservation(now - timedelta(minutes=5), 0, target, "Target", True, 20.0, STATUS_OK, True),
+            HopObservation(now, 0, target, "Target", False, None, STATUS_TIMEOUT, True),
+        ]
+        window.target_history = list(window.observations)
+
+        window.load_timeline_range(600)
+
+        assert window.timeline_range == (now - timedelta(minutes=10), now)
+        assert [point.timestamp for point in window.timeline_observations] == [
+            now - timedelta(minutes=5),
+            now,
+        ]
+        assert [point.timestamp for point in window.graph._points] == [
+            now - timedelta(minutes=5),
+            now,
+        ]
     finally:
         window.close()
 
@@ -4118,6 +4590,89 @@ def test_main_window_saves_and_loads_alert_rule_preset(qt_app, tmp_path, monkeyp
         assert window.alert_executable_action_check.isChecked() is True
         assert window.alert_executable_path_edit.text() == r"C:\Tools\alert.exe"
         assert window.status_label.text() == f"알림 프리셋 불러오기 완료: {preset_path} | voice_alerts | 규칙 4개 | 동작 7개"
+    finally:
+        window.close()
+
+
+def test_main_window_alert_rule_preset_preserves_existing_file_after_replace_failure(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    preset_path = tmp_path / "voice_alerts.json"
+    original_text = '{"status":"existing"}'
+    preset_path.write_text(original_text, encoding="utf-8")
+
+    def fake_get_save_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    def locked_replace(_source, _target):
+        raise PermissionError("locked")
+
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+    monkeypatch.setattr(main_window_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])))
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+    window = MainWindow()
+
+    try:
+        window.save_alert_rule_preset()
+
+        assert preset_path.read_text(encoding="utf-8") == original_text
+        assert not list(tmp_path.glob(f".{preset_path.name}.*{preset_path.suffix}"))
+        assert "locked" in warnings[-1]
+        assert "locked" in window.status_label.text()
+    finally:
+        window.close()
+
+
+def test_main_window_load_alert_rule_preset_retries_transient_read_error(qt_app, tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "voice_alerts.json"
+    preset_path.write_text(
+        json.dumps(
+            {
+                "version": ALERT_RULE_PRESET_VERSION,
+                "name": "voice_alerts",
+                "summary": {
+                    "active_rule_count": 1,
+                    "active_action_count": 1,
+                    "action_phase_count": 1,
+                    "external_action_count": 0,
+                    "route_adjustment_enabled": False,
+                },
+                "rules": {"latency_enabled": True},
+                "actions": {"start": True, "log": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_read = atomic_write_module._read_text_path
+    attempts = 0
+
+    def flaky_read(path, *, encoding):
+        nonlocal attempts
+        attempts += 1
+        if path == preset_path and attempts == 1:
+            raise PermissionError("temporarily locked")
+        return original_read(path, encoding=encoding)
+
+    def fake_get_open_file_name(*_args, **_kwargs):
+        return str(preset_path), "JSON Files (*.json)"
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fake_get_open_file_name)
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_read_text_path", flaky_read)
+    window = MainWindow()
+
+    try:
+        window.latency_alert_check.setChecked(False)
+        window.alert_log_action_check.setChecked(False)
+
+        window.load_alert_rule_preset()
+
+        assert attempts == 2
+        assert window.latency_alert_check.isChecked() is True
+        assert window.alert_log_action_check.isChecked() is True
+        assert window.status_label.text() == f"알림 프리셋 불러오기 완료: {preset_path} | voice_alerts | 규칙 1개 | 동작 1개"
     finally:
         window.close()
 
@@ -5041,19 +5596,51 @@ def test_main_window_exports_alert_route_and_manual_annotations(qt_app) -> None:
         window.close()
 
 
-def test_main_window_close_event_only_requests_stop_once_when_reentered(qt_app) -> None:
+def test_main_window_close_event_defers_while_measurement_worker_is_still_stopping(qt_app) -> None:
     window = MainWindow()
     worker = _SlowStoppingWorker()
+    detail = _FakeDetailWindow()
+    first_event = QCloseEvent()
+    second_event = QCloseEvent()
+    final_event = QCloseEvent()
 
     try:
         window.worker = worker
-        window.closeEvent(QCloseEvent())
-        window.closeEvent(QCloseEvent())
+        window.graph_detail_window = detail
+        window.closeEvent(first_event)
+        window.closeEvent(second_event)
 
+        assert first_event.isAccepted() is False
+        assert second_event.isAccepted() is False
         assert worker.request_stop_calls == 1
         assert worker.wait_calls == [3000]
+        assert "측정 작업 종료" in window.status_label.text() or "종료 대기" in window.status_label.text()
+
+        worker.running = False
+        window.closeEvent(final_event)
+
+        assert final_event.isAccepted() is True
+        assert detail.closed is True
     finally:
         window.worker = None
+        window.graph_detail_window = None
+        window.close()
+
+
+def test_main_window_close_event_defers_while_export_worker_is_still_running(qt_app) -> None:
+    window = MainWindow()
+    export_worker = _SlowExportWorker()
+    event = QCloseEvent()
+
+    try:
+        window.export_worker = export_worker
+        window.closeEvent(event)
+
+        assert event.isAccepted() is False
+        assert export_worker.wait_calls == [3000]
+        assert window.status_label.text() == "내보내기 저장이 끝날 때까지 종료를 보류합니다."
+    finally:
+        window.export_worker = None
         window.close()
 
 
@@ -5191,11 +5778,12 @@ class _FakeExportWorker:
 class _SlowStoppingWorker(QObject):
     def __init__(self) -> None:
         super().__init__()
+        self.running = True
         self.request_stop_calls = 0
         self.wait_calls: list[int] = []
 
     def isRunning(self) -> bool:
-        return True
+        return self.running
 
     def request_stop(self) -> None:
         self.request_stop_calls += 1
@@ -5203,3 +5791,23 @@ class _SlowStoppingWorker(QObject):
     def wait(self, timeout_ms: int) -> bool:
         self.wait_calls.append(timeout_ms)
         return False
+
+
+class _SlowExportWorker:
+    def __init__(self) -> None:
+        self.wait_calls: list[int] = []
+
+    def isRunning(self) -> bool:
+        return True
+
+    def wait(self, timeout_ms: int) -> bool:
+        self.wait_calls.append(timeout_ms)
+        return False
+
+
+class _FakeDetailWindow:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True

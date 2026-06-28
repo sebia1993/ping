@@ -6,11 +6,12 @@ from concurrent.futures import Future
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from app.core.alerts import AlertRuleConfig
 from app.core.metrics import TargetMetricTracker
-from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, PingResult
+from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_PAUSED, STATUS_TIMEOUT, HopInfo, HopObservation, PingResult
 from app.storage import session_log as session_log_module
 from app.storage.route_log import RouteLogWriter, route_changes_in_range
 from app.storage.session_log import SessionLogWriter, read_observations
@@ -91,6 +92,40 @@ def test_worker_persists_route_change_snapshots(tmp_path) -> None:
     assert len(changes) == 1
     assert changes[0].changed_hops == (1,)
     assert "Hop 1" in changes[0].summary
+
+
+def test_worker_continues_when_route_log_write_fails() -> None:
+    _app()
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=0, max_cycles=1)
+    route_log = _FailingRouteLog()
+    errors: list[str] = []
+    changes: list[object] = []
+    worker.error_message.connect(errors.append)
+    worker.route_changed.connect(changes.append)
+
+    first: Future[list[HopInfo]] = Future()
+    first.set_result([
+        HopInfo(index=1, address="192.0.2.1", hostname="gateway"),
+        HopInfo(index=2, address="198.51.100.10", hostname="target", is_target=True),
+    ])
+    metrics, hops = worker._refresh_trace_result(None, [], first, route_log, first_check=True)
+
+    second: Future[list[HopInfo]] = Future()
+    second.set_result([
+        HopInfo(index=1, address="192.0.2.254", hostname="backup"),
+        HopInfo(index=2, address="198.51.100.10", hostname="target", is_target=True),
+    ])
+    refreshed_metrics, refreshed_hops = worker._refresh_trace_result(metrics, hops, second, route_log)
+
+    assert route_log.calls == 2
+    assert refreshed_metrics is not None
+    assert [hop.address for hop in refreshed_hops] == ["192.0.2.254", "198.51.100.10"]
+    assert len(changes) == 1
+    assert getattr(changes[0], "changed_hops") == (1,)
+    assert errors == [
+        "경로 로그 저장 중 오류가 발생했습니다. 측정은 계속 진행합니다. "
+        "(ROUTE_LOG_WRITE_FAILED: PermissionError)"
+    ]
 
 
 def test_worker_rejects_domain_without_dns_lookup() -> None:
@@ -449,6 +484,44 @@ def test_worker_reuses_ping_probe_per_executor_thread(monkeypatch) -> None:
     assert counters == {"instances": 1, "pings": 3, "closed": 1}
 
 
+def test_probe_pool_closes_remaining_probes_after_close_error() -> None:
+    events: list[str] = []
+    pool = worker_module._ThreadLocalPingProbePool(lambda: object())
+    with pool._lock:
+        pool._probes.extend([
+            _CloseFailingProbe("first", events),
+            _RecordingCloseProbe("second", events),
+        ])
+
+    pool.close()
+    pool.close()
+
+    assert events == ["first", "second"]
+    assert pool._probes == []
+
+
+def test_worker_finishes_session_when_probe_close_fails(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=1,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        session_log_root=tmp_path,
+        ping_probe_factory=lambda timeout_ms: _CloseFailingProbeRunner(timeout_ms),
+    )
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    sessions = SessionIndexStore.create(tmp_path).list_sessions(target="198.51.100.10")
+    assert errors == []
+    assert len(sessions) == 1
+    assert sessions[0].state == SESSION_STATE_ARCHIVED
+
+
 def test_worker_backs_off_repeated_timeout_targets(monkeypatch) -> None:
     _app()
     monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
@@ -709,6 +782,45 @@ def test_worker_marks_session_paused_when_session_log_write_fails(monkeypatch, t
     assert sessions[0].state == SESSION_STATE_PAUSED
     assert "SESSION_LOG_WRITE_FAILED: RuntimeError" in sessions[0].last_error
     assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
+
+
+def test_async_session_log_writer_rejects_new_writes_after_background_failure(tmp_path) -> None:
+    writer = _SignalFailingSessionLogWriter(tmp_path / "async_failed.samples.csv")
+    session_log = worker_module._AsyncSessionLogWriter(writer)
+    observation = HopObservation(
+        datetime.now(),
+        1,
+        "198.51.100.10",
+        None,
+        True,
+        10.0,
+        STATUS_OK,
+        is_target=True,
+    )
+
+    session_log.write_many([observation])
+
+    assert writer.failed.wait(1.0)
+    deadline = time.monotonic() + 1.0
+    while session_log._current_error() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert isinstance(session_log._current_error(), RuntimeError)
+    with pytest.raises(worker_module._SessionLogWriterFailed) as raised:
+        session_log.write_many([observation])
+    assert isinstance(raised.value.original, RuntimeError)
+    assert session_log.queue_depth == 0
+    with pytest.raises(RuntimeError):
+        session_log.close()
+
+
+def test_session_log_error_summary_unwraps_background_writer_failure() -> None:
+    original = RuntimeError("simulated async write failure")
+    wrapped = worker_module._SessionLogWriterFailed(original)
+
+    assert (
+        worker_module._session_log_error_summary(wrapped)
+        == "SESSION_LOG_WRITE_FAILED: RuntimeError"
+    )
 
 
 def test_worker_marks_session_paused_when_session_log_close_fails(monkeypatch, tmp_path) -> None:
@@ -1194,6 +1306,20 @@ class _FailingSessionLogWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
 
+class _SignalFailingSessionLogWriter:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.paths = [path]
+        self.failed = threading.Event()
+
+    def write_many(self, _observations) -> None:
+        self.failed.set()
+        raise RuntimeError("simulated async write failure")
+
+    def close(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+
 class _CloseFailingSessionLogWriter:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -1296,6 +1422,36 @@ class _CountingPingRunner:
 
     def close(self) -> None:
         self.counters["closed"] += 1
+
+
+class _CloseFailingProbe:
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name = name
+        self.events = events
+
+    def close(self) -> None:
+        self.events.append(self.name)
+        raise PermissionError("probe close locked")
+
+
+class _RecordingCloseProbe:
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name = name
+        self.events = events
+
+    def close(self) -> None:
+        self.events.append(self.name)
+
+
+class _CloseFailingProbeRunner:
+    def __init__(self, timeout_ms: int) -> None:
+        self.timeout_ms = timeout_ms
+
+    def ping(self, target: str) -> PingResult:
+        return PingResult(target, True, 20.0, STATUS_OK, datetime.now())
+
+    def close(self) -> None:
+        raise PermissionError("probe close locked")
 
 
 class _TwentyTargetPingRunner:
@@ -1404,6 +1560,15 @@ class _DelayedTracerouteProbe:
     def trace(self, target: str, timeout_ms: int, stop_event) -> list[HopInfo]:
         time.sleep(self.delay_seconds)
         return self.hops
+
+
+class _FailingRouteLog:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def write_snapshot(self, _snapshot, _change=None) -> None:
+        self.calls += 1
+        raise PermissionError("locked")
 
 
 def _count_csv_rows(path: Path) -> int:

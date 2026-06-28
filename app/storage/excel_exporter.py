@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from app.core.models import HopObservation, MetricSnapshot
+from app.storage.atomic_write import atomic_write_path
 from app.storage.export_annotations import ExportAnnotation
 
 
@@ -21,7 +22,6 @@ def export_xlsx(
     except ImportError as exc:
         raise RuntimeError("XLSX 저장에는 openpyxl 패키지가 필요합니다.") from exc
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
 
     summary = workbook.active
@@ -100,7 +100,7 @@ def export_xlsx(
         ])
     _autosize(samples_sheet)
 
-    workbook.save(path)
+    atomic_write_path(path, workbook.save)
 
 
 def _write_annotations_sheet(workbook, annotations: list[ExportAnnotation], font_cls, fill_cls) -> None:

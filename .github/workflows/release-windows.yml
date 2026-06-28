@@ -1,0 +1,83 @@
+name: Release Windows ZIP
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag. Leave empty to generate vYYYY.MM.DD-HHMMSS in KST."
+        required: false
+        type: string
+      title:
+        description: "Release title. Leave empty to use MultiPingCheck <tag>."
+        required: false
+        type: string
+      notes:
+        description: "Optional release note text to place above the generated commit summary."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, verify, and publish Windows release
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Ensure main branch
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_name }}" -ne "main") {
+            throw "Windows release publishing is allowed only from main. Current ref: ${{ github.ref }}"
+          }
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure Git release identity
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git pull --ff-only origin main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build, verify, and publish Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TITLE: ${{ inputs.title }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          $releaseArgs = @()
+          if (-not [string]::IsNullOrWhiteSpace($env:RELEASE_TAG)) {
+            $releaseArgs += @("-Tag", $env:RELEASE_TAG.Trim())
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:RELEASE_TITLE)) {
+            $releaseArgs += @("-Title", $env:RELEASE_TITLE.Trim())
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:RELEASE_NOTES)) {
+            $releaseArgs += @("-Notes", $env:RELEASE_NOTES.Trim())
+          }
+          .\scripts\publish_release.ps1 @releaseArgs

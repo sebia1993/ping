@@ -16,6 +16,7 @@ from app.core.models import (
     HopObservation,
     MetricSnapshot,
 )
+from app.storage import atomic_write as atomic_write_module
 from app.ui.graph_detail_window import (
     GraphDetailWindow,
     VIEW_ALL_HOPS,
@@ -558,6 +559,84 @@ def test_graph_detail_saves_selected_range_png(qt_app, tmp_path) -> None:
         detail.close()
 
 
+def test_graph_detail_png_preserves_existing_file_after_replace_failure(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    detail = GraphDetailWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 20.0 + index, STATUS_OK, True)
+        for index in range(3)
+    ]
+    path = tmp_path / "selected_range.png"
+    original_bytes = b"old png"
+    path.write_bytes(original_bytes)
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+
+    try:
+        detail.resize(900, 620)
+        detail.set_data("198.51.100.10", _snapshot(0, "198.51.100.10", None, is_target=True), history)
+        detail.show()
+        qt_app.processEvents()
+
+        try:
+            detail.save_png(path)
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("expected PermissionError")
+
+        assert path.read_bytes() == original_bytes
+        assert not list(tmp_path.glob(f".{path.name}.*{path.suffix}"))
+    finally:
+        detail.close()
+
+
+def test_graph_detail_png_button_reports_export_error_without_raising(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    detail = GraphDetailWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(now + timedelta(seconds=index), 0, "198.51.100.10", "Target", True, 20.0 + index, STATUS_OK, True)
+        for index in range(3)
+    ]
+    path = tmp_path / "selected_range.png"
+    original_bytes = b"old png"
+    path.write_bytes(original_bytes)
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+    monkeypatch.setattr(detail, "_select_png_path", lambda: path)
+
+    try:
+        detail.resize(900, 620)
+        detail.set_data("198.51.100.10", _snapshot(0, "198.51.100.10", None, is_target=True), history)
+        detail.show()
+        qt_app.processEvents()
+
+        detail._save_png_from_button()
+
+        assert path.read_bytes() == original_bytes
+        assert "locked" in detail.timeline_status_label.text()
+    finally:
+        detail.close()
+
+
 def test_graph_detail_saves_visible_csv_samples(qt_app, tmp_path) -> None:
     detail = GraphDetailWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -602,6 +681,96 @@ def test_graph_detail_saves_visible_csv_samples(qt_app, tmp_path) -> None:
         ]
         assert {row[0] for row in rows[1:]} == {"target"}
         assert "CSV 저장 완료:" in detail.timeline_status_label.text()
+    finally:
+        detail.close()
+
+
+def test_graph_detail_visible_csv_preserves_existing_file_after_replace_failure(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    detail = GraphDetailWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(
+            now + timedelta(seconds=index),
+            0,
+            "198.51.100.10",
+            "Target",
+            True,
+            20.0 + index,
+            STATUS_OK,
+            True,
+        )
+        for index in range(3)
+    ]
+    path = tmp_path / "visible.csv"
+    original_text = "old export\n"
+    path.write_text(original_text, encoding="utf-8-sig")
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+
+    try:
+        detail.set_data("198.51.100.10", _snapshot(0, "198.51.100.10", None, is_target=True), history)
+
+        try:
+            detail.save_visible_csv(path)
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("expected PermissionError")
+
+        assert path.read_text(encoding="utf-8-sig") == original_text
+        assert not list(tmp_path.glob(f".{path.name}.*{path.suffix}"))
+    finally:
+        detail.close()
+
+
+def test_graph_detail_visible_csv_button_reports_export_error_without_raising(
+    qt_app, tmp_path, monkeypatch
+) -> None:
+    detail = GraphDetailWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history = [
+        HopObservation(
+            now + timedelta(seconds=index),
+            0,
+            "198.51.100.10",
+            "Target",
+            True,
+            20.0 + index,
+            STATUS_OK,
+            True,
+        )
+        for index in range(3)
+    ]
+    path = tmp_path / "visible.csv"
+    original_text = "old export\n"
+    path.write_text(original_text, encoding="utf-8-sig")
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+    monkeypatch.setattr(detail, "_select_csv_path", lambda: path)
+
+    try:
+        detail.set_data("198.51.100.10", _snapshot(0, "198.51.100.10", None, is_target=True), history)
+
+        detail._save_visible_csv_from_button()
+
+        assert path.read_text(encoding="utf-8-sig") == original_text
+        assert "locked" in detail.timeline_status_label.text()
     finally:
         detail.close()
 

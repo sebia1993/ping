@@ -76,8 +76,17 @@ PROBE_ENGINE_TCP_CONNECT = "tcp_connect"
 PROBE_ENGINES = {PROBE_ENGINE_ICMP, PROBE_ENGINE_TCP_CONNECT}
 WORKER_UNEXPECTED_ERROR_CODE = "WORKER_UNEXPECTED_ERROR"
 SESSION_LOG_WRITE_FAILED_CODE = "SESSION_LOG_WRITE_FAILED"
+ROUTE_LOG_WRITE_FAILED_CODE = "ROUTE_LOG_WRITE_FAILED"
 ROUTE_LOG_CLOSE_FAILED_CODE = "ROUTE_LOG_CLOSE_FAILED"
 SESSION_INDEX_FINISH_FAILED_CODE = "SESSION_INDEX_FINISH_FAILED"
+
+
+class _SessionLogWriterFailed(RuntimeError):
+    """Background session-log failure surfaced on the measurement thread."""
+
+    def __init__(self, original: Exception) -> None:
+        super().__init__(str(original))
+        self.original = original
 
 
 @dataclass
@@ -159,7 +168,10 @@ class _ThreadLocalPingProbePool:
         for probe in probes:
             close = getattr(probe, "close", None)
             if close:
-                close()
+                try:
+                    close()
+                except Exception:
+                    pass
 
 
 class _AsyncSessionLogWriter:
@@ -175,6 +187,7 @@ class _AsyncSessionLogWriter:
         self._on_samples_written = on_samples_written
         self._queue: Queue[list[HopObservation] | None] = Queue()
         self._error: Exception | None = None
+        self._error_lock = threading.Lock()
         self._closed = False
         self._close_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="session-log-writer", daemon=True)
@@ -183,6 +196,7 @@ class _AsyncSessionLogWriter:
     def write_many(self, observations: list[HopObservation]) -> None:
         if observations:
             with self._close_lock:
+                self._raise_if_failed()
                 if not self._closed:
                     self._queue.put(list(observations))
 
@@ -193,14 +207,18 @@ class _AsyncSessionLogWriter:
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
+                error = self._current_error()
+                if error:
+                    raise error
                 return
             self._closed = True
             self._queue.put(None)
         self._thread.join(SESSION_LOG_CLOSE_TIMEOUT_SECONDS)
         if self._thread.is_alive():
             raise TimeoutError("session log writer did not close within timeout")
-        if self._error:
-            raise self._error
+        error = self._current_error()
+        if error:
+            raise error
 
     def _run(self) -> None:
         pending: list[HopObservation] = []
@@ -234,13 +252,12 @@ class _AsyncSessionLogWriter:
                     self._notify_samples_written(written)
                     pending = []
         except Exception as exc:
-            self._error = exc
+            self._set_error(exc)
         finally:
             try:
                 self._writer.close()
             except Exception as exc:
-                if self._error is None:
-                    self._error = exc
+                self._set_error(exc)
 
     @property
     def segment_paths(self) -> list[object]:
@@ -251,6 +268,20 @@ class _AsyncSessionLogWriter:
             return
         last_timestamp = max(observation.timestamp for observation in observations)
         self._on_samples_written(len(observations), last_timestamp, self.segment_paths)
+
+    def _raise_if_failed(self) -> None:
+        error = self._current_error()
+        if error:
+            raise _SessionLogWriterFailed(error) from error
+
+    def _set_error(self, error: Exception) -> None:
+        with self._error_lock:
+            if self._error is None:
+                self._error = error
+
+    def _current_error(self) -> Exception | None:
+        with self._error_lock:
+            return self._error
 
 
 class MeasurementWorker(QThread):
@@ -314,6 +345,7 @@ class MeasurementWorker(QThread):
         self._ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._hop_ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._route_history = RouteHistory()
+        self._route_log_write_failed = False
         self._auto_full_route_active = False
         self._tracert_status = "대기"
 
@@ -635,6 +667,11 @@ class MeasurementWorker(QThread):
             self.status_message.emit(
                 "측정이 완료되었습니다." if not self._stop_event.is_set() else "측정이 중지되었습니다."
             )
+        except _SessionLogWriterFailed as exc:
+            last_error = _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc.original)
+            self.error_message.emit(
+                f"세션 로그 저장 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({last_error})"
+            )
         except Exception as exc:
             last_error = _error_code_summary(WORKER_UNEXPECTED_ERROR_CODE, exc)
             self.error_message.emit(f"측정 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({last_error})")
@@ -661,7 +698,7 @@ class MeasurementWorker(QThread):
                     )
                     session_log.close()
                 except Exception as exc:
-                    session_error = _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc)
+                    session_error = _session_log_error_summary(exc)
                     last_error = _merge_error_summaries(last_error, session_error)
                     self.error_message.emit(
                         f"세션 로그 저장 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({session_error})"
@@ -1098,12 +1135,26 @@ class MeasurementWorker(QThread):
         self._tracert_status = "완료"
         route_change = self._route_history.record(refreshed_hops, datetime.now())
         if route_log is not None and self._route_history.snapshots:
-            route_log.write_snapshot(self._route_history.snapshots[-1], route_change)
+            self._write_route_log_snapshot(route_log, route_change)
         self.trace_completed.emit(refreshed_hops)
         if route_change is not None:
             self.route_changed.emit(route_change)
         self.status_message.emit("측정 중...")
         return MetricsSession(refreshed_hops, recent_observation_limit=RECENT_OBSERVATION_LIMIT), refreshed_hops
+
+    def _write_route_log_snapshot(
+        self,
+        route_log: RouteLogWriter,
+        route_change,
+    ) -> None:
+        try:
+            route_log.write_snapshot(self._route_history.snapshots[-1], route_change)
+        except OSError as exc:
+            if self._route_log_write_failed:
+                return
+            self._route_log_write_failed = True
+            route_error = _error_code_summary(ROUTE_LOG_WRITE_FAILED_CODE, exc)
+            self.error_message.emit(f"경로 로그 저장 중 오류가 발생했습니다. 측정은 계속 진행합니다. ({route_error})")
 
     def _target_round_wait_seconds(self) -> float:
         if self.interval_seconds <= 0:
@@ -1338,6 +1389,12 @@ class MeasurementWorker(QThread):
 
 def _error_code_summary(code: str, exc: Exception) -> str:
     return f"{code}: {type(exc).__name__}"
+
+
+def _session_log_error_summary(exc: Exception) -> str:
+    if isinstance(exc, _SessionLogWriterFailed):
+        return _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc.original)
+    return _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc)
 
 
 def _merge_error_summaries(current: str, extra: str) -> str:

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from app.storage import atomic_write as atomic_write_module
 from scripts import run_stability_soak_suite as suite
 
 
@@ -25,7 +29,7 @@ def test_soak_suite_builds_profile_command_without_shortening_real_duration(tmp_
 
     assert command == [
         "python",
-        "scripts\\soak_test.py",
+        str(Path("scripts") / "soak_test.py"),
         "--profile",
         "long4h",
         "--output-dir",
@@ -68,6 +72,55 @@ def test_soak_suite_dry_run_writes_manifest_without_running_profiles(tmp_path) -
     assert all(Path(result["output_dir"]).name in {"long4h", "ui10"} for result in payload["results"])
     assert payload["results"][0]["thresholds"]["minimum_duration_seconds"] == 13_680.0
     assert payload["results"][1]["thresholds"]["max_ui_event_gap_seconds"] == 0.2
+
+
+def test_soak_suite_manifest_preserves_existing_file_after_replace_failure(tmp_path, monkeypatch) -> None:
+    manifest_path = tmp_path / "stability_soak_suite.json"
+    manifest_path.write_text('{"status":"existing"}', encoding="utf-8")
+    original_replace = atomic_write_module._replace_path
+
+    def locked_replace(source, target):
+        if target == manifest_path:
+            raise PermissionError("locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", locked_replace)
+
+    with pytest.raises(PermissionError):
+        suite.write_manifest(
+            manifest_path,
+            started_at="2026-01-01T01:00:00",
+            profiles=["release"],
+            results=[],
+            finished_at=None,
+        )
+
+    assert manifest_path.read_text(encoding="utf-8") == '{"status":"existing"}'
+    assert list(tmp_path.glob(".stability_soak_suite.json.*")) == []
+
+
+def test_soak_suite_evidence_report_file_retries_transient_replace_error(tmp_path, monkeypatch, capsys) -> None:
+    report_path = tmp_path / "stability_soak_evidence.json"
+    attempts = 0
+    original_replace = atomic_write_module._replace_path
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if target == report_path and attempts < 3:
+            raise OSError("sharing violation")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_replace_path", flaky_replace)
+
+    suite.emit_evidence_report({"passed": True, "profiles": []}, report_path=report_path)
+
+    assert attempts == 3
+    assert json.loads(report_path.read_text(encoding="utf-8")) == {"passed": True, "profiles": []}
+    assert json.loads(capsys.readouterr().out) == {"passed": True, "profiles": []}
+    assert list(tmp_path.glob(".stability_soak_evidence.json.*")) == []
 
 
 def test_soak_suite_profile_thresholds_capture_long_run_evidence_limits() -> None:
@@ -130,6 +183,77 @@ def test_soak_suite_validate_accepts_completed_manifest(tmp_path) -> None:
     )
 
     assert suite.validate_manifest(manifest_path, ["release"]) == []
+
+
+def test_soak_suite_load_manifest_retries_transient_read_error(tmp_path, monkeypatch) -> None:
+    manifest_path = tmp_path / "stability_soak_suite.json"
+    suite.write_manifest(
+        manifest_path,
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[],
+        finished_at=None,
+    )
+    attempts = 0
+    original_read = atomic_write_module._read_text_path
+
+    def flaky_read(path, *, encoding):
+        nonlocal attempts
+        if path == manifest_path:
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("temporarily locked")
+        return original_read(path, encoding=encoding)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_read_text_path", flaky_read)
+
+    payload = suite.load_manifest(manifest_path)
+
+    assert attempts == 3
+    assert payload is not None
+    assert payload["profiles_requested"] == ["release"]
+
+
+def test_soak_suite_validate_retries_transient_summary_read_error(tmp_path, monkeypatch) -> None:
+    run_root = tmp_path / "completed"
+    run_root.mkdir()
+    summary_path = run_root / "soak_50_targets_20260101_010101.json"
+    summary_path.write_text(
+        json.dumps(_summary("release", duration_seconds=5.0), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest_path = run_root / "stability_soak_suite.json"
+    suite.write_manifest(
+        manifest_path,
+        started_at="2026-01-01T01:00:00",
+        profiles=["release"],
+        results=[
+            {
+                "profile": "release",
+                "status": "passed",
+                "summary_json": str(summary_path),
+                "failures": [],
+            }
+        ],
+        finished_at="2026-01-01T01:00:05",
+    )
+    attempts = 0
+    original_read = atomic_write_module._read_text_path
+
+    def flaky_read(path, *, encoding):
+        nonlocal attempts
+        if path == summary_path:
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("temporarily locked")
+        return original_read(path, encoding=encoding)
+
+    monkeypatch.setattr(atomic_write_module, "EXPORT_IO_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(atomic_write_module, "_read_text_path", flaky_read)
+
+    assert suite.validate_manifest(manifest_path, ["release"]) == []
+    assert attempts == 3
 
 
 def test_soak_suite_evidence_report_summarizes_thresholds_and_checks(tmp_path) -> None:
@@ -332,6 +456,56 @@ def test_soak_suite_loads_latest_summary(tmp_path) -> None:
     assert summary is not None
     assert summary["path"] == new
     assert summary["data"]["failures"] == []
+
+
+def test_soak_suite_loads_only_summaries_created_after_run_start(tmp_path) -> None:
+    stale = tmp_path / "soak_50_targets_20260101_010101.json"
+    fresh = tmp_path / "soak_50_targets_20260101_020202.json"
+    stale.write_text('{"failures": ["stale"]}', encoding="utf-8")
+    fresh.write_text('{"failures": []}', encoding="utf-8")
+    os.utime(stale, (100.0, 100.0))
+    os.utime(fresh, (200.0, 200.0))
+
+    summary = suite.load_latest_summary(tmp_path, since=150.0)
+
+    assert summary is not None
+    assert summary["path"] == fresh
+    assert summary["data"]["failures"] == []
+
+
+def test_soak_suite_allows_filesystem_mtime_grace_for_new_summary(tmp_path) -> None:
+    fresh = tmp_path / "soak_50_targets_20260101_020202.json"
+    fresh.write_text('{"failures": []}', encoding="utf-8")
+    os.utime(fresh, (149.5, 149.5))
+
+    summary = suite.load_latest_summary(tmp_path, since=150.0)
+
+    assert summary is not None
+    assert summary["path"] == fresh
+
+
+def test_soak_suite_run_profile_rejects_success_without_new_summary(tmp_path, monkeypatch) -> None:
+    args = SimpleNamespace(
+        python_executable="python",
+        override_duration_seconds=None,
+        dry_run=False,
+    )
+    profile_root = tmp_path / "run" / "release"
+    profile_root.mkdir(parents=True)
+    stale_summary = profile_root / "soak_50_targets_20260101_010101.json"
+    stale_summary.write_text(
+        json.dumps(_summary("release", duration_seconds=5.0), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.utime(stale_summary, (100.0, 100.0))
+
+    monkeypatch.setattr(suite.subprocess, "run", lambda _command, cwd: SimpleNamespace(returncode=0))
+
+    result = suite.run_profile("release", args=args, run_root=tmp_path / "run")
+
+    assert result["status"] == "failed"
+    assert result["summary_json"] is None
+    assert result["failures"] == ["summary JSON was not created"]
 
 
 def test_soak_suite_result_records_session_and_thread_evidence(tmp_path, monkeypatch) -> None:

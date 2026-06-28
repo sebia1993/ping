@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -23,13 +24,15 @@ ROUTE_LOG_HEADERS = [
     "removed_hops",
     "summary",
 ]
+ROUTE_LOG_IO_RETRY_ATTEMPTS = 5
+ROUTE_LOG_IO_RETRY_DELAY_SECONDS = 0.05
 
 
 class RouteLogWriter:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = self.path.open("w", newline="", encoding="utf-8")
+        self._handle = _open_csv_write_handle(self.path)
         self._writer = csv.DictWriter(self._handle, fieldnames=ROUTE_LOG_HEADERS)
         self._writer.writeheader()
 
@@ -41,10 +44,15 @@ class RouteLogWriter:
         self._writer.writerow(_snapshot_row(snapshot))
         if change is not None:
             self._writer.writerow(_change_row(change))
-        self._handle.flush()
+        _flush_with_retries(self._handle)
 
     def close(self) -> None:
-        self._handle.close()
+        if self._handle.closed:
+            return
+        try:
+            _flush_with_retries(self._handle)
+        finally:
+            _close_handle_suppressing_errors(self._handle)
 
     def __enter__(self) -> "RouteLogWriter":
         return self
@@ -61,17 +69,20 @@ def route_log_path_for_session(session_log_path: Path | None) -> Path | None:
 
 
 def iter_route_changes(path: Path | None) -> Iterator[RouteChange]:
-    if path is None or not path.exists():
+    try:
+        if path is None or not path.exists():
+            return
+        with _open_csv_read_handle(path) as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if row.get("record_type") != "change":
+                    continue
+                try:
+                    yield row_to_route_change(row)
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+    except (OSError, csv.Error):
         return
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            if row.get("record_type") != "change":
-                continue
-            try:
-                yield row_to_route_change(row)
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                continue
 
 
 def route_changes_in_range(path: Path | None, start: datetime, end: datetime) -> list[RouteChange]:
@@ -155,6 +166,56 @@ def _load_string_tuple(value: str) -> tuple[str, ...]:
 
 def _load_int_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(item) for item in json.loads(value or "[]"))
+
+
+def _open_csv_read_handle(path: Path):
+    return _run_io_with_retries(lambda: _open_csv_read_path(path))
+
+
+def _open_csv_read_path(path: Path):
+    return path.open("r", newline="", encoding="utf-8")
+
+
+def _open_csv_write_handle(path: Path):
+    return _run_io_with_retries(lambda: _open_csv_write_path(path))
+
+
+def _open_csv_write_path(path: Path):
+    return path.open("w", newline="", encoding="utf-8")
+
+
+def _flush_with_retries(handle) -> None:
+    _run_io_with_retries(lambda: _flush_handle(handle))
+
+
+def _flush_handle(handle) -> None:
+    handle.flush()
+
+
+def _close_handle_suppressing_errors(handle) -> None:
+    try:
+        _close_handle(handle)
+    except OSError:
+        pass
+
+
+def _close_handle(handle) -> None:
+    handle.close()
+
+
+def _run_io_with_retries(operation):
+    last_error: OSError | None = None
+    for attempt in range(ROUTE_LOG_IO_RETRY_ATTEMPTS):
+        try:
+            return operation()
+        except OSError as exc:
+            last_error = exc
+            if attempt == ROUTE_LOG_IO_RETRY_ATTEMPTS - 1:
+                break
+            time.sleep(ROUTE_LOG_IO_RETRY_DELAY_SECONDS)
+    if last_error is not None:
+        raise last_error
+    return operation()
 
 
 def _base_session_stem(stem: str) -> str:
