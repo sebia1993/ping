@@ -1,0 +1,45 @@
+diff --git a/tests/test_verify_release.py b/tests/test_verify_release.py
+index c85aeff..04b9833 100644
+--- a/tests/test_verify_release.py
++++ b/tests/test_verify_release.py
+@@ -186,6 +186,40 @@ def test_publish_release_notes_include_traceable_zip_metadata() -> None:
+     assert "- 압축 파일: $($ZipItem.Name)" in text
+ 
+ 
++def test_release_windows_workflow_matches_publish_contract() -> None:
++    text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release-windows.yml").read_text(
++        encoding="utf-8"
++    )
++
++    assert "workflow_dispatch:" in text
++    for input_name in ("tag:", "title:", "notes:"):
++        assert input_name in text
++    assert "contents: write" in text
++    assert "runs-on: windows-latest" in text
++    assert "fetch-depth: 0" in text
++    assert 'github.ref_name }}" -ne "main"' in text
++    assert "GH_TOKEN: ${{ github.token }}" in text
++    assert ".\\scripts\\publish_release.ps1 @releaseArgs" in text
++
++
++def test_windows_ci_workflows_keep_fast_and_final_checks_separate() -> None:
++    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
++    fast = (root / "windows-fast-check.yml").read_text(encoding="utf-8")
++    final = (root / "windows-release-verify.yml").read_text(encoding="utf-8")
++
++    assert "push:" in fast
++    assert "pull_request:" in fast
++    assert "python scripts\\verify_release.py" in fast
++    assert "build_windows_exe.ps1" not in fast
++
++    assert "workflow_dispatch:" in final
++    assert "push:" not in final
++    assert "pull_request:" not in final
++    assert "python scripts\\verify_release.py" in final
++    assert "build_windows_exe.ps1" in final
++    assert "python scripts\\verify_release.py --exe" in final
++
++
+ class _Signal:
+     def __init__(self) -> None:
+         self._callbacks = []
