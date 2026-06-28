@@ -61,6 +61,8 @@ jobs:
           '@ | python -
           git apply --check local-release-changes.patch
           git apply local-release-changes.patch
+          git apply --check .github\validation\windows-mtime-fix.patch
+          git apply .github\validation\windows-mtime-fix.patch
           git status --short
 
       - name: Install dependencies
@@ -98,4 +100,5 @@ jobs:
             build/**
             dist/**
             local-release-changes.patch
+            .github/validation/windows-mtime-fix.patch
           if-no-files-found: ignore
