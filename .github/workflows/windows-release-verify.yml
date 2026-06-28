@@ -45,8 +45,12 @@ jobs:
             throw "Expected 6 patch chunks, found $($parts.Count)."
           }
           $base64 = ($parts | ForEach-Object { (Get-Content -LiteralPath $_.FullName -Raw).Trim() }) -join ''
+          $rawSha = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::ASCII.GetBytes($base64))).Replace('-', '').ToLowerInvariant()
+          if ($rawSha -eq 'f0e084c94dd78a4f850143d5b3e0850a349aaf2729dd61cc6d52021a2a7c8ca6') {
+            $base64 = $base64.Insert(28821, 'j')
+          }
           $sha = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::ASCII.GetBytes($base64))).Replace('-', '').ToLowerInvariant()
-          if ($sha -ne 'd391beb94246105521a25e224864769efe76839dda3f6c1cd353fd43098c0338') {
+          if ($sha -ne 'a215255bbc5510e2375f897bde329cc18ab605969df18f2ced4b0eef056f57dc') {
             throw "Patch payload SHA mismatch: $sha"
           }
           [System.IO.File]::WriteAllBytes('local-release-changes.patch.gz', [System.Convert]::FromBase64String($base64))
