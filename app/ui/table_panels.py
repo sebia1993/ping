@@ -438,9 +438,11 @@ def fmt_ms(value: float | None) -> str:
 def display_status(snapshot: MetricSnapshot) -> str:
     if snapshot.status == STATUS_PAUSED:
         return STATUS_PAUSED
-    if snapshot.loss_percent >= 20:
+    # 화면의 현재 상태는 세션 전체 누적값이 아니라 최근 측정 창을 기준으로 판단합니다.
+    # 누적 손실률은 통계 값으로 계속 표시되므로 과거 장애 이력은 사라지지 않습니다.
+    if snapshot.recent_loss_percent >= 20:
         return "CRITICAL"
-    if snapshot.loss_percent >= 5 or (snapshot.jitter_ms is not None and snapshot.jitter_ms >= 30):
+    if snapshot.recent_loss_percent >= 5 or (snapshot.jitter_ms is not None and snapshot.jitter_ms >= 30):
         return "WARNING"
     return snapshot.status
 

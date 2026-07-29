@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from app.utils.app_paths import user_exports_directory
+
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -14,7 +16,7 @@ def safe_target_name(target: str) -> str:
 
 
 def default_export_path(target: str, extension: str, base_dir: Path | None = None) -> Path:
-    base = base_dir or Path.cwd() / "exports"
+    base = base_dir or user_exports_directory()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = base / f"network_trace_{safe_target_name(target)}_{stamp}.{extension.lstrip('.')}"
     return available_path(path)

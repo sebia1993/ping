@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
@@ -79,6 +80,24 @@ SESSION_LOG_WRITE_FAILED_CODE = "SESSION_LOG_WRITE_FAILED"
 ROUTE_LOG_WRITE_FAILED_CODE = "ROUTE_LOG_WRITE_FAILED"
 ROUTE_LOG_CLOSE_FAILED_CODE = "ROUTE_LOG_CLOSE_FAILED"
 SESSION_INDEX_FINISH_FAILED_CODE = "SESSION_INDEX_FINISH_FAILED"
+
+
+def alert_history_observation_limit(config: AlertRuleConfig, interval_seconds: int) -> int:
+    """Return enough per-target samples to evaluate every configured alert window."""
+
+    time_windows = [0]
+    if config.loss_enabled:
+        time_windows.append(max(int(config.loss_window_seconds), 0))
+    if config.timer_enabled:
+        time_windows.append(max(int(config.timer_window_seconds), 0))
+    if config.mos_enabled:
+        time_windows.append(max(int(config.mos_window_seconds), 0))
+    sample_windows = [2]
+    if config.sample_enabled or config.jitter_enabled:
+        sample_windows.append(max(int(config.sample_window_count), 2))
+    cadence = max(int(interval_seconds), 1)
+    timed_samples = math.ceil(max(time_windows) / cadence) + 2
+    return max(RECENT_OBSERVATION_LIMIT, timed_samples, max(sample_windows) + 1)
 
 
 class _SessionLogWriterFailed(RuntimeError):
@@ -435,8 +454,9 @@ class MeasurementWorker(QThread):
             self.status_message.emit("측정이 중지되었습니다.")
             return
 
+        target_history_limit = alert_history_observation_limit(self.alert_rule_config, self.interval_seconds)
         target_trackers = {
-            target: TargetMetricTracker(target, recent_observation_limit=RECENT_OBSERVATION_LIMIT)
+            target: TargetMetricTracker(target, recent_observation_limit=target_history_limit)
             for target in self.targets
         }
         recent_observations: deque[HopObservation] = deque(maxlen=RECENT_OBSERVATION_LIMIT)
@@ -1147,6 +1167,7 @@ class MeasurementWorker(QThread):
         route_log: RouteLogWriter,
         route_change,
     ) -> None:
+        had_failure = self._route_log_write_failed
         try:
             route_log.write_snapshot(self._route_history.snapshots[-1], route_change)
         except OSError as exc:
@@ -1155,6 +1176,10 @@ class MeasurementWorker(QThread):
             self._route_log_write_failed = True
             route_error = _error_code_summary(ROUTE_LOG_WRITE_FAILED_CODE, exc)
             self.error_message.emit(f"경로 로그 저장 중 오류가 발생했습니다. 측정은 계속 진행합니다. ({route_error})")
+        else:
+            self._route_log_write_failed = False
+            if had_failure:
+                self.status_message.emit("경로 로그 저장이 정상화되었습니다.")
 
     def _target_round_wait_seconds(self) -> float:
         if self.interval_seconds <= 0:
@@ -1198,7 +1223,10 @@ class MeasurementWorker(QThread):
             self.targets.append(target)
             target_trackers[target] = TargetMetricTracker(
                 target,
-                recent_observation_limit=RECENT_OBSERVATION_LIMIT,
+                recent_observation_limit=alert_history_observation_limit(
+                    self.alert_rule_config,
+                    self._target_base_interval_seconds(target),
+                ),
             )
             target_states[target] = TargetProbeState(target)
 

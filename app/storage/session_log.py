@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.core.models import HopObservation
+from app.utils.app_paths import session_logs_directory
 from app.utils.filename import default_export_path, safe_target_name
 
 
@@ -26,6 +27,17 @@ OBSERVATION_HEADERS = [
 SEGMENT_INDEX_VERSION = 2
 SEGMENT_INDEX_IO_RETRY_ATTEMPTS = 5
 SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
+SESSION_LOG_CORRUPTED_CODE = "SESSION_LOG_CORRUPTED"
+
+
+class SessionLogCorruptionError(RuntimeError):
+    def __init__(self, skipped_rows: int, skipped_row_files: tuple[Path, ...]) -> None:
+        self.skipped_rows = skipped_rows
+        self.skipped_row_files = skipped_row_files
+        super().__init__(
+            f"{SESSION_LOG_CORRUPTED_CODE}: 읽을 수 없는 세션 행 {skipped_rows}개 "
+            f"(파일 {len(skipped_row_files)}개)"
+        )
 
 
 @dataclass(frozen=True)
@@ -159,7 +171,7 @@ def session_log_directory(
     root: Path | None = None,
     timestamp: datetime | None = None,
 ) -> Path:
-    base_dir = root or Path.cwd() / "exports" / "session_logs"
+    base_dir = root or session_logs_directory()
     stamp = timestamp or datetime.now()
     return base_dir / safe_target_name(target) / stamp.strftime("%Y-%m")
 
@@ -168,6 +180,33 @@ def read_observations(path: Path | None) -> list[HopObservation]:
     if path is None:
         return []
     return list(iter_observations(path))
+
+
+def read_observations_with_summary(
+    path: Path | None,
+) -> tuple[list[HopObservation], SessionLogReadSummary]:
+    if path is None:
+        return [], SessionLogReadSummary(rows=0, skipped_rows=0, skipped_row_files=())
+    observations: list[HopObservation] = []
+    skipped_rows = 0
+    skipped_row_files: list[Path] = []
+    for segment_path in session_log_segments(path):
+        segment_skipped = False
+        with _open_csv_read_handle(segment_path) as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                try:
+                    observations.append(row_to_observation(row))
+                except (KeyError, TypeError, ValueError):
+                    skipped_rows += 1
+                    segment_skipped = True
+        if segment_skipped:
+            skipped_row_files.append(segment_path)
+    return observations, SessionLogReadSummary(
+        rows=len(observations),
+        skipped_rows=skipped_rows,
+        skipped_row_files=tuple(skipped_row_files),
+    )
 
 
 def session_log_read_summary(path: Path | None) -> SessionLogReadSummary:
@@ -197,23 +236,34 @@ def session_log_read_summary(path: Path | None) -> SessionLogReadSummary:
     )
 
 
-def iter_observations(path: Path | None) -> Iterator[HopObservation]:
+def iter_observations(path: Path | None, *, strict: bool = False) -> Iterator[HopObservation]:
     if path is None:
         return
+    skipped_rows = 0
+    skipped_row_files: list[Path] = []
     for segment_path in session_log_segments(path):
+        segment_skipped = False
         with _open_csv_read_handle(segment_path) as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 try:
                     yield row_to_observation(row)
                 except (KeyError, TypeError, ValueError):
+                    skipped_rows += 1
+                    segment_skipped = True
                     continue
+        if segment_skipped:
+            skipped_row_files.append(segment_path)
+    if strict and skipped_rows:
+        raise SessionLogCorruptionError(skipped_rows, tuple(skipped_row_files))
 
 
 def iter_observations_in_range(
     path: Path | None,
     start: datetime,
     end: datetime,
+    *,
+    strict: bool = False,
 ) -> Iterator[HopObservation]:
     if path is None:
         return
@@ -222,7 +272,7 @@ def iter_observations_in_range(
     for segment in session_log_segment_index(path):
         if not segment.overlaps(start, end):
             continue
-        for observation in iter_observations_from_segment(segment.path):
+        for observation in iter_observations_from_segment(segment.path, strict=strict):
             if start <= observation.timestamp <= end:
                 yield observation
 
@@ -243,14 +293,18 @@ def session_log_bounds(path: Path | None) -> tuple[datetime, datetime] | None:
     return min(segment.start for segment in segments if segment.start), max(segment.end for segment in segments if segment.end)
 
 
-def iter_observations_from_segment(path: Path) -> Iterator[HopObservation]:
+def iter_observations_from_segment(path: Path, *, strict: bool = False) -> Iterator[HopObservation]:
+    skipped_rows = 0
     with _open_csv_read_handle(path) as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             try:
                 yield row_to_observation(row)
             except (KeyError, TypeError, ValueError):
+                skipped_rows += 1
                 continue
+    if strict and skipped_rows:
+        raise SessionLogCorruptionError(skipped_rows, (path,))
 
 
 def _index_segment(path: Path) -> SessionLogSegment:

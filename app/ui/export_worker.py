@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable
 from datetime import datetime
 from itertools import chain
@@ -23,6 +24,11 @@ from app.storage.statistics_exporter import (
 EXPORT_EMPTY_STATISTICS_MESSAGE = "선택한 내보내기 범위에 해당하는 통계 샘플이 없습니다."
 EXPORT_WRITE_FAILED_CODE = "EXPORT_WRITE_FAILED"
 EXPORT_UNEXPECTED_ERROR_CODE = "EXPORT_UNEXPECTED_ERROR"
+EXPORT_CANCELLED_CODE = "EXPORT_CANCELLED"
+
+
+class _ExportCancelled(RuntimeError):
+    pass
 
 
 class ExportWorker(QThread):
@@ -56,6 +62,7 @@ class ExportWorker(QThread):
         self.focus_range = focus_range
         self.observations_override = observations_override
         self.statistics_options = statistics_options or StatisticsExportOptions()
+        self._cancel_requested = threading.Event()
 
     def run(self) -> None:
         try:
@@ -64,9 +71,10 @@ class ExportWorker(QThread):
                 observations = iter(self.observations_override)
             elif self.focus_range is not None:
                 start, end = self.focus_range
-                observations = iter_observations_in_range(self.session_log_path, start, end)
+                observations = iter_observations_in_range(self.session_log_path, start, end, strict=True)
             else:
-                observations = iter_observations(self.session_log_path)
+                observations = iter_observations(self.session_log_path, strict=True)
+            observations = self._interruptible_observations(observations)
             if self.kind == "csv":
                 export_csv(self.path, observations, self.snapshots, self.analysis, self.annotations)
             elif self.kind == "xlsx":
@@ -97,10 +105,31 @@ class ExportWorker(QThread):
                 )
             else:
                 raise RuntimeError(f"지원하지 않는 저장 형식입니다: {self.kind}")
+            if self._is_cancel_requested():
+                raise _ExportCancelled
+        except _ExportCancelled:
+            self.status_message.emit(EXPORT_CANCELLED_CODE)
+            return
         except Exception as exc:
             self.error_message.emit(_format_export_error(exc))
             return
         self.export_completed.emit(str(self.path))
+
+    def request_cancel(self) -> None:
+        self._cancel_requested.set()
+        self.requestInterruption()
+
+    def _interruptible_observations(
+        self,
+        observations: Iterable[HopObservation],
+    ) -> Iterable[HopObservation]:
+        for observation in observations:
+            if self._is_cancel_requested():
+                raise _ExportCancelled
+            yield observation
+
+    def _is_cancel_requested(self) -> bool:
+        return self._cancel_requested.is_set() or self.isInterruptionRequested()
 
     @staticmethod
     def _non_empty_statistics_observations(

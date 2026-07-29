@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import threading
 from concurrent.futures import Future
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -24,11 +24,34 @@ from app.ui.worker import (
     RECENT_OBSERVATION_LIMIT,
     MeasurementWorker,
     TargetProbeState,
+    alert_history_observation_limit,
 )
 
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def test_alert_history_limit_keeps_both_timer_window_boundaries() -> None:
+    config = AlertRuleConfig(timer_window_seconds=300)
+    limit = alert_history_observation_limit(config, interval_seconds=1)
+    tracker = TargetMetricTracker("198.51.100.10", recent_observation_limit=limit)
+    started_at = datetime(2026, 1, 1, 12, 0, 0)
+
+    for second in range(301):
+        tracker.add_result(
+            PingResult(
+                "198.51.100.10",
+                False,
+                None,
+                STATUS_TIMEOUT,
+                started_at + timedelta(seconds=second),
+            )
+        )
+
+    assert limit >= 301
+    assert len(tracker.observations) == 301
+    assert (tracker.observations[-1].timestamp - tracker.observations[0].timestamp).total_seconds() == 300
 
 
 def test_worker_reports_invalid_target_without_starting_network() -> None:
@@ -126,6 +149,36 @@ def test_worker_continues_when_route_log_write_fails() -> None:
         "경로 로그 저장 중 오류가 발생했습니다. 측정은 계속 진행합니다. "
         "(ROUTE_LOG_WRITE_FAILED: PermissionError)"
     ]
+
+
+def test_worker_reports_route_log_recovery_and_reports_a_later_failure_again() -> None:
+    _app()
+    worker = MeasurementWorker("198.51.100.10", interval_seconds=0, max_cycles=1)
+    outcomes = [PermissionError("locked"), None, PermissionError("locked again")]
+    errors: list[str] = []
+    statuses: list[str] = []
+
+    class IntermittentRouteLog:
+        def write_snapshot(self, *_args) -> None:
+            outcome = outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+    worker.error_message.connect(errors.append)
+    worker.status_message.connect(statuses.append)
+    worker._route_history.record(
+        [HopInfo(index=1, address="198.51.100.10", is_target=True)],
+        datetime(2026, 1, 1, 12, 0, 0),
+    )
+    route_log = IntermittentRouteLog()
+
+    worker._write_route_log_snapshot(route_log, None)
+    worker._write_route_log_snapshot(route_log, None)
+    worker._write_route_log_snapshot(route_log, None)
+
+    assert len(errors) == 2
+    assert all("ROUTE_LOG_WRITE_FAILED: PermissionError" in error for error in errors)
+    assert statuses == ["경로 로그 저장이 정상화되었습니다."]
 
 
 def test_worker_rejects_domain_without_dns_lookup() -> None:

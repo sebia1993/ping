@@ -17,6 +17,7 @@ from app.storage.session_log import (
     session_log_segment_index,
     session_log_segment_index_path,
 )
+from app.utils.app_paths import legacy_session_log_directories, session_logs_directory
 
 
 # Session Manager 화면은 원본 CSV를 매번 전부 읽지 않고 이 작은 JSON 인덱스를 먼저 봅니다.
@@ -30,6 +31,7 @@ SESSION_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
 SESSION_DELETE_FILES_FAILED_CODE = "SESSION_DELETE_FILES_FAILED"
 SESSION_INDEX_REBUILT_CODE = "SESSION_INDEX_REBUILT"
 SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE = "SESSION_RECOVERED_WITH_SKIPPED_ROWS"
+SESSION_INDEX_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -85,11 +87,59 @@ class SessionIndexStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self.last_read_warning = ""
 
     @classmethod
     def create(cls, root: Path | None = None) -> "SessionIndexStore":
-        base_dir = root or Path.cwd() / "exports" / "session_logs"
-        return cls(base_dir / "session_index.json")
+        base_dir = root or session_logs_directory()
+        store = cls(base_dir / "session_index.json")
+        if root is None:
+            store.import_legacy_sessions()
+        return store
+
+    def import_legacy_sessions(self) -> int:
+        """Reference existing session files from releases that stored beside the EXE."""
+
+        imported = 0
+        for legacy_root in legacy_session_log_directories():
+            try:
+                legacy_records = _read_index_records_without_recovery(
+                    legacy_root / "session_index.json",
+                    legacy_root,
+                )
+            except (OSError, json.JSONDecodeError):
+                continue
+            imported += self.import_sessions(legacy_records)
+        return imported
+
+    def import_sessions(self, incoming: list[TraceSessionRecord]) -> int:
+        """Merge valid external session records without moving their original files."""
+
+        valid = [record for record in incoming if record.sample_path.exists()]
+        if not valid:
+            return 0
+        with self._lock:
+            records = self._read_records()
+            existing_paths = {_normalized_path_key(record.sample_path) for record in records}
+            existing_ids = {record.session_id for record in records}
+            additions: list[TraceSessionRecord] = []
+            for record in valid:
+                path_key = _normalized_path_key(record.sample_path)
+                if path_key in existing_paths:
+                    continue
+                imported_record = record
+                if imported_record.session_id in existing_ids:
+                    suffix = hashlib.blake2s(path_key.encode("utf-8"), digest_size=3).hexdigest()
+                    imported_record = _replace_record(
+                        imported_record,
+                        session_id=f"{imported_record.session_id}-{suffix}",
+                    )
+                additions.append(imported_record)
+                existing_paths.add(path_key)
+                existing_ids.add(imported_record.session_id)
+            if additions:
+                self._write_records([*records, *additions])
+        return len(additions)
 
     def register_session(
         self,
@@ -409,21 +459,37 @@ class SessionIndexStore:
         return pruned
 
     def _read_records(self) -> list[TraceSessionRecord]:
+        self.last_read_warning = ""
         if not self.path.exists():
             return self._recover_records_from_logs()
         try:
             data = json.loads(_read_text_with_retries(self.path))
         except (OSError, json.JSONDecodeError):
+            self.last_read_warning = f"{SESSION_INDEX_REBUILT_CODE}: invalid_index"
             return self._recover_records_from_logs()
         rows = data.get("sessions", []) if isinstance(data, dict) else []
         records: list[TraceSessionRecord] = []
+        invalid_rows = 0
         for row in rows:
             try:
-                records.append(_record_from_row(row))
+                records.append(_record_from_row(row, self.path.parent))
             except (KeyError, TypeError, ValueError):
-                continue
+                invalid_rows += 1
         if rows and not records:
+            self.last_read_warning = f"{SESSION_INDEX_REBUILT_CODE}: invalid_rows={invalid_rows}"
             return self._recover_records_from_logs()
+        if invalid_rows:
+            self.last_read_warning = f"{SESSION_INDEX_REBUILT_CODE}: invalid_rows={invalid_rows}"
+            recovered = _recover_records_from_logs(self.path.parent)
+            existing_paths = {_normalized_path_key(record.sample_path) for record in records}
+            for record in recovered:
+                if _normalized_path_key(record.sample_path) not in existing_paths:
+                    records.append(record)
+                    existing_paths.add(_normalized_path_key(record.sample_path))
+            try:
+                self._write_records(records)
+            except OSError:
+                pass
         return records
 
     def _recover_records_from_logs(self) -> list[TraceSessionRecord]:
@@ -459,8 +525,11 @@ class SessionIndexStore:
         # 임시 파일에 먼저 쓰고 replace로 교체합니다. 쓰는 도중 앱이 꺼져도
         # 기존 session_index.json이 반쯤 깨지는 상황을 줄이기 위한 방식입니다.
         payload = {
-            "version": 1,
-            "sessions": [_record_to_row(record) for record in sorted(records, key=lambda item: item.start)],
+            "version": SESSION_INDEX_VERSION,
+            "sessions": [
+                _record_to_row(record, self.path.parent)
+                for record in sorted(records, key=lambda item: item.start)
+            ],
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path: Path | None = None
@@ -485,6 +554,29 @@ def _session_id(sample_path: Path) -> str:
     path_key = "/".join(sample_path.parts[-3:])
     digest = hashlib.blake2s(path_key.encode("utf-8"), digest_size=5).hexdigest()
     return f"{sample_path.stem}-{digest}"
+
+
+def _normalized_path_key(path: Path) -> str:
+    try:
+        return str(path.resolve(strict=False)).casefold()
+    except OSError:
+        return str(path.absolute()).casefold()
+
+
+def _read_index_records_without_recovery(path: Path, root: Path) -> list[TraceSessionRecord]:
+    """Read a legacy index quickly; never scan all CSV files during app startup."""
+
+    if not path.exists():
+        return []
+    payload = json.loads(_read_text_with_retries(path))
+    rows = payload.get("sessions", []) if isinstance(payload, dict) else []
+    records: list[TraceSessionRecord] = []
+    for row in rows:
+        try:
+            records.append(_record_from_row(row, root))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return records
 
 
 def _recover_records_from_logs(root: Path) -> list[TraceSessionRecord]:
@@ -632,12 +724,12 @@ def session_index_root_for_sample_path(sample_path: Path) -> Path:
     return sample_path.parent
 
 
-def _record_to_row(record: TraceSessionRecord) -> dict[str, object]:
+def _record_to_row(record: TraceSessionRecord, root: Path) -> dict[str, object]:
     return {
         "session_id": record.session_id,
         "target": record.target,
-        "sample_path": str(record.sample_path),
-        "route_path": str(record.route_path) if record.route_path is not None else "",
+        "sample_path": _serialize_index_path(record.sample_path, root),
+        "route_path": _serialize_index_path(record.route_path, root) if record.route_path is not None else "",
         "start": record.start.isoformat(timespec="seconds"),
         "end": record.end.isoformat(timespec="seconds") if record.end is not None else "",
         "samples": record.samples,
@@ -649,12 +741,12 @@ def _record_to_row(record: TraceSessionRecord) -> dict[str, object]:
         "route_probe_engine": record.route_probe_engine,
         "resumed_from_session_id": record.resumed_from_session_id,
         "target_count": record.target_count,
-        "segments": [str(path) for path in record.segments],
+        "segments": [_serialize_index_path(path, root) for path in record.segments],
         "last_error": record.last_error,
     }
 
 
-def _record_from_row(row: dict[str, object]) -> TraceSessionRecord:
+def _record_from_row(row: dict[str, object], root: Path | None = None) -> TraceSessionRecord:
     end_value = str(row.get("end") or "")
     route_value = str(row.get("route_path") or "")
     measurement_mode = str(row.get("measurement_mode") or "")
@@ -664,8 +756,8 @@ def _record_from_row(row: dict[str, object]) -> TraceSessionRecord:
     return TraceSessionRecord(
         session_id=str(row["session_id"]),
         target=str(row["target"]),
-        sample_path=Path(str(row["sample_path"])),
-        route_path=Path(route_value) if route_value else None,
+        sample_path=_deserialize_index_path(str(row["sample_path"]), root),
+        route_path=_deserialize_index_path(route_value, root) if route_value else None,
         start=datetime.fromisoformat(str(row["start"])),
         end=datetime.fromisoformat(end_value) if end_value else None,
         samples=int(row.get("samples") or 0),
@@ -677,9 +769,23 @@ def _record_from_row(row: dict[str, object]) -> TraceSessionRecord:
         route_probe_engine=str(row.get("route_probe_engine") or fallback_route_engine),
         resumed_from_session_id=str(row.get("resumed_from_session_id") or ""),
         target_count=int(row.get("target_count") or 1),
-        segments=tuple(Path(str(path)) for path in row.get("segments", []) or []),
+        segments=tuple(_deserialize_index_path(str(path), root) for path in row.get("segments", []) or []),
         last_error=str(row.get("last_error") or ""),
     )
+
+
+def _serialize_index_path(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _deserialize_index_path(value: str, root: Path | None) -> Path:
+    path = Path(value)
+    if root is not None and not path.is_absolute():
+        return root / path
+    return path
 
 
 def _replace_record(record: TraceSessionRecord, **updates) -> TraceSessionRecord:

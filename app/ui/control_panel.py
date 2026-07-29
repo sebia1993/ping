@@ -45,6 +45,9 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
 
     owner.target_input = TargetInputEdit()
     owner.target_input.setPlaceholderText("IP를 한 줄에 하나씩 입력하거나 붙여넣기")
+    owner.target_input.setAccessibleName("측정할 IPv4 주소")
+    owner.target_input.setAccessibleDescription("IPv4 주소를 한 줄에 하나씩 입력하거나 여러 줄을 붙여넣습니다.")
+    owner.target_input.setToolTip("IPv4 주소를 한 줄에 하나씩 입력하거나 여러 줄을 붙여넣습니다.")
     owner.target_input.setMinimumHeight(110)
     owner.target_input.setMaximumHeight(180)
     owner.target_input.setLineWrapMode(QPlainTextEdit.NoWrap)
@@ -73,8 +76,10 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
 
     owner.start_button = QPushButton("시작")
     owner.start_button.setObjectName("primaryButton")
+    owner.start_button.setAccessibleName("Ping 측정 시작")
     owner.stop_button = QPushButton("중지")
     owner.stop_button.setObjectName("dangerButton")
+    owner.stop_button.setAccessibleName("Ping 측정 중지")
     owner.save_target_group_button = QPushButton("그룹 저장")
     owner.save_selected_target_group_button = QPushButton("선택 저장")
     owner.load_target_group_button = QPushButton("그룹 불러오기")
@@ -131,6 +136,7 @@ def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_la
     owner.running_target_summary_label.setVisible(False)
     owner.runtime_target_input = QLineEdit()
     owner.runtime_target_input.setPlaceholderText("추가 IP")
+    owner.runtime_target_input.setAccessibleName("측정 중 추가할 IPv4 주소")
     owner.runtime_target_input.setClearButtonEnabled(True)
     owner.runtime_target_input.setMinimumWidth(150)
     owner.runtime_target_input.setVisible(False)

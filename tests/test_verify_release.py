@@ -184,6 +184,9 @@ def test_publish_release_notes_include_traceable_zip_metadata() -> None:
     assert "- ZIP SHA256: $ZipHash" in text
     assert "- 기준 커밋 SHA: $Head" in text
     assert "- 압축 파일: $($ZipItem.Name)" in text
+    assert "IPv4 주소는 한 줄에 하나씩" in text
+    assert "APP_STARTUP_FAILED 또는 APP_UNEXPECTED_ERROR" in text
+    assert "%LOCALAPPDATA%\\MultiPingCheck\\logs\\multipingcheck.log" in text
 
 
 def test_release_windows_workflow_matches_publish_contract() -> None:

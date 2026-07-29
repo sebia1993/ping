@@ -62,9 +62,11 @@ from app.core.models import STATUS_PAUSED, HopObservation, MetricSnapshot
 from app.core.observation_stats import build_focus_snapshots, observations_in_range
 from app.core.route_history import RouteChange, route_path
 from app.ui.control_panel import build_controls_panel
+from app.ui.alert_action_dispatcher import AlertActionDispatcher
 from app.ui.export_worker import ExportWorker
 from app.ui.graph_detail_window import GraphDetailWindow
 from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries
+from app.ui.session_observation_loader import SessionObservationLoader
 from app.ui.table_panels import (
     ALERT_HEADERS,
     SESSION_HEADERS,
@@ -93,7 +95,12 @@ from app.ui.worker import (
     PROBE_ENGINE_TCP_CONNECT,
     MeasurementWorker,
 )
-from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
+from app.storage.alert_action_log import (
+    append_alert_action,
+    append_alert_actions,
+    alert_action_log_path_for_session,
+    read_alert_actions,
+)
 from app.storage.atomic_write import atomic_write_path, read_text_with_retries
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.route_log import route_changes_in_range, route_log_path_for_session
@@ -107,9 +114,16 @@ from app.storage.session_index import (
     session_storage_buckets,
     session_storage_summary,
 )
-from app.storage.session_log import iter_observations, iter_observations_in_range, session_log_bounds
+from app.storage.session_log import (
+    SESSION_LOG_CORRUPTED_CODE,
+    iter_observations,
+    iter_observations_in_range,
+    read_observations_with_summary,
+    session_log_bounds,
+)
 from app.storage.statistics_exporter import TIMEZONE_LOCAL, TIMEZONE_UTC, StatisticsExportOptions
 from app.storage.target_summary_exporter import TargetSummaryExportRow, export_target_summary_csv
+from app.utils.app_paths import alert_images_directory, user_exports_directory
 from app.utils.filename import default_export_path, safe_target_name
 from app.utils.validators import IPV4_ONLY_MESSAGE, parse_ipv4_targets, validate_target
 
@@ -211,6 +225,18 @@ class MainWindow(QMainWindow):
 
         self.worker: MeasurementWorker | None = None
         self.export_worker: ExportWorker | None = None
+        self.session_graph_loader: SessionObservationLoader | None = None
+        self.session_graph_load_serial = 0
+        self.active_session_graph_request: tuple[int, Path, datetime, datetime] | None = None
+        self.pending_session_graph_request: tuple[Path, datetime, datetime] | None = None
+        self.session_graph_cache_path: Path | None = None
+        self.session_graph_cache_range: tuple[datetime, datetime] | None = None
+        self.session_graph_cache_observations: list[HopObservation] = []
+        self.alert_action_dispatcher = AlertActionDispatcher(parent=self)
+        self.alert_action_dispatcher.completed.connect(
+            self._on_external_alert_action_completed,
+            Qt.QueuedConnection,
+        )
         self.graph_detail_window: GraphDetailWindow | None = None
         self._closing = False
         self.advanced_features_visible = False
@@ -237,6 +263,8 @@ class MainWindow(QMainWindow):
         self.live_graph_observations: deque[HopObservation] = deque()
         self.live_graph_observations_by_address: dict[str, deque[HopObservation]] = {}
         self.live_graph_observation_keys: set[HopObservation] = set()
+        self.alert_observations_by_address: dict[str, deque[HopObservation]] = {}
+        self.alert_observation_keys: set[HopObservation] = set()
         self.live_graph_measurement_start: datetime | None = None
         self.live_graph_latest_timestamp: datetime | None = None
         self.session_log_bounds_cache_path: Path | None = None
@@ -269,6 +297,7 @@ class MainWindow(QMainWindow):
         self.alert_event_actions: dict[str, list[str]] = {}
         self.pending_alert_image_keys: set[str] = set()
         self.active_alert_keys: set[str] = set()
+        self.pending_external_alert_log_paths: dict[tuple[str, str], Path | None] = {}
         self.metric_value_labels: dict[str, QLabel] = {}
         self.primary_graph_address: str | None = None
         self.target_graph_rows: dict[str, QFrame] = {}
@@ -315,9 +344,158 @@ class MainWindow(QMainWindow):
         self.live_graph_measurement_start = None
         self.live_graph_latest_timestamp = None
 
+    def _reset_alert_observation_cache(self) -> None:
+        self.alert_observations_by_address.clear()
+        self.alert_observation_keys.clear()
+
+    def _remember_alert_observations(self, observations: list[HopObservation]) -> None:
+        """Keep alert history per target so many targets cannot evict each other."""
+
+        target_points = [
+            observation
+            for observation in observations
+            if observation.address and (observation.hop_index == 0 or observation.is_target)
+        ]
+        if not target_points:
+            return
+        for observation in target_points:
+            if observation in self.alert_observation_keys:
+                continue
+            self.alert_observation_keys.add(observation)
+            self.alert_observations_by_address.setdefault(observation.address, deque()).append(observation)
+
+        retention_seconds, minimum_points = self._alert_history_requirements()
+        for address, points in list(self.alert_observations_by_address.items()):
+            if not points:
+                self.alert_observations_by_address.pop(address, None)
+                continue
+            cutoff = points[-1].timestamp - timedelta(seconds=retention_seconds)
+            while len(points) > minimum_points and points[0].timestamp < cutoff:
+                removed = points.popleft()
+                self.alert_observation_keys.discard(removed)
+
+    def _alert_history_requirements(self) -> tuple[int, int]:
+        config = self._alert_rule_config()
+        time_windows = [0]
+        if config.loss_enabled:
+            time_windows.append(config.loss_window_seconds)
+        if config.timer_enabled:
+            time_windows.append(config.timer_window_seconds)
+        if config.mos_enabled:
+            time_windows.append(config.mos_window_seconds)
+        sample_windows = [2]
+        if config.sample_enabled or config.jitter_enabled:
+            sample_windows.append(config.sample_window_count)
+        return max(time_windows) + 2, max(sample_windows)
+
+    def _alert_histories_by_address(self) -> dict[str, list[HopObservation]]:
+        return {
+            address: list(points)
+            for address, points in self.alert_observations_by_address.items()
+            if points
+        }
+
     def _reset_session_log_bounds_cache(self) -> None:
         self.session_log_bounds_cache_path = None
         self.session_log_bounds_cache = None
+
+    def _reset_session_graph_cache(self) -> None:
+        self.session_graph_load_serial += 1
+        self.pending_session_graph_request = None
+        self.active_session_graph_request = None
+        self.session_graph_cache_path = None
+        self.session_graph_cache_range = None
+        self.session_graph_cache_observations = []
+        if self.session_graph_loader is not None and self.session_graph_loader.isRunning():
+            self.session_graph_loader.requestInterruption()
+
+    def _queue_session_graph_load(self, path: Path, start: datetime, end: datetime) -> None:
+        if self._session_graph_cache_covers(path, start, end):
+            return
+        request = (path, start, end)
+        if request == self.pending_session_graph_request:
+            return
+        if self.active_session_graph_request is not None and request == self.active_session_graph_request[1:]:
+            return
+        self.pending_session_graph_request = request
+        if self.session_graph_loader is None or not self.session_graph_loader.isRunning():
+            self._start_pending_session_graph_load()
+
+    def _session_graph_cache_covers(self, path: Path, start: datetime, end: datetime) -> bool:
+        if self.session_graph_cache_path != path or self.session_graph_cache_range is None:
+            return False
+        cached_start, cached_end = self.session_graph_cache_range
+        if cached_start > start:
+            return False
+        if cached_end >= end:
+            return True
+        live_bounds = _observation_bounds(self.live_graph_observations)
+        return bool(live_bounds is not None and live_bounds[0] <= cached_end)
+
+    def _start_pending_session_graph_load(self) -> None:
+        request = self.pending_session_graph_request
+        if request is None:
+            return
+        self.pending_session_graph_request = None
+        path, start, end = request
+        self.session_graph_load_serial += 1
+        request_id = self.session_graph_load_serial
+        self.active_session_graph_request = (request_id, path, start, end)
+        loader = SessionObservationLoader(
+            request_id=request_id,
+            path=path,
+            start=start,
+            end=end,
+            parent=self,
+        )
+        self.session_graph_loader = loader
+        loader.loaded.connect(self._on_session_graph_loaded)
+        loader.failed.connect(self._on_session_graph_load_failed)
+        loader.finished.connect(self._on_session_graph_loader_finished)
+        loader.start()
+
+    def _on_session_graph_loaded(self, request_id: int, observations: object) -> None:
+        request = self.active_session_graph_request
+        if request is None or request[0] != request_id or request_id != self.session_graph_load_serial:
+            return
+        _request_id, path, start, end = request
+        if path != self.session_log_path:
+            return
+        self.session_graph_cache_path = path
+        self.session_graph_cache_range = (start, end)
+        self.session_graph_cache_observations = list(observations)
+        self._request_graph_render(force=True)
+
+    def _on_session_graph_load_failed(self, request_id: int, message: str) -> None:
+        request = self.active_session_graph_request
+        if request is not None and request[0] == request_id:
+            self.status_label.setText(message)
+
+    def _on_session_graph_loader_finished(self) -> None:
+        loader = self.session_graph_loader
+        if loader is not None:
+            loader.deleteLater()
+        self.session_graph_loader = None
+        self.active_session_graph_request = None
+        if self.pending_session_graph_request is not None:
+            self._start_pending_session_graph_load()
+
+    def _session_graph_observations(
+        self,
+        path: Path,
+        start: datetime,
+        end: datetime,
+    ) -> list[HopObservation]:
+        self._queue_session_graph_load(path, start, end)
+        cached = []
+        if self.session_graph_cache_path == path:
+            cached = observations_in_range(self.session_graph_cache_observations, start, end)
+        live_source = (
+            self._live_graph_observation_list()
+            if self.live_graph_observations
+            else self.observations
+        )
+        return _merge_observations(cached, observations_in_range(live_source, start, end))
 
     def _session_log_bounds_cached(self) -> tuple[datetime, datetime] | None:
         if self.session_log_path is None or not self.session_log_path.exists():
@@ -1134,7 +1312,7 @@ class MainWindow(QMainWindow):
         selected, _ = QFileDialog.getOpenFileName(
             self,
             "불러오기",
-            str(Path.cwd() / "exports"),
+            str(user_exports_directory()),
             "JSON 파일 (*.json)",
         )
         if not selected:
@@ -1266,11 +1444,13 @@ class MainWindow(QMainWindow):
         self.route_log_path = None
         self.alert_action_log_path = None
         self._reset_session_log_bounds_cache()
+        self._reset_session_graph_cache()
         self.snapshots = []
         self.target_snapshot = None
         self.target_snapshots = []
         self.observations = []
         self._reset_live_graph_observation_cache()
+        self._reset_alert_observation_cache()
         self.target_history = []
         self.selected_hop_index = None
         self.analysis = []
@@ -1423,6 +1603,7 @@ class MainWindow(QMainWindow):
             self.target_snapshot = None
             self.observations = []
             self._reset_live_graph_observation_cache()
+            self._reset_alert_observation_cache()
             self._reset_session_log_bounds_cache()
             self.target_history = []
             self.main_graph_live_end_time = None
@@ -1730,6 +1911,7 @@ class MainWindow(QMainWindow):
         self.observations = list(observations)
         self._reset_session_log_bounds_cache()
         self._remember_live_graph_observations(self.observations)
+        self._remember_alert_observations(self.observations)
         self.target_history = self._target_history_from_observations(self.observations) or list(target_history)
         self._record_metric_alerts()
 
@@ -1889,6 +2071,7 @@ class MainWindow(QMainWindow):
         """Worker가 만든 세션 CSV 경로를 받아 Session Manager와 export 기능을 연결합니다."""
 
         self.session_log_path = Path(path)
+        self._reset_session_graph_cache()
         self._reset_session_log_bounds_cache()
         self.route_log_path = route_log_path_for_session(self.session_log_path)
         self.alert_action_log_path = alert_action_log_path_for_session(self.session_log_path)
@@ -2055,10 +2238,7 @@ class MainWindow(QMainWindow):
             if visible_range is None:
                 return self.observations
             start, end = visible_range
-            return _merge_observations(
-                self._observations_for_range(start, end),
-                observations_in_range(self.observations, start, end),
-            )
+            return self._session_graph_observations(self.session_log_path, start, end)
         return self.observations
 
     def _target_histories_by_address(self, observations: list[HopObservation]) -> dict[str, list[HopObservation]]:
@@ -2793,7 +2973,7 @@ class MainWindow(QMainWindow):
         previous_active_keys = set(self.active_alert_keys)
         active_keys: set[str] = set()
         events: list[AlertEvent] = []
-        histories = self._target_histories_by_address(self.observations)
+        histories = self._alert_histories_by_address()
         alert_targets = self.current_targets or _unique_addresses(histories.keys())
         if not alert_targets and self.current_target:
             alert_targets = [self.current_target]
@@ -2815,9 +2995,10 @@ class MainWindow(QMainWindow):
         )
         active_keys.update(route_active_keys)
         events.extend(route_events)
+        new_events: list[AlertEvent] = []
         for event in events:
             if event.key not in previous_active_keys:
-                self._append_alert_event(event)
+                new_events.append(event)
         ended_keys = previous_active_keys - active_keys
         if ended_keys:
             for key in sorted(ended_keys):
@@ -2825,7 +3006,7 @@ class MainWindow(QMainWindow):
                 timestamp = self._latest_alert_timestamp_for_target(target, histories)
                 if target is not None and base_key:
                     recovery = alert_recovery_event(base_key, timestamp)
-                    self._append_alert_event(
+                    new_events.append(
                         replace(
                             recovery,
                             key=f"{key}:ended:{timestamp.isoformat(timespec='seconds')}",
@@ -2833,7 +3014,8 @@ class MainWindow(QMainWindow):
                         )
                     )
                 else:
-                    self._append_alert_event(alert_recovery_event(key, timestamp))
+                    new_events.append(alert_recovery_event(key, timestamp))
+        self._append_alert_event_batch(new_events)
         self.active_alert_keys = active_keys
 
     @staticmethod
@@ -2893,6 +3075,10 @@ class MainWindow(QMainWindow):
         self.pending_alert_image_keys = {
             key for key in self.pending_alert_image_keys if not key.startswith(prefixes)
         }
+        for target in targets:
+            points = self.alert_observations_by_address.pop(target, ())
+            for point in points:
+                self.alert_observation_keys.discard(point)
 
     def _watched_route_ip(self) -> str:
         if not hasattr(self, "route_ip_alert_check") or not self.route_ip_alert_check.isChecked():
@@ -2968,7 +3154,7 @@ class MainWindow(QMainWindow):
         selected, _ = QFileDialog.getOpenFileName(
             self,
             "불러오기",
-            str(Path.cwd() / "exports"),
+            str(user_exports_directory()),
             "JSON 파일 (*.json)",
         )
         if not selected:
@@ -3097,13 +3283,16 @@ class MainWindow(QMainWindow):
         *,
         record_actions: bool = True,
         actions: list[str] | None = None,
-    ) -> None:
+        persist_actions: bool = True,
+        sync: bool = True,
+    ) -> AlertEvent | None:
         event_identity = _alert_event_identity(event)
         if any(_alert_event_identity(existing) == event_identity for existing in self.alert_events):
             if actions is not None:
                 self.alert_event_actions[event.key] = actions
-                self._sync_alerts_box()
-            return
+                if sync:
+                    self._sync_alerts_box()
+            return None
         if any(existing.key == event.key for existing in self.alert_events):
             event = replace(event, key=_alert_event_instance_key(event))
         self.alert_events.append(event)
@@ -3111,9 +3300,39 @@ class MainWindow(QMainWindow):
         if actions is not None:
             self.alert_event_actions[event.key] = actions
         elif record_actions:
-            self.alert_event_actions[event.key] = self._record_alert_actions(event)
+            self.alert_event_actions[event.key] = self._record_alert_actions(
+                event,
+                persist=persist_actions,
+            )
         self._trim_alert_event_history()
-        self._sync_alerts_box()
+        if sync:
+            self._sync_alerts_box()
+        return event
+
+    def _append_alert_event_batch(self, events: list[AlertEvent]) -> None:
+        if not events:
+            return
+        log_entries: list[tuple[AlertEvent, list[str], str | None]] = []
+        appended_any = False
+        for event in events:
+            appended = self._append_alert_event(
+                event,
+                persist_actions=False,
+                sync=False,
+            )
+            if appended is None:
+                continue
+            appended_any = True
+            actions = self.alert_event_actions.get(appended.key, [])
+            if actions:
+                log_entries.append((appended, actions, None))
+        if log_entries:
+            try:
+                append_alert_actions(self.alert_action_log_path, log_entries)
+            except OSError as exc:
+                self.status_label.setText(f"알림 로그 저장 실패: {type(exc).__name__}")
+        if appended_any:
+            self._sync_alerts_box()
 
     def _trim_alert_event_history(self) -> None:
         if len(self.alert_events) > ALERT_EVENT_HISTORY_LIMIT:
@@ -3124,7 +3343,7 @@ class MainWindow(QMainWindow):
         }
         self.pending_alert_image_keys.intersection_update(active_keys)
 
-    def _record_alert_actions(self, event: AlertEvent) -> list[str]:
+    def _record_alert_actions(self, event: AlertEvent, *, persist: bool = True) -> list[str]:
         actions = self._selected_alert_actions(event)
         recorded_actions: list[str] = []
         for action in actions:
@@ -3134,27 +3353,142 @@ class MainWindow(QMainWindow):
             elif action == "image":
                 self.pending_alert_image_keys.add(event.key)
                 recorded_actions.append(action)
-            elif action == "email":
-                recorded_actions.append("email" if self._send_alert_email_action(event) else "email_failed")
-            elif action == "rest":
-                recorded_actions.append("rest" if self._send_alert_rest_action(event) else "rest_failed")
-            elif action == "executable":
-                recorded_actions.append(
-                    "executable" if self._run_alert_executable_action(event) else "executable_failed"
-                )
+            elif action in {"email", "rest", "executable"}:
+                self._queue_external_alert_action(event, action)
+                recorded_actions.append(f"{action}_queued")
             else:
                 recorded_actions.append(action)
         if not recorded_actions:
             return []
-        try:
-            append_alert_action(
-                self.alert_action_log_path,
-                event,
-                actions=recorded_actions,
+        if persist:
+            try:
+                append_alert_action(
+                    self.alert_action_log_path,
+                    event,
+                    actions=recorded_actions,
+                )
+            except OSError as exc:
+                self.status_label.setText(f"알림 로그 저장 실패: {type(exc).__name__}")
+        return recorded_actions
+
+    def _queue_external_alert_action(self, event: AlertEvent, action: str) -> None:
+        job = self._external_alert_action_job(event, action)
+        key = (event.key, action)
+        self.pending_external_alert_log_paths[key] = self.alert_action_log_path
+        if job is None:
+            self.alert_action_dispatcher.completed.emit(event, action, False, "ALERT_ACTION_CONFIG_INVALID")
+            return
+        self.alert_action_dispatcher.submit(event, action, job)
+
+    def _external_alert_action_job(self, event: AlertEvent, action: str):
+        target = self._alert_event_target(event) or self.current_target
+        if action == "email":
+            config = self._alert_email_config()
+            if config is None:
+                return None
+            subject = f"[MultiPingCheck] {event.severity.upper()} {event.title}"
+            body = "\n".join(
+                [
+                    f"Target: {target or '-'}",
+                    f"Severity: {event.severity}",
+                    f"Title: {event.title}",
+                    f"Message: {event.message}",
+                    f"Start: {event.start.isoformat(timespec='seconds')}",
+                    f"End: {event.end.isoformat(timespec='seconds')}",
+                    f"Key: {event.key}",
+                ]
             )
+
+            def email_job() -> tuple[bool, str]:
+                try:
+                    self._send_alert_email(
+                        config.host,
+                        config.port,
+                        config.sender,
+                        config.recipient,
+                        subject,
+                        body,
+                        security=config.security,
+                        username=config.username,
+                        password_env=config.password_env,
+                    )
+                except (OSError, smtplib.SMTPException, ValueError) as exc:
+                    return False, f"{type(exc).__name__}: {exc}"
+                return True, ""
+
+            return email_job
+        if action == "rest":
+            url = self._alert_rest_url()
+            if not url:
+                return None
+            payload = {
+                "key": event.key,
+                "timestamp": event.timestamp.isoformat(timespec="seconds"),
+                "start": event.start.isoformat(timespec="seconds"),
+                "end": event.end.isoformat(timespec="seconds"),
+                "severity": event.severity,
+                "title": event.title,
+                "message": event.message,
+                "target": target,
+                "series_key": event.series_key,
+            }
+
+            def rest_job() -> tuple[bool, str]:
+                try:
+                    self._post_alert_webhook(url, payload)
+                except (OSError, ValueError, urllib.error.URLError) as exc:
+                    return False, f"{type(exc).__name__}: {exc}"
+                return True, ""
+
+            return rest_job
+        if action == "executable":
+            path = self._alert_executable_path()
+            if path is None:
+                return None
+            env = dict(os.environ)
+            env.update(
+                {
+                    "NPD_ALERT_KEY": event.key,
+                    "NPD_ALERT_TITLE": event.title,
+                    "NPD_ALERT_MESSAGE": event.message,
+                    "NPD_ALERT_SEVERITY": event.severity,
+                    "NPD_ALERT_TARGET": target,
+                }
+            )
+
+            def executable_job() -> tuple[bool, str]:
+                try:
+                    self._launch_alert_executable(path, event, env)
+                except (OSError, ValueError) as exc:
+                    return False, f"{type(exc).__name__}: {exc}"
+                return True, ""
+
+            return executable_job
+        return None
+
+    def _on_external_alert_action_completed(
+        self,
+        event: object,
+        action: str,
+        success: bool,
+        message: str,
+    ) -> None:
+        if not isinstance(event, AlertEvent):
+            return
+        outcome = action if success else f"{action}_failed"
+        stored_actions = self.alert_event_actions.get(event.key)
+        if stored_actions is not None and outcome not in stored_actions:
+            stored_actions.append(outcome)
+        log_path = self.pending_external_alert_log_paths.pop((event.key, action), self.alert_action_log_path)
+        try:
+            append_alert_action(log_path, event, actions=[outcome])
         except OSError as exc:
             self.status_label.setText(f"알림 로그 저장 실패: {type(exc).__name__}")
-        return recorded_actions
+            return
+        if not success:
+            labels = {"email": "이메일", "rest": "REST", "executable": "실행파일"}
+            detail = f": {message}" if message else ""
+            self.status_label.setText(f"알림 {labels.get(action, action)} 동작 실패{detail}")
 
     def _selected_alert_actions(self, event: AlertEvent | None = None) -> list[str]:
         if not hasattr(self, "alert_timeline_action_check"):
@@ -3405,7 +3739,7 @@ class MainWindow(QMainWindow):
         if self.alert_action_log_path is not None:
             base = self.alert_action_log_path.parent / "alert_images"
         else:
-            base = Path.cwd() / "exports" / "alert_images"
+            base = alert_images_directory()
         stamp = event.timestamp.strftime("%Y%m%d_%H%M%S")
         target = safe_target_name(self.current_target or "target")
         title = safe_target_name(event.title)
@@ -3839,6 +4173,7 @@ class MainWindow(QMainWindow):
         if self.session_log_path != record.sample_path:
             return
         self.session_log_path = None
+        self._reset_session_graph_cache()
         self.route_log_path = None
         self.alert_action_log_path = None
         self._reset_session_log_bounds_cache()
@@ -3856,7 +4191,7 @@ class MainWindow(QMainWindow):
         if reconciled:
             record = reconciled[0]
         try:
-            observations = list(iter_observations(record.sample_path))
+            observations, read_summary = read_observations_with_summary(record.sample_path)
         except OSError as exc:
             self.status_label.setText(_session_log_read_error_message(record.sample_path, exc))
             return
@@ -3868,11 +4203,13 @@ class MainWindow(QMainWindow):
         self.trace_target_combo.setCurrentText(record.target)
         self.session_log_path = record.sample_path
         self._reset_session_log_bounds_cache()
+        self._reset_session_graph_cache()
         self.route_log_path = record.route_path or route_log_path_for_session(record.sample_path)
         self.alert_action_log_path = alert_action_log_path_for_session(record.sample_path)
         self.session_index_store = SessionIndexStore.create(session_index_root_for_sample_path(record.sample_path))
         self.observations = observations
         self._reset_live_graph_observation_cache()
+        self._reset_alert_observation_cache()
         self.target_history = self._target_history_from_observations(observations)
         focus_set = build_focus_snapshots(observations, current_target=record.target)
         self.snapshots = focus_set.hop_snapshots
@@ -3899,6 +4236,11 @@ class MainWindow(QMainWindow):
         self._render_current_view(force_graph=True)
         self._set_state_chip("불러옴", "active")
         status_text = f"세션 불러오기 완료: {record.target}, 샘플 {len(observations)}개"
+        if read_summary.skipped_rows:
+            status_text += (
+                f" | 손상된 행 {read_summary.skipped_rows}개 제외 "
+                f"({SESSION_LOG_CORRUPTED_CODE})"
+            )
         if record.last_error:
             status_text += f" | {record.last_error}"
         self.status_label.setText(status_text)
@@ -3980,11 +4322,21 @@ class MainWindow(QMainWindow):
         self._on_probe_engine_changed()
 
     def _load_saved_alert_actions(self) -> None:
+        merged: dict[str, tuple[AlertEvent, list[str]]] = {}
         for index, row in enumerate(read_alert_actions(self.alert_action_log_path)):
             event = _alert_event_from_action_row(row, index)
             if event is None:
                 continue
             actions = [action for action in row.get("actions", "").split(";") if action]
+            if event.key in merged:
+                saved_event, saved_actions = merged[event.key]
+                for action in actions:
+                    if action not in saved_actions:
+                        saved_actions.append(action)
+                merged[event.key] = (saved_event, saved_actions)
+                continue
+            merged[event.key] = (event, actions)
+        for event, actions in merged.values():
             self._append_alert_event(event, record_actions=False, actions=actions)
 
     def _route_change_impact_line(self, change: RouteChange) -> str:
@@ -4358,7 +4710,7 @@ class MainWindow(QMainWindow):
         return bool({"timeline_annotation", "comment"}.intersection(actions))
 
     def _select_save_path(self, extension: str, file_filter: str, *, target: str | None = None) -> Path | None:
-        default = default_export_path(target or self.current_target or "target", extension, Path.cwd() / "exports")
+        default = default_export_path(target or self.current_target or "target", extension, user_exports_directory())
         default.parent.mkdir(parents=True, exist_ok=True)
         selected, _ = QFileDialog.getSaveFileName(self, "저장", str(default), file_filter)
         return Path(selected) if selected else None
@@ -4610,9 +4962,16 @@ class MainWindow(QMainWindow):
         if not self._wait_for_export_shutdown_on_close():
             event.ignore()
             return
+        if not self._wait_for_session_graph_loader_on_close():
+            event.ignore()
+            return
+        if not self._wait_for_alert_action_shutdown_on_close():
+            event.ignore()
+            return
         self._finish_close_event(event)
 
     def _finish_close_event(self, event) -> None:
+        self.alert_action_dispatcher.shutdown()
         if self.graph_detail_window is not None:
             self.graph_detail_window.close()
         super().closeEvent(event)
@@ -4621,6 +4980,8 @@ class MainWindow(QMainWindow):
         return bool(
             (self.worker and self.worker.isRunning())
             or (self.export_worker and self.export_worker.isRunning())
+            or (self.session_graph_loader and self.session_graph_loader.isRunning())
+            or self.alert_action_dispatcher.pending_count > 0
         )
 
     def _wait_for_measurement_shutdown_on_close(self) -> bool:
@@ -4635,9 +4996,29 @@ class MainWindow(QMainWindow):
     def _wait_for_export_shutdown_on_close(self) -> bool:
         if not self.export_worker or not self.export_worker.isRunning():
             return True
+        self.export_worker.request_cancel()
         if self.export_worker.wait(3000) or not self.export_worker.isRunning():
             return True
         self.status_label.setText("내보내기 저장이 끝날 때까지 종료를 보류합니다.")
+        return False
+
+    def _wait_for_session_graph_loader_on_close(self) -> bool:
+        if not self.session_graph_loader or not self.session_graph_loader.isRunning():
+            return True
+        self.session_graph_loader.requestInterruption()
+        if self.session_graph_loader.wait(3000) or not self.session_graph_loader.isRunning():
+            return True
+        self.status_label.setText("그래프 데이터 읽기가 끝날 때까지 종료를 보류합니다.")
+        return False
+
+    def _wait_for_alert_action_shutdown_on_close(self) -> bool:
+        self.alert_action_dispatcher.shutdown()
+        if self.alert_action_dispatcher.wait(3.0):
+            return True
+        self.status_label.setText(
+            "알림 전송 작업 종료를 기다리는 중입니다. 완료되면 다시 종료해 주세요. "
+            "(ALERT_ACTION_SHUTDOWN_PENDING)"
+        )
         return False
 
 
@@ -5295,7 +5676,7 @@ def _parse_session_measurement_mode(value: str) -> tuple[str, str, int | None]:
     return mode, probe_engine, tcp_port
 
 
-def _alert_event_from_action_row(row: dict[str, str], index: int) -> AlertEvent | None:
+def _alert_event_from_action_row(row: dict[str, str], _index: int) -> AlertEvent | None:
     timestamp = _parse_iso_datetime(row.get("timestamp", ""))
     if timestamp is None:
         timestamp = _parse_iso_datetime(row.get("end", "")) or _parse_iso_datetime(row.get("start", ""))
@@ -5307,7 +5688,14 @@ def _alert_event_from_action_row(row: dict[str, str], index: int) -> AlertEvent 
     title = row.get("title", "") or ("경로 변경" if source == "route" else "알림")
     message = row.get("message", "")
     severity = row.get("severity", "") or ("warning" if source == "route" else "info")
-    key = _alert_event_key_from_action_row(source, timestamp, title, message, index)
+    key = row.get("key", "") or _alert_event_key_from_action_row(
+        source,
+        timestamp,
+        start,
+        end,
+        title,
+        message,
+    )
     return AlertEvent(
         key=key,
         timestamp=timestamp,
@@ -5323,13 +5711,18 @@ def _alert_event_from_action_row(row: dict[str, str], index: int) -> AlertEvent 
 def _alert_event_key_from_action_row(
     source: str,
     timestamp: datetime,
+    start: datetime,
+    end: datetime,
     title: str,
     message: str,
-    index: int,
 ) -> str:
     if source == "route":
         return f"route_changed:{timestamp.isoformat(timespec='seconds')}"
-    return f"saved_alert:{timestamp.isoformat(timespec='seconds')}:{index}:{title}:{message}"
+    return (
+        f"saved_alert:{timestamp.isoformat(timespec='seconds')}:"
+        f"{start.isoformat(timespec='seconds')}:{end.isoformat(timespec='seconds')}:"
+        f"{title}:{message}"
+    )
 
 
 def _parse_iso_datetime(value: str) -> datetime | None:

@@ -193,6 +193,22 @@ MultiPingCheck 실행 안내
 3. Python, PySide6, GitHub CLI는 사용자 PC에 따로 설치할 필요가 없습니다.
 4. Windows SmartScreen 또는 Defender 경고가 처음 실행 시 표시될 수 있습니다. 배포 출처와 SHA256 값을 확인한 뒤 실행 여부를 결정하세요.
 
+사용 방법
+
+1. IPv4 주소는 한 줄에 하나씩 입력하거나 Excel의 IP 열을 그대로 붙여넣습니다.
+2. 시작 버튼을 누르면 입력 영역이 접히고 대상별 실시간 그래프가 표시됩니다.
+3. 그래프 색상은 초록=정상, 주황=주의, 빨강=장애, 회색=대기 또는 일시중지입니다.
+4. 측정 중에도 IP 추가, 이름 지정, 개별 일시중지 또는 삭제가 가능합니다.
+5. 측정을 끝낼 때 중지 버튼을 누릅니다.
+
+데이터와 오류 확인
+
+- 세션: %LOCALAPPDATA%\MultiPingCheck\session_logs
+- 진단 로그: %LOCALAPPDATA%\MultiPingCheck\logs\multipingcheck.log
+- APP_STARTUP_FAILED 또는 APP_UNEXPECTED_ERROR가 반복되면 진단 로그를 확인합니다.
+- SESSION_LOG_WRITE_FAILED가 표시되면 디스크 공간, 파일 잠금, 폴더 권한을 확인하고 기존 세션 파일은 삭제하지 않습니다.
+- SESSION_LOG_CORRUPTED가 표시되면 원본 세션을 보관합니다. 불완전한 CSV/XLSX 내보내기는 자동으로 차단됩니다.
+
 배포 정보
 
 - 프로그램: $Name

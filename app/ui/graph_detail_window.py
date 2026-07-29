@@ -29,6 +29,7 @@ from app.storage.atomic_write import atomic_write_path
 from app.storage.session_log import OBSERVATION_HEADERS, observation_to_row
 from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries, series_color_hex
 from app.ui.table_panels import fmt_ms
+from app.utils.app_paths import user_exports_directory
 from app.utils.filename import default_export_path
 
 
@@ -541,13 +542,13 @@ class GraphDetailWindow(QMainWindow):
         return selected_path
 
     def _select_png_path(self) -> Path | None:
-        default = default_export_path(self._target or "target", "png", Path.cwd() / "exports")
+        default = default_export_path(self._target or "target", "png", user_exports_directory())
         default.parent.mkdir(parents=True, exist_ok=True)
         selected, _ = QFileDialog.getSaveFileName(self, "PNG 저장", str(default), "PNG Files (*.png)")
         return Path(selected) if selected else None
 
     def _select_csv_path(self) -> Path | None:
-        default = default_export_path(self._target or "target", "csv", Path.cwd() / "exports")
+        default = default_export_path(self._target or "target", "csv", user_exports_directory())
         default.parent.mkdir(parents=True, exist_ok=True)
         selected, _ = QFileDialog.getSaveFileName(self, "CSV 저장", str(default), "CSV Files (*.csv)")
         return Path(selected) if selected else None

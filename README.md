@@ -13,16 +13,37 @@ UI 변경은 이 파일을 우선 기준으로 맞춥니다.
 ## 주요 기능
 
 - 여러 IPv4 주소 입력
-- 등록된 IPv4 대상 전체를 주기적으로 ping 측정
+- 등록된 IPv4 대상 전체를 1초 간격 ICMP로 측정
 - 대상별 실시간 그래프 행 표시
 - 정상/주의/장애 상태 색상 표시
 - 대상별 이름 지정, 일시중지, 삭제
-- CSV, XLSX, Report, PNG 저장
+- 측정 중 IPv4 대상 추가
+- 최근 1분/5분/10분/30분/1시간 및 측정 전체 그래프
 - 세션 로그 segmented CSV 저장 및 복구
-- 중간 Hop ICMP 제한 가능성을 고려한 분석 문장
-- ICMP/TCP Connect 프로브 엔진 설정 저장
 
-## 실행
+현재 기본 화면은 `IPv4 입력 → 시작 → 대상별 그래프 확인 → 중지` 흐름에 집중합니다.
+코드에 보존된 TCP Connect, 전체 경로, Session Manager, CSV/XLSX/보고서 내보내기 같은
+고급 기능은 기본 화면에서 접근할 수 없으며 자동 검증과 향후 호환을 위해 유지합니다.
+
+## 일반 사용자 빠른 시작
+
+1. GitHub Releases에서 최신 `MultiPingCheck_<버전>.zip`을 받습니다.
+2. ZIP을 원하는 폴더에 완전히 압축 해제합니다.
+3. 압축 해제한 폴더의 `MultiPingCheck.exe`를 실행합니다.
+4. IPv4 주소를 한 줄에 하나씩 입력하거나 Excel의 IP 열을 그대로 붙여넣습니다.
+5. `시작`을 누르고 대상별 그래프의 색상을 확인합니다.
+6. 측정을 끝낼 때 `중지`를 누릅니다.
+
+상태 색상은 `초록=정상`, `주황=주의`, `빨강=장애`, `회색=대기 또는 일시중지`입니다.
+대상 이름은 각 그래프 행에서 지정할 수 있으며, 측정 중에도 대상을 추가하거나 개별 대상을
+일시중지·삭제할 수 있습니다. Windows SmartScreen 경고가 처음 표시되면 배포 출처와
+릴리즈에 첨부된 SHA256 값을 먼저 확인하세요.
+
+세션 데이터는 `%LOCALAPPDATA%\MultiPingCheck\session_logs`, 진단 로그는
+`%LOCALAPPDATA%\MultiPingCheck\logs\multipingcheck.log`에 저장됩니다.
+오류 코드가 표시되면 [오류 코드와 조치 방법](docs/error_codes.md)을 확인합니다.
+
+## 개발자 실행
 
 ```powershell
 python -m venv .venv
@@ -122,16 +143,15 @@ python scripts\soak_test.py --profile ui50
 ## 운영 개선 사항
 
 - 실시간 측정 중 화면 그래프는 최근 관측치를 중심으로 표시합니다.
-- 전체 샘플은 `exports\session_logs`의 세션 로그에 segmented CSV로 저장되어 CSV/XLSX 내보내기에 사용됩니다.
-- CSV/XLSX/Report 저장은 백그라운드 작업으로 실행되어 UI 응답성을 유지합니다.
+- 전체 샘플은 `%LOCALAPPDATA%\MultiPingCheck\session_logs`에 segmented CSV로 저장됩니다.
+- 이전 버전이 EXE 폴더의 `exports\session_logs`에 저장한 세션은 새 인덱스에서 자동으로 찾아 계속 열 수 있습니다.
+- 진단 로그는 `%LOCALAPPDATA%\MultiPingCheck\logs\multipingcheck.log`에 순환 저장됩니다.
+- 사용자가 직접 저장하는 파일의 기본 위치는 `%USERPROFILE%\Documents\MultiPingCheck`입니다.
+- CSV/XLSX/Report 저장과 전체 세션 그래프 읽기는 백그라운드에서 실행됩니다.
 - IPv4 대상은 기본 최대 50개까지 측정하며, 초과 입력 시 처음 50개 사용 여부를 확인합니다.
-- 선택한 IPv4 대상 Ping은 즉시 시작하고, Tracert 결과는 완료되는 대로 Hop 테이블에 반영합니다.
-- 대상 그룹 JSON에는 이름, 생성 시각, 대상 출처, 대상별 측정 설정 요약, 대상별 주기 override가 포함됩니다.
-- 알림 프리셋 JSON에는 이름, 생성 시각, 활성 조건/액션 요약이 포함됩니다.
-- Session Manager와 세션 ZIP manifest는 Mode, Engine, TCP Port를 분리해서 기록합니다.
-- 저장된 세션에서 Resume 후 Start하면 새 세션에 원본 세션 ID가 남아 측정 이력을 추적할 수 있습니다.
+- 기본 화면은 ICMP 최종 대상 측정만 실행하며 Tracert와 TCP Connect 설정을 노출하지 않습니다.
 - 세션 로그 저장 오류가 발생하면 세션을 `Pause` 상태와 원인 코드로 남깁니다.
-- Session Manager 새로고침은 기존 세션 CSV segment를 다시 읽어 샘플 수, 마지막 시각, 대상 수, segment 목록을 보정합니다.
+- 손상된 세션 행은 부분 복구 사실을 표시하고, 불완전한 CSV/XLSX가 정상 산출물로 저장되지 않게 차단합니다.
 - EXE 빌드는 사용하지 않는 대형 모듈을 제외해 배포 크기를 줄입니다.
 
 ## 주의

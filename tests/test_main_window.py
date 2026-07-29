@@ -3,7 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import platform
+import threading
+import time
 import zipfile
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +20,7 @@ from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopInfo, HopObservation, 
 from app.core.observation_stats import FocusSnapshotSet
 from app.core.route_history import RouteHistory
 from app.storage import atomic_write as atomic_write_module
+from app.storage import alert_action_log as alert_action_log_module
 from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
 from app.storage.route_log import RouteLogWriter, route_log_path_for_session
 from app.storage import session_index as session_index_module
@@ -31,6 +35,7 @@ from app.storage.session_index import (
 from app.storage.session_log import SessionLogWriter
 from app.storage.statistics_exporter import TIMEZONE_UTC
 from app.ui import main_window as main_window_module
+from app.ui import session_observation_loader as session_observation_loader_module
 from app.ui.graph_detail_window import VIEW_SELECTED_HOP, VIEW_VISIBLE_HOPS
 from app.ui.main_window import (
     ALERT_RULE_PRESET_VERSION,
@@ -59,6 +64,31 @@ from app.ui.worker import (
 )
 
 
+def _wait_for_external_alert_actions(window: MainWindow, qt_app, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if (
+            window.alert_action_dispatcher.pending_count == 0
+            and not window.pending_external_alert_log_paths
+        ):
+            qt_app.processEvents()
+            return
+        time.sleep(0.01)
+    raise AssertionError("External alert actions did not finish")
+
+
+def _wait_for_session_graph_loader(window: MainWindow, qt_app, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if window.session_graph_loader is None and window.pending_session_graph_request is None:
+            qt_app.processEvents()
+            return
+        time.sleep(0.01)
+    raise AssertionError("Session graph loader did not finish")
+
+
 def test_main_window_initial_state(qt_app) -> None:
     window = MainWindow()
 
@@ -74,6 +104,9 @@ def test_main_window_initial_state(qt_app) -> None:
         assert window.alert_table.columnCount() == len(ALERT_HEADERS)
         assert window.alert_table.rowCount() == 0
         assert window.windowTitle() == "멀티핑체크"
+        assert window.target_input.accessibleName() == "측정할 IPv4 주소"
+        assert window.start_button.accessibleName() == "Ping 측정 시작"
+        assert window.stop_button.accessibleName() == "Ping 측정 중지"
         view_actions = [
             action.text()
             for menu_action in window.menuBar().actions()
@@ -2579,6 +2612,86 @@ def test_main_window_colors_target_graph_rows_by_current_alert_state(qt_app) -> 
         window.close()
 
 
+def test_display_status_uses_recent_loss_after_old_outage_has_recovered() -> None:
+    snapshot = _snapshot(
+        0,
+        "198.51.100.10",
+        None,
+        loss=50.0,
+        recent_loss=0.0,
+        latency=10.0,
+        status=STATUS_OK,
+        is_target=True,
+    )
+
+    assert main_window_module.display_status(snapshot) == STATUS_OK
+
+
+def test_main_window_keeps_independent_alert_history_for_fifty_targets(qt_app, monkeypatch) -> None:
+    window = MainWindow()
+    targets = [f"10.0.0.{index}" for index in range(1, 51)]
+    snapshots = [
+        _snapshot(
+            0,
+            target,
+            None,
+            latency=None,
+            received=0,
+            timeout_count=10,
+            status=STATUS_TIMEOUT,
+            is_target=True,
+        )
+        for target in targets
+    ]
+    recent_observations: deque[HopObservation] = deque(maxlen=300)
+    started_at = datetime(2026, 1, 1, 12, 0, 0)
+    monkeypatch.setattr(window, "_render_current_view", lambda *args, **kwargs: None)
+
+    try:
+        window.current_target = targets[0]
+        window.current_targets = targets
+        window.loss_alert_check.setChecked(False)
+        window.latency_alert_check.setChecked(False)
+        window.sample_window_spin.setValue(10)
+        window.sample_bad_spin.setValue(10)
+        window.timer_alert_check.setChecked(False)
+
+        for second in range(10):
+            for target in targets:
+                recent_observations.append(
+                    HopObservation(
+                        started_at + timedelta(seconds=second),
+                        0,
+                        target,
+                        "Target",
+                        False,
+                        None,
+                        STATUS_TIMEOUT,
+                        True,
+                    )
+                )
+            window.on_measurement_updated(
+                [],
+                snapshots[0],
+                snapshots,
+                [],
+                list(recent_observations),
+                [],
+            )
+
+        assert all(len(window.alert_observations_by_address[target]) == 10 for target in targets)
+        assert {
+            key
+            for key in window.active_alert_keys
+            if key.endswith(":target_sample_condition")
+        } == {
+            f"target:{target}:target_sample_condition"
+            for target in targets
+        }
+    finally:
+        window.close()
+
+
 def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -2669,6 +2782,7 @@ def test_main_window_all_range_uses_session_log_start_beyond_live_buffer(qt_app,
         window.main_graph_range_combo.setCurrentIndex(
             window.main_graph_range_combo.findData(MAIN_GRAPH_RANGE_ALL)
         )
+        _wait_for_session_graph_loader(window, qt_app)
 
         expected_all_range = (start, now)
         assert window.graph.visible_datetime_range() == expected_all_range
@@ -4374,6 +4488,66 @@ def test_main_window_custom_alert_rules_write_action_log(qt_app, tmp_path) -> No
         window.close()
 
 
+def test_main_window_merges_saved_alert_action_progress_rows(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    event = AlertEvent(
+        key="target:198.51.100.10:target_latency_100ms",
+        timestamp=now,
+        start=now,
+        end=now,
+        severity="warning",
+        title="Latency warning",
+        message="The threshold was exceeded.",
+        series_key="198.51.100.10",
+    )
+    path = tmp_path / "session.alerts.csv"
+    append_alert_action(path, event, actions=["rest_queued"])
+    append_alert_action(path, event, actions=["rest"])
+
+    try:
+        window.alert_action_log_path = path
+        window._load_saved_alert_actions()
+
+        assert [saved.key for saved in window.alert_events] == [event.key]
+        assert window.alert_event_actions[event.key] == ["rest_queued", "rest"]
+    finally:
+        window.close()
+
+
+def test_main_window_merges_legacy_saved_alert_action_progress_rows(qt_app, tmp_path) -> None:
+    window = MainWindow()
+    path = tmp_path / "legacy-session.alerts.csv"
+    row = {
+        "timestamp": "2026-01-01T12:00:00",
+        "start": "2026-01-01T12:00:00",
+        "end": "2026-01-01T12:00:00",
+        "source": "alert",
+        "severity": "warning",
+        "title": "Latency warning",
+        "message": "The threshold was exceeded.",
+        "actions": "rest_queued",
+    }
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=alert_action_log_module.LEGACY_ALERT_ACTION_HEADERS,
+        )
+        writer.writeheader()
+        writer.writerow(row)
+        writer.writerow({**row, "actions": "rest"})
+
+    try:
+        window.alert_action_log_path = path
+        window._load_saved_alert_actions()
+
+        assert len(window.alert_events) == 1
+        key = window.alert_events[0].key
+        assert window.alert_event_actions[key] == ["rest_queued", "rest"]
+    finally:
+        window.close()
+
+
 def test_main_window_records_route_adjustment_action_for_final_hop_alert(qt_app, tmp_path) -> None:
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -4857,10 +5031,11 @@ def test_main_window_alert_rest_action_posts_event_payload(qt_app, tmp_path, mon
         window.alert_rest_url_edit.setText("https://collector.example/alerts")
 
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+        _wait_for_external_alert_actions(window, qt_app)
 
         rows = read_alert_actions(window.alert_action_log_path)
         assert rows[0]["title"] == "지연 경고"
-        assert rows[0]["actions"] == "rest"
+        assert [row["actions"] for row in rows] == ["rest_queued", "rest"]
         assert posted == [
             (
                 "https://collector.example/alerts",
@@ -4937,10 +5112,11 @@ def test_main_window_alert_email_action_sends_event_message(qt_app, tmp_path, mo
         window.alert_email_password_env_edit.setText("NPD_SMTP_PASSWORD")
 
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+        _wait_for_external_alert_actions(window, qt_app)
 
         rows = read_alert_actions(window.alert_action_log_path)
         assert rows[0]["title"] == "지연 경고"
-        assert rows[0]["actions"] == "email"
+        assert [row["actions"] for row in rows] == ["email_queued", "email"]
         assert sent
         assert sent[0]["host"] == "smtp.example"
         assert sent[0]["port"] == 2525
@@ -5036,10 +5212,11 @@ def test_main_window_alert_executable_action_launches_configured_file(qt_app, tm
         window.alert_executable_path_edit.setText(str(executable_path))
 
         window.on_measurement_updated([], target_snapshot, [target_snapshot], ["live"], history, history)
+        _wait_for_external_alert_actions(window, qt_app)
 
         rows = read_alert_actions(window.alert_action_log_path)
         assert rows[0]["title"] == "지연 경고"
-        assert rows[0]["actions"] == "executable"
+        assert [row["actions"] for row in rows] == ["executable_queued", "executable"]
         assert launched == [
             (
                 executable_path,
@@ -5073,7 +5250,8 @@ def test_main_window_marks_failed_external_alert_actions_in_log(qt_app, tmp_path
         monkeypatch.setattr(window, "_post_alert_webhook", lambda *_args: (_ for _ in ()).throw(OSError("rest down")))
         assert window._record_alert_actions(
             AlertEvent("rest-key", now, now, now, "warning", "REST alert", "REST failed")
-        ) == ["rest_failed"]
+        ) == ["rest_queued"]
+        _wait_for_external_alert_actions(window, qt_app)
 
         window.alert_rest_action_check.setChecked(False)
         window.alert_email_action_check.setChecked(True)
@@ -5082,7 +5260,8 @@ def test_main_window_marks_failed_external_alert_actions_in_log(qt_app, tmp_path
         monkeypatch.setattr(window, "_send_alert_email", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("smtp down")))
         assert window._record_alert_actions(
             AlertEvent("email-key", now, now, now, "warning", "Email alert", "Email failed")
-        ) == ["email_failed"]
+        ) == ["email_queued"]
+        _wait_for_external_alert_actions(window, qt_app)
 
         window.alert_email_action_check.setChecked(False)
         window.alert_executable_action_check.setChecked(True)
@@ -5090,12 +5269,103 @@ def test_main_window_marks_failed_external_alert_actions_in_log(qt_app, tmp_path
         monkeypatch.setattr(window, "_launch_alert_executable", lambda *_args: (_ for _ in ()).throw(OSError("run down")))
         assert window._record_alert_actions(
             AlertEvent("exe-key", now, now, now, "warning", "Run alert", "Run failed")
-        ) == ["executable_failed"]
+        ) == ["executable_queued"]
+        _wait_for_external_alert_actions(window, qt_app)
 
         rows = read_alert_actions(window.alert_action_log_path)
-        assert [row["actions"] for row in rows] == ["rest_failed", "email_failed", "executable_failed"]
+        assert [row["actions"] for row in rows] == [
+            "rest_queued",
+            "rest_failed",
+            "email_queued",
+            "email_failed",
+            "executable_queued",
+            "executable_failed",
+        ]
         assert window.status_label.text().startswith("알림 실행파일 동작 실패:")
     finally:
+        window.close()
+
+
+def test_main_window_all_range_load_does_not_block_ui_thread(qt_app, tmp_path, monkeypatch) -> None:
+    window = MainWindow()
+    target = "198.51.100.10"
+    start = datetime(2026, 1, 1, 9, 0, 0)
+    now = start + timedelta(hours=2)
+    session_path = tmp_path / "session.csv"
+    with SessionLogWriter(session_path) as writer:
+        writer.write_many([HopObservation(start, 0, target, "Target", True, 10.0, STATUS_OK, True)])
+    snapshot = _snapshot(0, target, None, latency=12.0, is_target=True)
+    live = HopObservation(now, 0, target, "Target", True, 12.0, STATUS_OK, True)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_range_reader(*_args, **_kwargs):
+        started.set()
+        release.wait(timeout=1.0)
+        yield HopObservation(start, 0, target, "Target", True, 10.0, STATUS_OK, True)
+
+    monkeypatch.setattr(
+        session_observation_loader_module,
+        "iter_observations_in_range",
+        slow_range_reader,
+    )
+    try:
+        window.current_target = target
+        window.current_targets = [target]
+        window.session_log_path = session_path
+        window.on_measurement_updated([], snapshot, [snapshot], ["live"], [live], [live])
+
+        changed_at = time.monotonic()
+        window.set_main_graph_range_mode(MAIN_GRAPH_RANGE_ALL)
+        elapsed = time.monotonic() - changed_at
+
+        assert elapsed < 0.1
+        assert started.wait(timeout=0.5)
+        assert window.graph._points == [live]
+        window.status_label.setText("UI 응답 확인")
+        assert window.status_label.text() == "UI 응답 확인"
+
+        release.set()
+        _wait_for_session_graph_loader(window, qt_app)
+        assert [point.timestamp for point in window.graph._points] == [start, now]
+    finally:
+        release.set()
+        window.close()
+
+
+def test_main_window_external_alert_action_does_not_block_ui_thread(qt_app, tmp_path, monkeypatch) -> None:
+    window = MainWindow()
+    started = threading.Event()
+    release = threading.Event()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+
+    def slow_post(*_args) -> None:
+        started.set()
+        release.wait(timeout=1.0)
+
+    monkeypatch.setattr(window, "_post_alert_webhook", slow_post)
+    try:
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window.alert_route_adjust_action_check.setChecked(False)
+        window.alert_timeline_action_check.setChecked(False)
+        window.alert_comment_action_check.setChecked(False)
+        window.alert_rest_action_check.setChecked(True)
+        window.alert_rest_url_edit.setText("https://collector.example/alerts")
+        event = AlertEvent("rest-key", now, now, now, "warning", "REST alert", "slow")
+
+        started_at = time.monotonic()
+        actions = window._record_alert_actions(event)
+        elapsed = time.monotonic() - started_at
+
+        assert actions == ["rest_queued"]
+        assert elapsed < 0.1
+        assert started.wait(timeout=0.5)
+        window.status_label.setText("UI 응답 확인")
+        assert window.status_label.text() == "UI 응답 확인"
+        release.set()
+        _wait_for_external_alert_actions(window, qt_app)
+    finally:
+        release.set()
         window.close()
 
 
@@ -5131,6 +5401,40 @@ def test_main_window_alert_log_write_failure_does_not_crash_action_recording(
         assert actions == ["log"]
         assert window.status_label.text() == "알림 로그 저장 실패: PermissionError"
         assert not window.alert_action_log_path.exists()
+    finally:
+        window.close()
+
+
+def test_main_window_batches_simultaneous_metric_alert_log_rows(qt_app, tmp_path, monkeypatch) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    captured: list[list[tuple[AlertEvent, list[str], str | None]]] = []
+
+    def capture_batch(_path, entries):
+        captured.append(list(entries))
+
+    monkeypatch.setattr(main_window_module, "append_alert_actions", capture_batch)
+    events = [
+        AlertEvent(
+            key=f"target:198.51.100.{index}:target_sample_condition",
+            timestamp=now,
+            start=now,
+            end=now,
+            severity="critical",
+            title="Sample warning",
+            message=f"target {index}",
+            series_key=f"198.51.100.{index}",
+        )
+        for index in range(1, 21)
+    ]
+
+    try:
+        window.alert_action_log_path = tmp_path / "session.alerts.csv"
+        window._append_alert_event_batch(events)
+
+        assert len(captured) == 1
+        assert len(captured[0]) == 20
+        assert len(window.alert_events) == 20
     finally:
         window.close()
 
@@ -5637,10 +5941,34 @@ def test_main_window_close_event_defers_while_export_worker_is_still_running(qt_
         window.closeEvent(event)
 
         assert event.isAccepted() is False
+        assert export_worker.cancel_calls == 1
         assert export_worker.wait_calls == [3000]
         assert window.status_label.text() == "내보내기 저장이 끝날 때까지 종료를 보류합니다."
     finally:
         window.export_worker = None
+        window.close()
+
+
+def test_main_window_close_event_defers_while_alert_action_is_still_running(qt_app) -> None:
+    window = MainWindow()
+    dispatcher = _SlowAlertActionDispatcher()
+    first_event = QCloseEvent()
+    final_event = QCloseEvent()
+
+    try:
+        window.alert_action_dispatcher = dispatcher
+        window.closeEvent(first_event)
+
+        assert first_event.isAccepted() is False
+        assert dispatcher.shutdown_calls == 1
+        assert dispatcher.wait_calls == [3.0]
+        assert "ALERT_ACTION_SHUTDOWN_PENDING" in window.status_label.text()
+
+        dispatcher.pending_count = 0
+        window.closeEvent(final_event)
+
+        assert final_event.isAccepted() is True
+    finally:
         window.close()
 
 
@@ -5650,6 +5978,7 @@ def _snapshot(
     hostname: str | None,
     *,
     loss: float = 0.0,
+    recent_loss: float | None = None,
     latency: float | None = 10.0,
     received: int = 1,
     timeout_count: int = 0,
@@ -5669,7 +5998,7 @@ def _snapshot(
         min_latency_ms=latency,
         max_latency_ms=latency,
         loss_percent=loss,
-        recent_loss_percent=loss,
+        recent_loss_percent=loss if recent_loss is None else recent_loss,
         jitter_ms=0.0 if latency is not None else None,
         status=status,
         is_target=is_target,
@@ -5760,6 +6089,7 @@ class _FakeExportWorker:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.started = False
+        self.cancel_calls = 0
         self.status_message = _FakeSignal()
         self.export_completed = _FakeSignal()
         self.error_message = _FakeSignal()
@@ -5770,6 +6100,10 @@ class _FakeExportWorker:
 
     def start(self) -> None:
         self.started = True
+
+    def request_cancel(self) -> None:
+        self.cancel_calls += 1
+        self.started = False
 
     def wait(self, timeout_ms: int) -> bool:
         return True
@@ -5795,14 +6129,32 @@ class _SlowStoppingWorker(QObject):
 
 class _SlowExportWorker:
     def __init__(self) -> None:
+        self.cancel_calls = 0
         self.wait_calls: list[int] = []
 
     def isRunning(self) -> bool:
         return True
 
+    def request_cancel(self) -> None:
+        self.cancel_calls += 1
+
     def wait(self, timeout_ms: int) -> bool:
         self.wait_calls.append(timeout_ms)
         return False
+
+
+class _SlowAlertActionDispatcher:
+    def __init__(self) -> None:
+        self.pending_count = 1
+        self.shutdown_calls = 0
+        self.wait_calls: list[float] = []
+
+    def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+    def wait(self, timeout_seconds: float) -> bool:
+        self.wait_calls.append(timeout_seconds)
+        return self.pending_count == 0
 
 
 class _FakeDetailWindow:

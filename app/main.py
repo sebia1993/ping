@@ -1,18 +1,73 @@
 from __future__ import annotations
 
+import logging
 import sys
+from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.ui.main_window import MainWindow
+from app.utils.logger import configure_logging
+
+
+STARTUP_ERROR_CODE = "APP_STARTUP_FAILED"
+UNEXPECTED_ERROR_CODE = "APP_UNEXPECTED_ERROR"
 
 
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("MultiPingCheck")
-    window = MainWindow()
+    log_path = configure_logging()
+    _install_exception_hook(log_path)
+    try:
+        window = MainWindow()
+    except Exception:
+        logging.getLogger(__name__).exception("Application startup failed")
+        QMessageBox.critical(
+            None,
+            "멀티핑체크 시작 오류",
+            "프로그램을 시작할 수 없습니다.\n"
+            "프로그램을 다시 실행해도 문제가 계속되면 진단 로그를 확인하세요.\n\n"
+            f"오류 코드: {STARTUP_ERROR_CODE}",
+        )
+        return 1
     window.show()
     return app.exec()
+
+
+def _install_exception_hook(log_path: Path | None) -> None:
+    handling_error = False
+
+    def handle_exception(exception_type, exception, traceback) -> None:
+        nonlocal handling_error
+        if exception_type is KeyboardInterrupt:
+            sys.__excepthook__(exception_type, exception, traceback)
+            return
+        if handling_error:
+            sys.__excepthook__(exception_type, exception, traceback)
+            return
+        handling_error = True
+        try:
+            logging.getLogger(__name__).critical(
+                "Unhandled application error",
+                exc_info=(exception_type, exception, traceback),
+            )
+            log_location = str(log_path) if log_path is not None else "로그 파일을 만들 수 없음"
+            QMessageBox.critical(
+                None,
+                "멀티핑체크 오류",
+                "프로그램 처리 중 예상하지 못한 오류가 발생했습니다.\n"
+                "문제가 반복되면 프로그램을 다시 실행하고 진단 로그를 확인하세요.\n\n"
+                f"오류 코드: {UNEXPECTED_ERROR_CODE}\n"
+                f"오류 종류: {exception_type.__name__}\n"
+                f"진단 로그: {log_location}",
+            )
+        except Exception:
+            sys.__excepthook__(exception_type, exception, traceback)
+        finally:
+            handling_error = False
+
+    sys.excepthook = handle_exception
 
 
 if __name__ == "__main__":

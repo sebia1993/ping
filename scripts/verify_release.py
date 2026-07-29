@@ -305,18 +305,22 @@ def run_exe_smoke() -> None:
     if not exe.exists():
         raise RuntimeError(f"Packaged EXE not found: {exe}")
     run_packaged_size_check(exe.parent)
-    process = subprocess.Popen([str(exe)], cwd=ROOT)
-    try:
-        time.sleep(3)
-        if process.poll() is not None:
-            raise RuntimeError("Packaged app exited during launch smoke test")
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
+    with tempfile.TemporaryDirectory(prefix="multipingcheck-exe-smoke-") as temp_dir:
+        smoke_cwd = Path(temp_dir)
+        process = subprocess.Popen([str(exe)], cwd=smoke_cwd)
+        try:
+            time.sleep(3)
+            if process.poll() is not None:
+                raise RuntimeError("Packaged app exited during launch smoke test")
+            if (smoke_cwd / "exports").exists() or (smoke_cwd / "logs").exists():
+                raise RuntimeError("Packaged app wrote internal data under its current working directory")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
 
 
 def run_packaged_size_check(package_dir: Path) -> None:

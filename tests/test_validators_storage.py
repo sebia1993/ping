@@ -10,8 +10,14 @@ from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation, MetricSna
 from app.core.alerts import AlertEvent
 from app.storage import atomic_write as atomic_write_module
 from app.storage import alert_action_log as alert_action_log_module
-from app.storage.alert_action_log import append_alert_action, alert_action_log_path_for_session, read_alert_actions
+from app.storage.alert_action_log import (
+    append_alert_action,
+    append_alert_actions,
+    alert_action_log_path_for_session,
+    read_alert_actions,
+)
 from app.storage.csv_exporter import export_csv
+from app.storage import excel_exporter as excel_exporter_module
 from app.storage.excel_exporter import export_xlsx
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
 from app.storage.report_writer import write_html_report, write_text_report
@@ -30,7 +36,10 @@ from app.storage.session_index import (
     session_storage_summary,
 )
 from app.storage.session_log import (
+    SESSION_LOG_CORRUPTED_CODE,
+    SessionLogCorruptionError,
     SessionLogWriter,
+    iter_observations,
     iter_observations_in_range,
     read_observations,
     session_log_directory,
@@ -46,7 +55,7 @@ from app.storage.statistics_exporter import (
     grouped_statistics,
 )
 from app.ui import export_worker as export_worker_module
-from app.ui.export_worker import ExportWorker
+from app.ui.export_worker import EXPORT_CANCELLED_CODE, ExportWorker
 from app.utils import filename as filename_module
 from app.utils.filename import default_export_path, safe_target_name
 from app.utils.validators import parse_ipv4_targets, validate_target
@@ -236,6 +245,26 @@ def test_export_xlsx_contains_summary_metrics_and_samples(tmp_path) -> None:
     assert workbook["Samples"]["A2"].value is not None
 
 
+def test_export_xlsx_splits_samples_before_excel_row_limit(tmp_path, monkeypatch) -> None:
+    from openpyxl import load_workbook
+
+    path = tmp_path / "split.xlsx"
+    monkeypatch.setattr(excel_exporter_module, "EXCEL_MAX_DATA_ROWS_PER_SHEET", 2)
+    observations = [
+        _sample_observation(timestamp=datetime(2026, 1, 1, 12, 0, second))
+        for second in range(5)
+    ]
+
+    export_xlsx(path, "8.8.8.8", observations, [_sample_snapshot()], ["정상"])
+
+    workbook = load_workbook(path, read_only=True)
+    assert workbook.sheetnames == ["Summary", "Hop Metrics", "Samples", "Samples 2", "Samples 3"]
+    assert [
+        sum(1 for _row in workbook[name].iter_rows())
+        for name in ("Samples", "Samples 2", "Samples 3")
+    ] == [3, 3, 2]
+
+
 def test_export_xlsx_writes_annotations_sheet_when_present(tmp_path) -> None:
     from openpyxl import load_workbook
 
@@ -391,6 +420,7 @@ def test_alert_action_log_appends_comment_and_annotation_actions(tmp_path) -> No
     rows = read_alert_actions(path)
 
     assert rows[0]["source"] == "alert"
+    assert rows[0]["key"] == "target_latency_100ms"
     assert rows[0]["title"] == "지연 경고"
     assert rows[0]["actions"] == "timeline_annotation;comment"
 
@@ -423,6 +453,7 @@ def test_alert_action_log_round_trips_korean_windows_path_and_text(tmp_path) -> 
             "title": "샘플 불량 경고",
             "message": "장비A 회선에서 응답 없음이 반복되었습니다.",
             "actions": "log;comment",
+            "key": "target:198.51.100.10:target_sample_condition",
         }
     ]
 
@@ -439,6 +470,7 @@ def test_alert_action_log_read_skips_embedded_headers_and_blank_rows(tmp_path) -
         "title": "지연 경고",
         "message": "현재 지연 125.0 ms가 기준 100 ms 이상입니다.",
         "actions": "log",
+        "key": "",
     }
     second = {
         "timestamp": "2026-01-01T12:01:00",
@@ -449,6 +481,7 @@ def test_alert_action_log_read_skips_embedded_headers_and_blank_rows(tmp_path) -
         "title": "경로 변경",
         "message": "Hop 1 changed",
         "actions": "comment",
+        "key": "",
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -462,6 +495,88 @@ def test_alert_action_log_read_skips_embedded_headers_and_blank_rows(tmp_path) -
     rows = read_alert_actions(path)
 
     assert rows == [first, second]
+
+
+def test_alert_action_log_keeps_legacy_schema_when_appending(tmp_path) -> None:
+    path = tmp_path / "legacy-alerts.csv"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    legacy_row = {
+        "timestamp": "2026-01-01T11:59:00",
+        "start": "2026-01-01T11:59:00",
+        "end": "2026-01-01T11:59:00",
+        "source": "alert",
+        "severity": "warning",
+        "title": "legacy",
+        "message": "existing row",
+        "actions": "log",
+    }
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=alert_action_log_module.LEGACY_ALERT_ACTION_HEADERS,
+        )
+        writer.writeheader()
+        writer.writerow(legacy_row)
+
+    append_alert_action(
+        path,
+        AlertEvent(
+            key="new-alert-key",
+            timestamp=now,
+            start=now,
+            end=now,
+            severity="warning",
+            title="new",
+            message="appended row",
+        ),
+        actions=["comment"],
+    )
+
+    header = path.read_text(encoding="utf-8").splitlines()[0]
+    rows = read_alert_actions(path)
+    assert header == ",".join(alert_action_log_module.LEGACY_ALERT_ACTION_HEADERS)
+    assert [row["title"] for row in rows] == ["legacy", "new"]
+    assert [row["key"] for row in rows] == ["", ""]
+
+
+def test_alert_action_log_batches_rows_with_one_append_open(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "batched-alerts.csv"
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    events = [
+        AlertEvent(
+            key=f"target:198.51.100.{index}:sample",
+            timestamp=now,
+            start=now,
+            end=now,
+            severity="critical",
+            title="Sample warning",
+            message=f"target {index}",
+        )
+        for index in range(1, 21)
+    ]
+    open_count = 0
+    original_open = alert_action_log_module._open_alert_action_append_path
+
+    def counted_open(write_path):
+        nonlocal open_count
+        open_count += 1
+        return original_open(write_path)
+
+    monkeypatch.setattr(
+        alert_action_log_module,
+        "_open_alert_action_append_path",
+        counted_open,
+    )
+
+    append_alert_actions(
+        path,
+        [(event, ["timeline_annotation", "comment"], None) for event in events],
+    )
+
+    rows = read_alert_actions(path)
+    assert open_count == 1
+    assert len(rows) == 20
+    assert [row["key"] for row in rows] == [event.key for event in events]
 
 
 def test_alert_action_log_retries_transient_append_os_error(tmp_path, monkeypatch) -> None:
@@ -750,6 +865,22 @@ def test_session_log_recovers_valid_rows_after_malformed_tail(tmp_path) -> None:
     assert summary.rows == 1
     assert summary.skipped_rows == 1
     assert summary.skipped_row_files == (path,)
+
+
+def test_session_log_strict_reader_rejects_malformed_rows(tmp_path) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    writer.write_many([_sample_observation()])
+    writer.close()
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("not-a-timestamp,broken,Target,not-a-hop,,,,\n")
+
+    with pytest.raises(SessionLogCorruptionError) as exc_info:
+        list(iter_observations(path, strict=True))
+
+    assert exc_info.value.skipped_rows == 1
+    assert exc_info.value.skipped_row_files == (path,)
+    assert SESSION_LOG_CORRUPTED_CODE in str(exc_info.value)
 
 
 def test_session_log_read_retries_transient_open_permission_error(tmp_path, monkeypatch) -> None:
@@ -1635,6 +1766,71 @@ def test_session_index_recovers_sessions_from_logs_when_index_is_corrupt(tmp_pat
     assert sessions[0].target == "198.51.100.10"
     assert sessions[0].samples == 1
     assert store.find_session(sessions[0].session_id) is not None
+
+
+def test_session_index_recovers_invalid_row_when_other_index_rows_are_still_valid(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    paths = [
+        tmp_path / target / "2026-01" / "session.samples.csv"
+        for target in ("198.51.100.10", "203.0.113.20")
+    ]
+    for index, sample_path in enumerate(paths):
+        target = sample_path.parent.parent.name
+        with SessionLogWriter(sample_path) as writer:
+            writer.write_many(
+                [HopObservation(now + timedelta(seconds=index), 0, target, "Target", True, 10.0, STATUS_OK, True)]
+            )
+        store.register_session(
+            target=target,
+            sample_path=sample_path,
+            route_path=None,
+            started_at=now + timedelta(seconds=index),
+            interval_seconds=1,
+            measurement_mode="final_hop_only:icmp",
+            target_count=1,
+        )
+
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+    payload["sessions"][1] = {"broken": "row"}
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    sessions = store.list_sessions()
+
+    assert {session.sample_path for session in sessions} == set(paths)
+    assert store.last_read_warning == f"{SESSION_INDEX_REBUILT_CODE}: invalid_rows=1"
+
+
+def test_session_index_uses_relative_paths_so_session_folder_can_be_moved(tmp_path) -> None:
+    original_root = tmp_path / "original-session-store"
+    moved_root = tmp_path / "moved-session-store"
+    store = SessionIndexStore.create(original_root)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = original_root / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now)
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+
+    assert payload["version"] == 2
+    assert payload["sessions"][0]["sample_path"] == str(sample_path.relative_to(original_root))
+
+    original_root.rename(moved_root)
+    moved_store = SessionIndexStore.create(moved_root)
+    sessions = moved_store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].sample_path == moved_root / sample_path.relative_to(original_root)
+    assert sessions[0].sample_path.exists()
 
 
 def test_session_index_recovers_session_from_korean_windows_path(tmp_path) -> None:
@@ -2575,6 +2771,68 @@ def test_export_worker_reports_stable_code_for_write_failure(tmp_path, monkeypat
 
     assert completed == []
     assert errors == ["EXPORT_WRITE_FAILED: PermissionError: locked"]
+
+
+def test_export_worker_cancellation_removes_partial_output(tmp_path) -> None:
+    export_path = tmp_path / "cancelled.csv"
+    completed: list[str] = []
+    errors: list[str] = []
+    statuses: list[str] = []
+    worker = ExportWorker(
+        kind="csv",
+        path=export_path,
+        target="8.8.8.8",
+        session_log_path=None,
+        snapshots=[],
+        analysis=[],
+        observations_override=[],
+    )
+
+    def observations():
+        yield _sample_observation(address="192.168.0.1")
+        worker.request_cancel()
+        yield _sample_observation(address="192.168.0.2")
+
+    worker.observations_override = observations()
+    worker.export_completed.connect(completed.append)
+    worker.error_message.connect(errors.append)
+    worker.status_message.connect(statuses.append)
+
+    worker.run()
+
+    assert completed == []
+    assert errors == []
+    assert statuses[-1] == EXPORT_CANCELLED_CODE
+    assert not export_path.exists()
+    assert not list(tmp_path.glob(f".{export_path.name}.*"))
+
+
+def test_export_worker_rejects_partial_session_log_instead_of_publishing_incomplete_csv(tmp_path) -> None:
+    session_path = tmp_path / "session.samples.csv"
+    with SessionLogWriter(session_path) as writer:
+        writer.write_many([_sample_observation()])
+    with session_path.open("a", encoding="utf-8") as handle:
+        handle.write("not-a-timestamp,broken,Target,not-a-hop,,,,\n")
+    output_path = tmp_path / "export.csv"
+    errors: list[str] = []
+    completed: list[str] = []
+    worker = ExportWorker(
+        kind="csv",
+        path=output_path,
+        target="192.168.0.1",
+        session_log_path=session_path,
+        snapshots=[],
+        analysis=[],
+    )
+    worker.error_message.connect(errors.append)
+    worker.export_completed.connect(completed.append)
+
+    worker.run()
+
+    assert completed == []
+    assert len(errors) == 1
+    assert SESSION_LOG_CORRUPTED_CODE in errors[0]
+    assert not output_path.exists()
 
 
 def test_export_statistics_xlsx_writes_statistics_sheet(tmp_path) -> None:

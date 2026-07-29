@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import csv
 import time
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
 from app.core.alerts import AlertEvent, is_route_alert_key
 
 
-ALERT_ACTION_HEADERS = [
+LEGACY_ALERT_ACTION_HEADERS = [
     "timestamp",
     "start",
     "end",
@@ -18,6 +19,7 @@ ALERT_ACTION_HEADERS = [
     "message",
     "actions",
 ]
+ALERT_ACTION_HEADERS = [*LEGACY_ALERT_ACTION_HEADERS, "key"]
 ALERT_ACTION_IO_RETRY_ATTEMPTS = 5
 ALERT_ACTION_IO_RETRY_DELAY_SECONDS = 0.05
 
@@ -35,12 +37,30 @@ def append_alert_action(
     actions: list[str],
     source: str | None = None,
 ) -> None:
+    append_alert_actions(path, [(event, actions, source)])
+
+
+def append_alert_actions(
+    path: Path | None,
+    entries: Iterable[tuple[AlertEvent, list[str], str | None]],
+) -> None:
     if path is None:
         return
+    rows = list(entries)
+    if not rows:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = _alert_action_headers_for_path(path)
     handle = _open_alert_action_append_handle(path)
     try:
-        _append_alert_action_to_handle(handle, event, actions=actions, source=source)
+        for event, actions, source in rows:
+            _append_alert_action_to_handle(
+                handle,
+                event,
+                actions=actions,
+                source=source,
+                fieldnames=fieldnames,
+            )
         _flush_with_retries(handle)
     finally:
         _close_handle_suppressing_errors(handle)
@@ -65,22 +85,23 @@ def _append_alert_action_to_handle(
     *,
     actions: list[str],
     source: str | None,
+    fieldnames: list[str],
 ) -> None:
-    writer = csv.DictWriter(handle, fieldnames=ALERT_ACTION_HEADERS)
+    writer = csv.DictWriter(handle, fieldnames=fieldnames)
     if handle.tell() == 0:
         writer.writeheader()
-    writer.writerow(
-        {
-            "timestamp": _format_dt(event.timestamp),
-            "start": _format_dt(event.start),
-            "end": _format_dt(event.end),
-            "source": source or ("route" if is_route_alert_key(event.key) else "alert"),
-            "severity": event.severity,
-            "title": event.title,
-            "message": event.message,
-            "actions": ";".join(actions),
-        }
-    )
+    row = {
+        "timestamp": _format_dt(event.timestamp),
+        "start": _format_dt(event.start),
+        "end": _format_dt(event.end),
+        "source": source or ("route" if is_route_alert_key(event.key) else "alert"),
+        "severity": event.severity,
+        "title": event.title,
+        "message": event.message,
+        "actions": ";".join(actions),
+        "key": event.key,
+    }
+    writer.writerow({field: row[field] for field in fieldnames})
 
 
 def _read_alert_actions_once(path: Path) -> list[dict[str, str]]:
@@ -92,11 +113,26 @@ def _is_action_row(row: dict[str | None, str | None]) -> bool:
     values = [value.strip() for key, value in row.items() if key is not None and value]
     if not values:
         return False
-    return not all(row.get(header) == header for header in ALERT_ACTION_HEADERS)
+    return not all(row.get(header) == header for header in LEGACY_ALERT_ACTION_HEADERS)
 
 
 def _normalize_action_row(row: dict[str | None, str | None]) -> dict[str, str]:
     return {header: row.get(header) or "" for header in ALERT_ACTION_HEADERS}
+
+
+def _alert_action_headers_for_path(path: Path) -> list[str]:
+    """Keep appending old sessions with their original eight-column schema."""
+
+    if not path.exists() or path.stat().st_size == 0:
+        return ALERT_ACTION_HEADERS
+    try:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            existing = next(csv.reader(handle), [])
+    except (OSError, csv.Error):
+        return ALERT_ACTION_HEADERS
+    if "key" not in existing:
+        return LEGACY_ALERT_ACTION_HEADERS
+    return ALERT_ACTION_HEADERS
 
 
 def _open_alert_action_append_handle(path: Path):
