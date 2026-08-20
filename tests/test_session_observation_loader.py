@@ -92,3 +92,37 @@ def test_session_observation_loader_reports_unexpected_reader_failure(tmp_path, 
     loader.run()
 
     assert failed == [f"{SESSION_GRAPH_LOAD_FAILED_CODE}: RuntimeError"]
+
+
+def test_session_observation_loader_stays_reserved_until_owner_cleanup(qt_app, tmp_path) -> None:
+    """A finished worker must not look replaceable before its GUI cleanup slot runs."""
+
+    target = "198.51.100.20"
+    observation = HopObservation(
+        datetime(2026, 1, 1, 12, 0, 0),
+        0,
+        target,
+        "Target",
+        True,
+        10.0,
+        STATUS_OK,
+        True,
+    )
+    path = tmp_path / "lifecycle.samples.csv"
+    with SessionLogWriter(path) as writer:
+        writer.write_many([observation])
+
+    loader = SessionObservationLoader(
+        request_id=2,
+        path=path,
+        start=observation.timestamp,
+        end=observation.timestamp,
+    )
+    loader.start()
+
+    assert loader.wait(2_000)
+    assert loader.isRunning()
+
+    loader.deleteLater()
+
+    assert not loader.isRunning()
