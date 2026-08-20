@@ -65,7 +65,7 @@ def test_session_observation_loader_stays_reserved_until_owner_cleanup(qt_app, t
     )
     path = tmp_path / "lifecycle.samples.csv"
     with SessionLogWriter(path) as writer:
-        writer.write(observation)
+        writer.write_many([observation])
 
     loader = SessionObservationLoader(
         request_id=2,
