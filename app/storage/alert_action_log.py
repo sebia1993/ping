@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +23,17 @@ LEGACY_ALERT_ACTION_HEADERS = [
 ALERT_ACTION_HEADERS = [*LEGACY_ALERT_ACTION_HEADERS, "key"]
 ALERT_ACTION_IO_RETRY_ATTEMPTS = 5
 ALERT_ACTION_IO_RETRY_DELAY_SECONDS = 0.05
+ALERT_ACTION_LOG_READ_FAILED_CODE = "ALERT_ACTION_LOG_READ_FAILED"
+ALERT_ACTION_LOG_CORRUPTED_CODE = "ALERT_ACTION_LOG_CORRUPTED"
+
+
+@dataclass(frozen=True)
+class AlertActionLogReadSummary:
+    """Loaded alert actions plus a visible read warning, if any."""
+
+    rows: list[dict[str, str]]
+    skipped_rows: int = 0
+    error_code: str | None = None
 
 
 def alert_action_log_path_for_session(session_log_path: Path | None) -> Path | None:
@@ -67,12 +79,21 @@ def append_alert_actions(
 
 
 def read_alert_actions(path: Path | None) -> list[dict[str, str]]:
+    return read_alert_actions_with_summary(path).rows
+
+
+def read_alert_actions_with_summary(path: Path | None) -> AlertActionLogReadSummary:
     if path is None or not path.exists():
-        return []
+        return AlertActionLogReadSummary([])
     try:
-        return _run_io_with_retries(lambda: _read_alert_actions_once(path))
-    except (OSError, csv.Error):
-        return []
+        rows, skipped_rows = _run_io_with_retries(lambda: _read_alert_actions_once(path))
+    except (OSError, UnicodeError, csv.Error):
+        return AlertActionLogReadSummary([], error_code=ALERT_ACTION_LOG_READ_FAILED_CODE)
+    return AlertActionLogReadSummary(
+        rows,
+        skipped_rows=skipped_rows,
+        error_code=ALERT_ACTION_LOG_CORRUPTED_CODE if skipped_rows else None,
+    )
 
 
 def _format_dt(value: datetime) -> str:
@@ -104,9 +125,42 @@ def _append_alert_action_to_handle(
     writer.writerow({field: row[field] for field in fieldnames})
 
 
-def _read_alert_actions_once(path: Path) -> list[dict[str, str]]:
+def _read_alert_actions_once(path: Path) -> tuple[list[dict[str, str]], int]:
+    rows: list[dict[str, str]] = []
+    skipped_rows = 0
     with path.open("r", newline="", encoding="utf-8") as handle:
-        return [_normalize_action_row(row) for row in csv.DictReader(handle) if _is_action_row(row)]
+        reader = csv.DictReader(handle)
+        if not _valid_alert_action_headers(reader.fieldnames):
+            raise csv.Error("unsupported alert action log headers")
+        for row in reader:
+            if not _is_action_row(row):
+                continue
+            normalized = _normalize_action_row(row)
+            if not _valid_alert_action_row(normalized, row):
+                skipped_rows += 1
+                continue
+            rows.append(normalized)
+    return rows, skipped_rows
+
+
+def _valid_alert_action_headers(fieldnames: list[str] | None) -> bool:
+    if fieldnames is None:
+        return False
+    return all(header in fieldnames for header in LEGACY_ALERT_ACTION_HEADERS)
+
+
+def _valid_alert_action_row(
+    normalized: dict[str, str],
+    raw: dict[str | None, str | None],
+) -> bool:
+    if None in raw:
+        return False
+    for field in ("timestamp", "start", "end"):
+        try:
+            datetime.fromisoformat(normalized[field])
+        except (TypeError, ValueError):
+            return False
+    return bool(normalized["source"] and normalized["severity"] and normalized["title"])
 
 
 def _is_action_row(row: dict[str | None, str | None]) -> bool:

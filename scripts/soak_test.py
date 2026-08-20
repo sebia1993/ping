@@ -350,6 +350,14 @@ def main() -> int:
     worker.session_log_ready.connect(session_log_paths.append)
     connect_window(window, worker)
 
+    if window is not None:
+        # Qt의 첫 show와 실행 상태 전환은 글꼴/스타일/플랫폼 플러그인을 한 번 준비합니다.
+        # 장시간 측정 중 UI 정지를 보는 통계에는 이 일회성 앱 시작 비용을 섞지 않습니다.
+        # 측정 결과는 아직 없으므로 첫 그래프 행 생성 비용은 아래 본 계측에 그대로 포함됩니다.
+        for _ in range(10):
+            process_application_events(app, args.event_process_max_milliseconds)
+            time.sleep(args.event_poll_seconds)
+
     # tracemalloc은 Python 메모리 증가량을 보기 위한 표준 도구입니다.
     # 테스트 중 메모리가 계속 늘면 장시간 사용 시 문제가 될 수 있습니다.
     tracemalloc.start()
@@ -542,11 +550,15 @@ def connect_window(window: object | None, worker: MeasurementWorker) -> None:
     # 실제 사용자가 앱을 켰을 때와 같은 화면 갱신 경로를 통과시키기 위한 연결입니다.
     if window is None:
         return
+    window.worker = worker
     worker.trace_completed.connect(window.on_trace_completed)
+    worker.route_changed.connect(window.on_route_changed)
     worker.measurement_updated.connect(window.on_measurement_updated)
     worker.diagnostics_updated.connect(window.on_diagnostics_updated)
     worker.session_log_ready.connect(window.on_session_log_ready)
     worker.status_message.connect(window.on_status_message)
+    worker.finished.connect(window.on_worker_finished)
+    window._set_running(True)
 
 
 class StableTracerouteProbe:

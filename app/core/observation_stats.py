@@ -75,6 +75,39 @@ class _SnapshotAccumulator:
         self._latency_m2 += delta * delta2
 
 
+class FocusSnapshotBuilder:
+    """Build focus statistics incrementally without retaining every observation."""
+
+    def __init__(self) -> None:
+        self._grouped: dict[tuple[bool, int, str, str], _SnapshotAccumulator] = {}
+        self._order = 0
+
+    def add(self, observation: HopObservation) -> None:
+        key = (
+            observation.is_target,
+            observation.hop_index,
+            observation.address or "",
+            observation.hostname or "",
+        )
+        if key not in self._grouped:
+            self._grouped[key] = _SnapshotAccumulator(first=observation)
+        self._grouped[key].add(observation, self._order)
+        self._order += 1
+
+    def build(self, *, current_target: str = "") -> FocusSnapshotSet:
+        snapshots = [accumulator.snapshot() for accumulator in self._grouped.values()]
+        hop_snapshots = sorted(
+            [snapshot for snapshot in snapshots if snapshot.hop_index > 0],
+            key=lambda item: (item.hop_index, item.address or ""),
+        )
+        target_snapshots = sorted(
+            [snapshot for snapshot in snapshots if snapshot.hop_index == 0],
+            key=lambda item: (item.address != current_target, item.address or "", item.hop_index),
+        )
+        target_snapshot = _select_target_snapshot(target_snapshots, current_target)
+        return FocusSnapshotSet(hop_snapshots, target_snapshots, target_snapshot)
+
+
 def observations_in_range(
     observations: Iterable[HopObservation],
     start: datetime,
@@ -90,29 +123,10 @@ def build_focus_snapshots(
     *,
     current_target: str = "",
 ) -> FocusSnapshotSet:
-    grouped: dict[tuple[bool, int, str, str], _SnapshotAccumulator] = {}
-    for order, observation in enumerate(observations):
-        key = (
-            observation.is_target,
-            observation.hop_index,
-            observation.address or "",
-            observation.hostname or "",
-        )
-        if key not in grouped:
-            grouped[key] = _SnapshotAccumulator(first=observation)
-        grouped[key].add(observation, order)
-
-    snapshots = [accumulator.snapshot() for accumulator in grouped.values()]
-    hop_snapshots = sorted(
-        [snapshot for snapshot in snapshots if snapshot.hop_index > 0],
-        key=lambda item: (item.hop_index, item.address or ""),
-    )
-    target_snapshots = sorted(
-        [snapshot for snapshot in snapshots if snapshot.hop_index == 0],
-        key=lambda item: (item.address != current_target, item.address or "", item.hop_index),
-    )
-    target_snapshot = _select_target_snapshot(target_snapshots, current_target)
-    return FocusSnapshotSet(hop_snapshots, target_snapshots, target_snapshot)
+    builder = FocusSnapshotBuilder()
+    for observation in observations:
+        builder.add(observation)
+    return builder.build(current_target=current_target)
 
 
 def _select_target_snapshot(

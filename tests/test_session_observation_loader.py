@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation
 from app.storage.session_log import SessionLogWriter
+from app.ui import session_observation_loader as session_observation_loader_module
 from app.ui.session_observation_loader import (
+    SESSION_GRAPH_LOAD_FAILED_CODE,
     SESSION_GRAPH_MAX_POINTS_PER_TARGET,
     SessionObservationLoader,
 )
@@ -47,3 +49,46 @@ def test_session_observation_loader_bounds_large_target_history_and_preserves_ev
     assert observations[-1] in points
     assert observations[1000] in points
     assert observations[1500] in points
+
+
+def test_session_observation_loader_honors_cancel_requested_before_run(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    path = tmp_path / "empty.samples.csv"
+    SessionLogWriter(path).close()
+    loaded: list[object] = []
+    failed: list[str] = []
+    loader = SessionObservationLoader(request_id=2, path=path, start=now, end=now)
+    loader.loaded.connect(lambda _request_id, points: loaded.append(points))
+    loader.failed.connect(lambda _request_id, message: failed.append(message))
+    loader.request_cancel()
+
+    loader.run()
+
+    assert loaded == []
+    assert failed == []
+
+
+def test_session_observation_loader_reports_unexpected_reader_failure(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+
+    def fail_reader(*_args, **_kwargs):
+        raise RuntimeError("unexpected parser failure")
+        yield
+
+    monkeypatch.setattr(
+        session_observation_loader_module,
+        "iter_observations_in_range",
+        fail_reader,
+    )
+    failed: list[str] = []
+    loader = SessionObservationLoader(
+        request_id=3,
+        path=tmp_path / "session.samples.csv",
+        start=now,
+        end=now,
+    )
+    loader.failed.connect(lambda _request_id, message: failed.append(message))
+
+    loader.run()
+
+    assert failed == [f"{SESSION_GRAPH_LOAD_FAILED_CODE}: RuntimeError"]

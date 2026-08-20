@@ -5,6 +5,7 @@ import json
 import re
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,17 @@ ROUTE_LOG_HEADERS = [
 ]
 ROUTE_LOG_IO_RETRY_ATTEMPTS = 5
 ROUTE_LOG_IO_RETRY_DELAY_SECONDS = 0.05
+ROUTE_LOG_READ_FAILED_CODE = "ROUTE_LOG_READ_FAILED"
+ROUTE_LOG_CORRUPTED_CODE = "ROUTE_LOG_CORRUPTED"
+
+
+@dataclass(frozen=True)
+class RouteLogReadSummary:
+    """Loaded route changes plus corruption information for the UI."""
+
+    changes: list[RouteChange]
+    skipped_rows: int = 0
+    error_code: str | None = None
 
 
 class RouteLogWriter:
@@ -69,26 +81,71 @@ def route_log_path_for_session(session_log_path: Path | None) -> Path | None:
 
 
 def iter_route_changes(path: Path | None) -> Iterator[RouteChange]:
+    yield from read_route_changes_with_summary(path).changes
+
+
+def read_route_changes_with_summary(path: Path | None) -> RouteLogReadSummary:
+    if path is None or not path.exists():
+        return RouteLogReadSummary([])
+    changes: list[RouteChange] = []
+    skipped_rows = 0
     try:
-        if path is None or not path.exists():
-            return
         with _open_csv_read_handle(path) as handle:
             reader = csv.DictReader(handle)
-            for row in reader:
-                if row.get("record_type") != "change":
-                    continue
-                try:
-                    yield row_to_route_change(row)
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except (OSError, csv.Error):
-        return
+            if reader.fieldnames != ROUTE_LOG_HEADERS:
+                return RouteLogReadSummary(
+                    changes,
+                    skipped_rows=1,
+                    error_code=ROUTE_LOG_CORRUPTED_CODE,
+                )
+            try:
+                for row in reader:
+                    record_type = row.get("record_type")
+                    if None in row or record_type not in {"snapshot", "change"}:
+                        skipped_rows += 1
+                        continue
+                    if record_type == "snapshot":
+                        continue
+                    try:
+                        changes.append(row_to_route_change(row))
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                        skipped_rows += 1
+            except (UnicodeError, csv.Error):
+                return RouteLogReadSummary(
+                    changes,
+                    skipped_rows=skipped_rows + 1,
+                    error_code=ROUTE_LOG_READ_FAILED_CODE,
+                )
+    except (OSError, UnicodeError, csv.Error):
+        return RouteLogReadSummary(
+            changes,
+            skipped_rows=skipped_rows,
+            error_code=ROUTE_LOG_READ_FAILED_CODE,
+        )
+    return RouteLogReadSummary(
+        changes,
+        skipped_rows=skipped_rows,
+        error_code=ROUTE_LOG_CORRUPTED_CODE if skipped_rows else None,
+    )
 
 
 def route_changes_in_range(path: Path | None, start: datetime, end: datetime) -> list[RouteChange]:
+    return route_changes_in_range_with_summary(path, start, end).changes
+
+
+def route_changes_in_range_with_summary(
+    path: Path | None,
+    start: datetime,
+    end: datetime,
+) -> RouteLogReadSummary:
     if end < start:
         start, end = end, start
-    return [change for change in iter_route_changes(path) if start <= change.timestamp <= end]
+    summary = read_route_changes_with_summary(path)
+    return RouteLogReadSummary(
+        [change for change in summary.changes if start <= change.timestamp <= end],
+        skipped_rows=summary.skipped_rows,
+        error_code=summary.error_code,
+    )
 
 
 def row_to_route_change(row: dict[str, str]) -> RouteChange:
@@ -181,7 +238,9 @@ def _open_csv_write_handle(path: Path):
 
 
 def _open_csv_write_path(path: Path):
-    return path.open("w", newline="", encoding="utf-8")
+    # A route log belongs to one measurement session. Never truncate an older
+    # log when a same-name session is accidentally created again.
+    return path.open("x", newline="", encoding="utf-8")
 
 
 def _flush_with_retries(handle) -> None:
@@ -208,6 +267,8 @@ def _run_io_with_retries(operation):
     for attempt in range(ROUTE_LOG_IO_RETRY_ATTEMPTS):
         try:
             return operation()
+        except FileExistsError:
+            raise
         except OSError as exc:
             last_error = exc
             if attempt == ROUTE_LOG_IO_RETRY_ATTEMPTS - 1:

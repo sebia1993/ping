@@ -5,7 +5,12 @@ from datetime import datetime, timedelta
 from app.core.models import HopInfo
 from app.core.route_history import RouteHistory, route_path
 from app.storage import route_log as route_log_module
-from app.storage.route_log import RouteLogWriter, route_changes_in_range, route_log_path_for_session
+from app.storage.route_log import (
+    RouteLogWriter,
+    read_route_changes_with_summary,
+    route_changes_in_range,
+    route_log_path_for_session,
+)
 
 
 def test_route_history_records_baseline_and_detects_changed_hops() -> None:
@@ -173,6 +178,21 @@ def test_route_log_writer_close_is_idempotent(tmp_path) -> None:
     assert route_path.read_text(encoding="utf-8").startswith("record_type,timestamp")
 
 
+def test_route_log_writer_never_truncates_existing_file(tmp_path) -> None:
+    route_path = tmp_path / "session.routes.csv"
+    original = "existing route data\n"
+    route_path.write_text(original, encoding="utf-8")
+
+    try:
+        RouteLogWriter(route_path)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("expected exclusive route log creation")
+
+    assert route_path.read_text(encoding="utf-8") == original
+
+
 def test_route_log_writer_close_suppresses_os_error_after_flush(tmp_path, monkeypatch) -> None:
     route_path = tmp_path / "session.routes.csv"
     original_close = route_log_module._close_handle
@@ -217,6 +237,52 @@ def test_route_log_read_returns_empty_when_file_is_locked(tmp_path, monkeypatch)
     )
 
     assert changes == []
+
+    summary = read_route_changes_with_summary(route_path)
+    assert summary.changes == []
+    assert summary.error_code == route_log_module.ROUTE_LOG_READ_FAILED_CODE
+
+
+def test_route_log_read_reports_invalid_utf8_instead_of_empty_success(tmp_path) -> None:
+    route_path = tmp_path / "session.routes.csv"
+    route_path.write_bytes(b"record_type,timestamp\n\xff")
+
+    summary = read_route_changes_with_summary(route_path)
+
+    assert summary.changes == []
+    assert summary.error_code == route_log_module.ROUTE_LOG_READ_FAILED_CODE
+
+
+def test_route_log_read_reports_wrong_headers_as_corrupted(tmp_path) -> None:
+    route_path = tmp_path / "session.routes.csv"
+    route_path.write_text("wrong,headers\nvalue,data\n", encoding="utf-8")
+
+    summary = read_route_changes_with_summary(route_path)
+
+    assert summary.changes == []
+    assert summary.skipped_rows == 1
+    assert summary.error_code == route_log_module.ROUTE_LOG_CORRUPTED_CODE
+
+
+def test_route_log_read_preserves_valid_changes_and_reports_invalid_rows(tmp_path) -> None:
+    route_path = tmp_path / "session.routes.csv"
+    history = RouteHistory()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    history.record([HopInfo(index=1, address="192.0.2.1")], now)
+    change = history.record([HopInfo(index=1, address="192.0.2.254")], now + timedelta(seconds=60))
+    assert change is not None
+    with RouteLogWriter(route_path) as writer:
+        writer.write_snapshot(history.snapshots[0])
+        writer.write_snapshot(history.snapshots[1], change)
+    with route_path.open("a", encoding="utf-8", newline="") as handle:
+        handle.write("unknown,,,,,,,,,\n")
+
+    summary = read_route_changes_with_summary(route_path)
+
+    assert len(summary.changes) == 1
+    assert summary.changes[0].changed_hops == (1,)
+    assert summary.skipped_rows == 1
+    assert summary.error_code == route_log_module.ROUTE_LOG_CORRUPTED_CODE
 
 
 def test_route_log_read_retries_transient_open_error(tmp_path, monkeypatch) -> None:

@@ -16,7 +16,7 @@ from concurrent.futures import (
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 
 from PySide6.QtCore import QThread, Signal
 
@@ -45,6 +45,7 @@ from app.storage.session_index import (
     session_index_root_for_sample_path,
 )
 from app.storage.session_log import SessionLogWriter
+from app.utils.diagnostics import operation_failure
 from app.utils.validators import parse_ipv4_targets, validate_target
 
 
@@ -54,9 +55,13 @@ MAX_IPV4_TARGETS = 50
 RECENT_OBSERVATION_LIMIT = 300
 MAX_TARGET_PING_WORKERS = 20
 MAX_HOP_PING_WORKERS = 4
+FINAL_TARGET_DRAIN_GRACE_SECONDS = 1.0
 WORKER_POLL_SECONDS = 0.05
 TRACE_REFRESH_SECONDS = 60.0
 SESSION_LOG_CLOSE_TIMEOUT_SECONDS = 5.0
+SESSION_LOG_QUEUE_MAX_BATCHES = 256
+SESSION_LOG_BATCH_WINDOW_SECONDS = 0.05
+SESSION_LOG_BATCH_MAX_OBSERVATIONS = 4096
 BACKOFF_AFTER_FAILURES = 3
 SLOW_BACKOFF_AFTER_FAILURES = 10
 FIRST_BACKOFF_SECONDS = 2.0
@@ -77,9 +82,11 @@ PROBE_ENGINE_TCP_CONNECT = "tcp_connect"
 PROBE_ENGINES = {PROBE_ENGINE_ICMP, PROBE_ENGINE_TCP_CONNECT}
 WORKER_UNEXPECTED_ERROR_CODE = "WORKER_UNEXPECTED_ERROR"
 SESSION_LOG_WRITE_FAILED_CODE = "SESSION_LOG_WRITE_FAILED"
+SESSION_LOG_BACKPRESSURE_CODE = "SESSION_LOG_BACKPRESSURE"
 ROUTE_LOG_WRITE_FAILED_CODE = "ROUTE_LOG_WRITE_FAILED"
 ROUTE_LOG_CLOSE_FAILED_CODE = "ROUTE_LOG_CLOSE_FAILED"
 SESSION_INDEX_FINISH_FAILED_CODE = "SESSION_INDEX_FINISH_FAILED"
+WORKER_EXECUTOR_SHUTDOWN_FAILED_CODE = "WORKER_EXECUTOR_SHUTDOWN_FAILED"
 
 
 def alert_history_observation_limit(config: AlertRuleConfig, interval_seconds: int) -> int:
@@ -106,6 +113,10 @@ class _SessionLogWriterFailed(RuntimeError):
     def __init__(self, original: Exception) -> None:
         super().__init__(str(original))
         self.original = original
+
+
+class SessionLogBackpressureError(RuntimeError):
+    """저장 queue가 한계에 도달해 샘플 무결성을 보장할 수 없음을 나타냅니다."""
 
 
 @dataclass
@@ -200,15 +211,24 @@ class _AsyncSessionLogWriter:
         self,
         writer: SessionLogWriter,
         on_samples_written: Callable[[int, datetime, list[object]], None] | None = None,
+        *,
+        max_queue_batches: int = SESSION_LOG_QUEUE_MAX_BATCHES,
     ) -> None:
         self.path = writer.path
         self._writer = writer
         self._on_samples_written = on_samples_written
-        self._queue: Queue[list[HopObservation] | None] = Queue()
+        self._queue: Queue[list[HopObservation]] = Queue(maxsize=max(int(max_queue_batches), 1))
         self._error: Exception | None = None
+        self._metadata_error: Exception | None = None
         self._error_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
+        self._samples_written = 0
+        self._last_timestamp: datetime | None = None
+        self._pending_metadata_count = 0
+        self._pending_metadata_last_timestamp: datetime | None = None
         self._closed = False
         self._close_lock = threading.Lock()
+        self._close_requested = threading.Event()
         self._thread = threading.Thread(target=self._run, name="session-log-writer", daemon=True)
         self._thread.start()
 
@@ -217,11 +237,28 @@ class _AsyncSessionLogWriter:
             with self._close_lock:
                 self._raise_if_failed()
                 if not self._closed:
-                    self._queue.put(list(observations))
+                    try:
+                        self._queue.put_nowait(list(observations))
+                    except Full as exc:
+                        error = SessionLogBackpressureError(
+                            f"{SESSION_LOG_BACKPRESSURE_CODE}: queue_batches={self._queue.maxsize}"
+                        )
+                        self._set_error(error)
+                        raise _SessionLogWriterFailed(error) from exc
 
     @property
     def queue_depth(self) -> int:
         return self._queue.qsize()
+
+    @property
+    def samples_written(self) -> int:
+        with self._stats_lock:
+            return self._samples_written
+
+    @property
+    def metadata_error(self) -> Exception | None:
+        with self._error_lock:
+            return self._metadata_error
 
     def close(self) -> None:
         with self._close_lock:
@@ -231,7 +268,7 @@ class _AsyncSessionLogWriter:
                     raise error
                 return
             self._closed = True
-            self._queue.put(None)
+            self._close_requested.set()
         self._thread.join(SESSION_LOG_CLOSE_TIMEOUT_SECONDS)
         if self._thread.is_alive():
             raise TimeoutError("session log writer did not close within timeout")
@@ -243,33 +280,37 @@ class _AsyncSessionLogWriter:
         pending: list[HopObservation] = []
         try:
             while True:
-                item = self._queue.get()
-                if item is None:
-                    if pending:
-                        written = list(pending)
-                        self._writer.write_many(pending)
-                        self._notify_samples_written(written)
-                    return
+                try:
+                    item = self._queue.get(timeout=WORKER_POLL_SECONDS)
+                except Empty:
+                    if self._close_requested.is_set():
+                        return
+                    continue
                 pending.extend(item)
 
-                while True:
+                deadline = time.monotonic() + SESSION_LOG_BATCH_WINDOW_SECONDS
+                while len(pending) < SESSION_LOG_BATCH_MAX_OBSERVATIONS:
                     try:
-                        extra = self._queue.get_nowait()
+                        if self._close_requested.is_set():
+                            extra = self._queue.get_nowait()
+                        else:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            extra = self._queue.get(timeout=remaining)
                     except Empty:
                         break
-                    if extra is None:
-                        if pending:
-                            written = list(pending)
-                            self._writer.write_many(pending)
-                            self._notify_samples_written(written)
-                        return
                     pending.extend(extra)
 
                 if pending:
                     written = list(pending)
                     self._writer.write_many(pending)
+                    self._record_samples_written(written)
                     self._notify_samples_written(written)
                     pending = []
+                if self._close_requested.is_set() and self._queue.empty():
+                    self._retry_pending_metadata()
+                    return
         except Exception as exc:
             self._set_error(exc)
         finally:
@@ -283,10 +324,47 @@ class _AsyncSessionLogWriter:
         return list(getattr(self._writer, "paths", [self.path]))
 
     def _notify_samples_written(self, observations: list[HopObservation]) -> None:
-        if self._on_samples_written is None or not observations:
+        if not observations:
             return
         last_timestamp = max(observation.timestamp for observation in observations)
-        self._on_samples_written(len(observations), last_timestamp, self.segment_paths)
+        self._pending_metadata_count += len(observations)
+        if self._pending_metadata_last_timestamp is None:
+            self._pending_metadata_last_timestamp = last_timestamp
+        else:
+            self._pending_metadata_last_timestamp = max(
+                self._pending_metadata_last_timestamp,
+                last_timestamp,
+            )
+        self._retry_pending_metadata()
+
+    def _retry_pending_metadata(self) -> None:
+        if self._on_samples_written is None or self._pending_metadata_count <= 0:
+            return
+        try:
+            self._on_samples_written(
+                self._pending_metadata_count,
+                self._pending_metadata_last_timestamp or datetime.now(),
+                self.segment_paths,
+            )
+        except Exception as exc:
+            with self._error_lock:
+                self._metadata_error = exc
+            return
+        self._pending_metadata_count = 0
+        self._pending_metadata_last_timestamp = None
+        with self._error_lock:
+            self._metadata_error = None
+
+    def _record_samples_written(self, observations: list[HopObservation]) -> None:
+        if not observations:
+            return
+        last_timestamp = max(observation.timestamp for observation in observations)
+        with self._stats_lock:
+            self._samples_written += len(observations)
+            if self._last_timestamp is None:
+                self._last_timestamp = last_timestamp
+            else:
+                self._last_timestamp = max(self._last_timestamp, last_timestamp)
 
     def _raise_if_failed(self) -> None:
         error = self._current_error()
@@ -361,6 +439,7 @@ class MeasurementWorker(QThread):
         self._target_interval_overrides: dict[str, int] = {}
         self._pending_add_targets: list[str] = []
         self._pending_remove_targets: set[str] = set()
+        self._target_schedule_cursor = 0
         self._ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._hop_ping_probe_pool: _ThreadLocalPingProbePool | None = None
         self._route_history = RouteHistory()
@@ -461,19 +540,18 @@ class MeasurementWorker(QThread):
         }
         recent_observations: deque[HopObservation] = deque(maxlen=RECENT_OBSERVATION_LIMIT)
 
-        # tracert, 최종 대상 ping, hop ping을 분리된 실행기로 돌립니다.
-        # 이렇게 나누면 느린 tracert나 중간 hop 응답 지연이 전체 대상 ping을 막지 않습니다.
-        trace_executor = ThreadPoolExecutor(max_workers=1)
-        target_executor = ThreadPoolExecutor(max_workers=MAX_TARGET_PING_WORKERS)
-        hop_executor = ThreadPoolExecutor(max_workers=MAX_HOP_PING_WORKERS)
-        trace_future: Future[list[HopInfo]] | None = (
-            self._start_trace_refresh(trace_executor) if self._uses_full_route() else None
-        )
-        target_futures: dict[Future[PingResult], str] = {}
+        trace_executor: ThreadPoolExecutor | None = None
+        target_executor: ThreadPoolExecutor | None = None
+        hop_executor: ThreadPoolExecutor | None = None
+        trace_future: Future[list[HopInfo]] | None = None
+        # Future가 시작될 때의 TargetProbeState 객체를 lifecycle token으로 보관합니다.
+        # 같은 IP를 삭제 후 재추가하면 새 state 객체가 만들어져 이전 결과를 구분할 수 있습니다.
+        target_futures: dict[Future[PingResult], TargetProbeState] = {}
         hop_futures: dict[Future[PingResult], str] = {}
         active_target_pings: set[str] = set()
         active_hop_pings: set[str] = set()
         target_states = {target: TargetProbeState(target) for target in self.targets}
+        session_writer: SessionLogWriter | None = None
         session_log: _AsyncSessionLogWriter | None = None
         route_log: RouteLogWriter | None = None
         session_index: SessionIndexStore | None = None
@@ -487,6 +565,12 @@ class MeasurementWorker(QThread):
         last_error = ""
 
         try:
+            # tracert, 최종 대상 ping, hop ping을 분리된 실행기로 돌립니다.
+            # 생성 도중 실패해도 finally에서 이미 만든 실행기를 정리할 수 있게 try 안에서 만듭니다.
+            trace_executor = ThreadPoolExecutor(max_workers=1)
+            target_executor = ThreadPoolExecutor(max_workers=MAX_TARGET_PING_WORKERS)
+            hop_executor = ThreadPoolExecutor(max_workers=MAX_HOP_PING_WORKERS)
+            trace_future = self._start_trace_refresh(trace_executor) if self._uses_full_route() else None
             # 세션 CSV와 세션 인덱스는 측정 시작 직후 만들어 둡니다.
             # 프로그램이 중간에 꺼져도 Session Manager가 남은 CSV를 찾아 복구할 수 있습니다.
             self._ping_probe_pool = _ThreadLocalPingProbePool(self._new_ping_probe)
@@ -688,19 +772,50 @@ class MeasurementWorker(QThread):
                 "측정이 완료되었습니다." if not self._stop_event.is_set() else "측정이 중지되었습니다."
             )
         except _SessionLogWriterFailed as exc:
-            last_error = _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc.original)
+            last_error = _session_log_error_summary(exc)
+            operation_failure(
+                last_error.split(":", 1)[0],
+                "measurement.session_log_write",
+                exc.original,
+                target=self.target,
+                session_path=session_log.path if session_log is not None else None,
+            )
             self.error_message.emit(
                 f"세션 로그 저장 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({last_error})"
             )
         except Exception as exc:
             last_error = _error_code_summary(WORKER_UNEXPECTED_ERROR_CODE, exc)
+            operation_failure(
+                WORKER_UNEXPECTED_ERROR_CODE,
+                "measurement.run",
+                exc,
+                target=self.target,
+                session_path=session_log.path if session_log is not None else None,
+            )
             self.error_message.emit(f"측정 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({last_error})")
         finally:
             self._stop_event.set()
             self._cancel_pending_futures(trace_future, target_futures, hop_futures)
-            target_executor.shutdown(wait=True, cancel_futures=True)
-            hop_executor.shutdown(wait=True, cancel_futures=True)
-            trace_executor.shutdown(wait=True, cancel_futures=True)
+            for executor_name, executor in (
+                ("target", target_executor),
+                ("hop", hop_executor),
+                ("trace", trace_executor),
+            ):
+                if executor is None:
+                    continue
+                try:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                except Exception as exc:
+                    executor_error = _error_code_summary(WORKER_EXECUTOR_SHUTDOWN_FAILED_CODE, exc)
+                    last_error = _merge_error_summaries(last_error, executor_error)
+                    operation_failure(
+                        WORKER_EXECUTOR_SHUTDOWN_FAILED_CODE,
+                        f"measurement.{executor_name}_executor_shutdown",
+                        exc,
+                        target=self.target,
+                        session_path=session_log.path if session_log is not None else None,
+                    )
+                    self.error_message.emit(f"측정 작업 정리 중 오류가 발생했습니다. ({executor_error})")
             if session_log is not None:
                 try:
                     self._collect_completed_ping_results(
@@ -720,15 +835,45 @@ class MeasurementWorker(QThread):
                 except Exception as exc:
                     session_error = _session_log_error_summary(exc)
                     last_error = _merge_error_summaries(last_error, session_error)
+                    operation_failure(
+                        session_error.split(":", 1)[0],
+                        "measurement.session_log_close",
+                        exc,
+                        target=self.target,
+                        session_path=session_log.path,
+                    )
                     self.error_message.emit(
                         f"세션 로그 저장 중 오류가 발생했습니다. 세션은 Pause 상태로 저장됩니다. ({session_error})"
                     )
+            elif session_writer is not None:
+                # 비동기 writer로 소유권이 넘어가기 전에 초기화가 실패한 경우에도
+                # Windows 파일 핸들이 남지 않도록 원본 writer를 직접 닫습니다.
+                try:
+                    session_writer.close()
+                except Exception as exc:
+                    session_error = _session_log_error_summary(exc)
+                    last_error = _merge_error_summaries(last_error, session_error)
+                    operation_failure(
+                        session_error.split(":", 1)[0],
+                        "measurement.session_log_startup_close",
+                        exc,
+                        target=self.target,
+                        session_path=session_writer.path,
+                    )
+                    self.error_message.emit(f"세션 로그 정리 중 오류가 발생했습니다. ({session_error})")
             if route_log is not None:
                 try:
                     route_log.close()
                 except Exception as exc:
                     route_error = _error_code_summary(ROUTE_LOG_CLOSE_FAILED_CODE, exc)
                     last_error = _merge_error_summaries(last_error, route_error)
+                    operation_failure(
+                        ROUTE_LOG_CLOSE_FAILED_CODE,
+                        "measurement.route_log_close",
+                        exc,
+                        target=self.target,
+                        session_path=session_log.path if session_log is not None else None,
+                    )
                     self.error_message.emit(f"경로 로그 종료 중 오류가 발생했습니다. ({route_error})")
             if session_index is not None and session_id is not None:
                 state = SESSION_STATE_ARCHIVED if completed_normally and not last_error else SESSION_STATE_PAUSED
@@ -739,9 +884,17 @@ class MeasurementWorker(QThread):
                         ended_at=datetime.now(),
                         segments=session_log.segment_paths if session_log is not None else None,
                         last_error=last_error,
+                        samples=session_log.samples_written if session_log is not None else None,
                     )
                 except Exception as exc:
                     index_error = _error_code_summary(SESSION_INDEX_FINISH_FAILED_CODE, exc)
+                    operation_failure(
+                        SESSION_INDEX_FINISH_FAILED_CODE,
+                        "measurement.session_index_finish",
+                        exc,
+                        target=self.target,
+                        session_path=session_log.path if session_log is not None else None,
+                    )
                     self.error_message.emit(f"세션 인덱스 마감 중 오류가 발생했습니다. ({index_error})")
             if self._ping_probe_pool is not None:
                 self._ping_probe_pool.close()
@@ -753,7 +906,7 @@ class MeasurementWorker(QThread):
     @staticmethod
     def _cancel_pending_futures(
         trace_future: Future[list[HopInfo]] | None,
-        target_futures: dict[Future[PingResult], str],
+        target_futures: dict[Future[PingResult], TargetProbeState],
         hop_futures: dict[Future[PingResult], str],
     ) -> None:
         if trace_future is not None:
@@ -764,7 +917,7 @@ class MeasurementWorker(QThread):
     def _schedule_target_pings(
         self,
         executor: ThreadPoolExecutor,
-        futures: dict[Future[PingResult], str],
+        futures: dict[Future[PingResult], TargetProbeState],
         active_targets: set[str],
         target_states: dict[str, TargetProbeState],
         *,
@@ -777,7 +930,11 @@ class MeasurementWorker(QThread):
             return scheduled
         # 여러 IP를 한 번에 전부 실행하면 timeout이 많은 환경에서 스레드가 급격히 늘 수 있습니다.
         # capacity만큼만 새 ping을 예약해서 프로그램 반응성과 시스템 부하를 같이 지킵니다.
-        for target in self.targets:
+        targets = list(self.targets)
+        start_index = self._target_schedule_cursor % len(targets)
+        for offset in range(len(targets)):
+            target_index = (start_index + offset) % len(targets)
+            target = targets[target_index]
             if self._is_target_paused(target):
                 continue
             state = target_states[target]
@@ -788,9 +945,10 @@ class MeasurementWorker(QThread):
                 continue
             state.last_started_at = now
             future = executor.submit(self._ping_target, target)
-            futures[future] = target
+            futures[future] = state
             active_targets.add(target)
             scheduled.add(target)
+            self._target_schedule_cursor = (target_index + 1) % len(targets)
             capacity -= 1
             if capacity == 0:
                 break
@@ -831,7 +989,7 @@ class MeasurementWorker(QThread):
 
     def _collect_completed_ping_results(
         self,
-        target_futures: dict[Future[PingResult], str],
+        target_futures: dict[Future[PingResult], TargetProbeState],
         active_target_pings: set[str],
         hop_futures: dict[Future[PingResult], str],
         active_hop_pings: set[str],
@@ -859,11 +1017,14 @@ class MeasurementWorker(QThread):
 
         for future in ready:
             if future in target_futures:
-                target = target_futures.pop(future)
+                submitted_state = target_futures.pop(future)
+                target = submitted_state.target
                 active_target_pings.discard(target)
                 if future.cancelled():
                     continue
-                if target not in target_states:
+                if target_states.get(target) is not submitted_state:
+                    # 삭제된 대상의 실행 중 ping은 취소되지 않을 수 있습니다.
+                    # 같은 IP가 다시 추가됐더라도 이전 lifecycle 결과는 새 그래프에 넣지 않습니다.
                     continue
                 result = self._future_result(future, target)
                 target_states[target].record_result(
@@ -897,6 +1058,12 @@ class MeasurementWorker(QThread):
 
         tracker = target_trackers.get(result.target)
         if tracker:
+            tracker.set_recent_observation_limit(
+                alert_history_observation_limit(
+                    self.alert_rule_config,
+                    self._target_base_interval_seconds(result.target),
+                )
+            )
             observations.append(tracker.add_result(result))
         return observations
 
@@ -997,7 +1164,7 @@ class MeasurementWorker(QThread):
         self,
         round_started_at: float,
         target_executor: ThreadPoolExecutor,
-        target_futures: dict[Future[PingResult], str],
+        target_futures: dict[Future[PingResult], TargetProbeState],
         active_target_pings: set[str],
         target_states: dict[str, TargetProbeState],
         hop_futures: dict[Future[PingResult], str],
@@ -1046,7 +1213,7 @@ class MeasurementWorker(QThread):
         self,
         active_target_pings: set[str],
         active_hop_pings: set[str],
-        target_futures: dict[Future[PingResult], str],
+        target_futures: dict[Future[PingResult], TargetProbeState],
         hop_futures: dict[Future[PingResult], str],
         target_states: dict[str, TargetProbeState],
         session_log: _AsyncSessionLogWriter,
@@ -1082,7 +1249,7 @@ class MeasurementWorker(QThread):
 
     def _wait_for_active_target_pings(
         self,
-        target_futures: dict[Future[PingResult], str],
+        target_futures: dict[Future[PingResult], TargetProbeState],
         active_target_pings: set[str],
         hop_futures: dict[Future[PingResult], str],
         active_hop_pings: set[str],
@@ -1093,9 +1260,9 @@ class MeasurementWorker(QThread):
         session_log: _AsyncSessionLogWriter,
         recent_observations: deque[HopObservation],
     ) -> None:
-        wait_seconds = self._target_round_wait_seconds()
-        if wait_seconds <= 0:
-            wait_seconds = WORKER_POLL_SECONDS
+        # 마지막 화면 갱신에는 executor 종료 중 뒤늦게 끝난 결과가 빠지지 않아야 합니다.
+        # 일반 라운드 간격이 아니라 probe timeout을 기준으로 한 번만 충분히 기다립니다.
+        wait_seconds = max(self.timeout_ms / 1000, WORKER_POLL_SECONDS) + FINAL_TARGET_DRAIN_GRACE_SECONDS
         deadline = time.monotonic() + wait_seconds
         while (
             (active_target_pings or (self.interval_seconds <= 0 and active_hop_pings))
@@ -1174,6 +1341,13 @@ class MeasurementWorker(QThread):
             if self._route_log_write_failed:
                 return
             self._route_log_write_failed = True
+            operation_failure(
+                ROUTE_LOG_WRITE_FAILED_CODE,
+                "measurement.route_log_write",
+                exc,
+                target=self.target,
+                session_path=getattr(route_log, "path", None),
+            )
             route_error = _error_code_summary(ROUTE_LOG_WRITE_FAILED_CODE, exc)
             self.error_message.emit(f"경로 로그 저장 중 오류가 발생했습니다. 측정은 계속 진행합니다. ({route_error})")
         else:
@@ -1420,9 +1594,10 @@ def _error_code_summary(code: str, exc: Exception) -> str:
 
 
 def _session_log_error_summary(exc: Exception) -> str:
-    if isinstance(exc, _SessionLogWriterFailed):
-        return _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc.original)
-    return _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, exc)
+    original = exc.original if isinstance(exc, _SessionLogWriterFailed) else exc
+    if isinstance(original, SessionLogBackpressureError):
+        return f"{SESSION_LOG_BACKPRESSURE_CODE}: queue_full"
+    return _error_code_summary(SESSION_LOG_WRITE_FAILED_CODE, original)
 
 
 def _merge_error_summaries(current: str, extra: str) -> str:

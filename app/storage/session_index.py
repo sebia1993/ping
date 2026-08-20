@@ -18,6 +18,7 @@ from app.storage.session_log import (
     session_log_segment_index_path,
 )
 from app.utils.app_paths import legacy_session_log_directories, session_logs_directory
+from app.utils.diagnostics import operation_failure
 
 
 # Session Manager 화면은 원본 CSV를 매번 전부 읽지 않고 이 작은 JSON 인덱스를 먼저 봅니다.
@@ -30,8 +31,10 @@ SESSION_INDEX_IO_RETRY_ATTEMPTS = 5
 SESSION_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
 SESSION_DELETE_FILES_FAILED_CODE = "SESSION_DELETE_FILES_FAILED"
 SESSION_INDEX_REBUILT_CODE = "SESSION_INDEX_REBUILT"
+SESSION_INDEX_WRITE_FAILED_CODE = "SESSION_INDEX_WRITE_FAILED"
 SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE = "SESSION_RECOVERED_WITH_SKIPPED_ROWS"
 SESSION_INDEX_VERSION = 2
+SUPPORTED_SESSION_INDEX_VERSIONS = {1, SESSION_INDEX_VERSION}
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,7 @@ class SessionIndexStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self.last_read_warning = ""
+        self.last_write_warning = ""
 
     @classmethod
     def create(cls, root: Path | None = None) -> "SessionIndexStore":
@@ -107,9 +111,9 @@ class SessionIndexStore:
                     legacy_root / "session_index.json",
                     legacy_root,
                 )
-            except (OSError, json.JSONDecodeError):
+                imported += self.import_sessions(legacy_records)
+            except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError, json.JSONDecodeError):
                 continue
-            imported += self.import_sessions(legacy_records)
         return imported
 
     def import_sessions(self, incoming: list[TraceSessionRecord]) -> int:
@@ -220,6 +224,7 @@ class SessionIndexStore:
         ended_at: datetime | None = None,
         segments: list[Path] | tuple[Path, ...] | None = None,
         last_error: str = "",
+        samples: int | None = None,
     ) -> None:
         """정상 종료, 중지, 오류 같은 최종 상태를 세션 인덱스에 남깁니다."""
 
@@ -230,6 +235,7 @@ class SessionIndexStore:
                     record,
                     state=state,
                     end=ended_at or record.end or datetime.now(),
+                    samples=max(int(samples), 0) if samples is not None else record.samples,
                     segments=_merge_segments(record.segments, segments),
                     last_error=last_error,
                 )
@@ -464,16 +470,26 @@ class SessionIndexStore:
             return self._recover_records_from_logs()
         try:
             data = json.loads(_read_text_with_retries(self.path))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             self.last_read_warning = f"{SESSION_INDEX_REBUILT_CODE}: invalid_index"
             return self._recover_records_from_logs()
-        rows = data.get("sessions", []) if isinstance(data, dict) else []
+        if (
+            not isinstance(data, dict)
+            or data.get("version", 1) not in SUPPORTED_SESSION_INDEX_VERSIONS
+            or not isinstance(data.get("sessions"), list)
+        ):
+            self.last_read_warning = f"{SESSION_INDEX_REBUILT_CODE}: invalid_index"
+            return self._recover_records_from_logs()
+        rows = data["sessions"]
         records: list[TraceSessionRecord] = []
         invalid_rows = 0
         for row in rows:
+            if not isinstance(row, dict):
+                invalid_rows += 1
+                continue
             try:
                 records.append(_record_from_row(row, self.path.parent))
-            except (KeyError, TypeError, ValueError):
+            except (AttributeError, KeyError, TypeError, ValueError):
                 invalid_rows += 1
         if rows and not records:
             self.last_read_warning = f"{SESSION_INDEX_REBUILT_CODE}: invalid_rows={invalid_rows}"
@@ -524,6 +540,7 @@ class SessionIndexStore:
     def _write_records(self, records: list[TraceSessionRecord]) -> None:
         # 임시 파일에 먼저 쓰고 replace로 교체합니다. 쓰는 도중 앱이 꺼져도
         # 기존 session_index.json이 반쯤 깨지는 상황을 줄이기 위한 방식입니다.
+        self.last_write_warning = ""
         payload = {
             "version": SESSION_INDEX_VERSION,
             "sessions": [
@@ -544,7 +561,14 @@ class SessionIndexStore:
                 temp_path = Path(handle.name)
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
             _replace_with_retries(temp_path, self.path)
-        except Exception:
+        except Exception as exc:
+            self.last_write_warning = f"{SESSION_INDEX_WRITE_FAILED_CODE}: {type(exc).__name__}"
+            operation_failure(
+                SESSION_INDEX_WRITE_FAILED_CODE,
+                "session_index.write",
+                exc,
+                session_path=self.path,
+            )
             if temp_path is not None:
                 _unlink_temp_path(temp_path)
             raise
@@ -569,12 +593,20 @@ def _read_index_records_without_recovery(path: Path, root: Path) -> list[TraceSe
     if not path.exists():
         return []
     payload = json.loads(_read_text_with_retries(path))
-    rows = payload.get("sessions", []) if isinstance(payload, dict) else []
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version", 1) not in SUPPORTED_SESSION_INDEX_VERSIONS
+        or not isinstance(payload.get("sessions"), list)
+    ):
+        return []
+    rows = payload["sessions"]
     records: list[TraceSessionRecord] = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         try:
             records.append(_record_from_row(row, root))
-        except (KeyError, TypeError, ValueError):
+        except (AttributeError, KeyError, TypeError, ValueError):
             continue
     return records
 
@@ -597,12 +629,33 @@ def _record_from_sample_log(sample_path: Path) -> TraceSessionRecord | None:
         segments = tuple(segment for segment in session_log_segment_index(sample_path) if segment.rows > 0)
     except OSError:
         return None
-    if not segments:
-        return None
     try:
         read_summary = session_log_read_summary(sample_path)
     except OSError:
         return None
+    if not segments:
+        if read_summary.skipped_rows <= 0:
+            return None
+        # 한 행도 복구하지 못했더라도 손상 파일을 세션 목록에서 숨기지 않습니다.
+        # 사용자가 원본을 보존하거나 삭제 여부를 판단할 수 있도록 Pause 항목으로 남깁니다.
+        try:
+            file_timestamp = datetime.fromtimestamp(sample_path.stat().st_mtime)
+        except OSError:
+            return None
+        route_path = route_log_path_for_session(sample_path)
+        return TraceSessionRecord(
+            session_id=_session_id(sample_path),
+            target=_target_from_sample_path(sample_path),
+            sample_path=sample_path,
+            route_path=route_path if route_path is not None and route_path.exists() else None,
+            start=file_timestamp,
+            end=file_timestamp,
+            samples=0,
+            state=SESSION_STATE_PAUSED,
+            target_count=1,
+            segments=(sample_path,),
+            last_error=_session_recovery_last_error(read_summary),
+        )
     starts = [segment.start for segment in segments if segment.start is not None]
     ends = [segment.end for segment in segments if segment.end is not None]
     if not starts or not ends:
@@ -747,6 +800,12 @@ def _record_to_row(record: TraceSessionRecord, root: Path) -> dict[str, object]:
 
 
 def _record_from_row(row: dict[str, object], root: Path | None = None) -> TraceSessionRecord:
+    for key in ("session_id", "target", "sample_path", "start"):
+        if not str(row.get(key) or "").strip():
+            raise ValueError(f"missing session index field: {key}")
+    raw_segments = row.get("segments", []) or []
+    if not isinstance(raw_segments, list):
+        raise ValueError("session index segments must be a list")
     end_value = str(row.get("end") or "")
     route_value = str(row.get("route_path") or "")
     measurement_mode = str(row.get("measurement_mode") or "")
@@ -760,7 +819,7 @@ def _record_from_row(row: dict[str, object], root: Path | None = None) -> TraceS
         route_path=_deserialize_index_path(route_value, root) if route_value else None,
         start=datetime.fromisoformat(str(row["start"])),
         end=datetime.fromisoformat(end_value) if end_value else None,
-        samples=int(row.get("samples") or 0),
+        samples=max(int(row.get("samples") or 0), 0),
         state=str(row.get("state") or SESSION_STATE_ARCHIVED),
         interval_seconds=_optional_int(row.get("interval_seconds")),
         measurement_mode=measurement_mode,
@@ -768,8 +827,8 @@ def _record_from_row(row: dict[str, object], root: Path | None = None) -> TraceS
         tcp_port=_optional_int_or_default(row.get("tcp_port"), fallback_tcp_port),
         route_probe_engine=str(row.get("route_probe_engine") or fallback_route_engine),
         resumed_from_session_id=str(row.get("resumed_from_session_id") or ""),
-        target_count=int(row.get("target_count") or 1),
-        segments=tuple(_deserialize_index_path(str(path), root) for path in row.get("segments", []) or []),
+        target_count=max(int(row.get("target_count") or 1), 1),
+        segments=tuple(_deserialize_index_path(str(path), root) for path in raw_segments),
         last_error=str(row.get("last_error") or ""),
     )
 

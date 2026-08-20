@@ -131,7 +131,8 @@ class TargetMetricTracker:
     def __init__(self, target: str, recent_window: int = 20, recent_observation_limit: int = 300) -> None:
         self._hop = HopInfo(index=0, address=target, hostname="Target", is_target=True)
         self._tracker = HopMetricTracker(hop=self._hop, recent_window=recent_window)
-        self._recent_observations: deque[HopObservation] = deque(maxlen=recent_observation_limit)
+        self._recent_observation_limit = max(int(recent_observation_limit), 1)
+        self._recent_observations: deque[HopObservation] = deque(maxlen=self._recent_observation_limit)
 
     def add_result(self, result: PingResult) -> HopObservation:
         observation = self._tracker.add_result(result)
@@ -141,6 +142,15 @@ class TargetMetricTracker:
     @property
     def observations(self) -> list[HopObservation]:
         return list(self._recent_observations)
+
+    def set_recent_observation_limit(self, limit: int) -> None:
+        """Resize alert history after an operator changes a target interval."""
+
+        new_limit = max(int(limit), 1)
+        if new_limit == self._recent_observation_limit:
+            return
+        self._recent_observation_limit = new_limit
+        self._recent_observations = deque(self._recent_observations, maxlen=new_limit)
 
     def snapshot(self) -> MetricSnapshot:
         return self._tracker.snapshot()

@@ -408,6 +408,7 @@ def test_latency_graph_right_drag_pans_history_without_selection(qt_app) -> None
         QMouseEvent(
             QEvent.Type.MouseButtonPress,
             start_pos,
+            start_pos,
             Qt.MouseButton.RightButton,
             Qt.MouseButton.RightButton,
             Qt.KeyboardModifier.NoModifier,
@@ -417,6 +418,7 @@ def test_latency_graph_right_drag_pans_history_without_selection(qt_app) -> None
         QMouseEvent(
             QEvent.Type.MouseMove,
             end_pos,
+            end_pos,
             Qt.MouseButton.NoButton,
             Qt.MouseButton.RightButton,
             Qt.KeyboardModifier.NoModifier,
@@ -425,6 +427,7 @@ def test_latency_graph_right_drag_pans_history_without_selection(qt_app) -> None
     graph.mouseReleaseEvent(
         QMouseEvent(
             QEvent.Type.MouseButtonRelease,
+            end_pos,
             end_pos,
             Qt.MouseButton.RightButton,
             Qt.MouseButton.NoButton,

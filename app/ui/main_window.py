@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimer
+from PySide6.QtCore import QDate, QDateTime, QThread, Qt, QTime, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -62,11 +62,15 @@ from app.core.models import STATUS_PAUSED, HopObservation, MetricSnapshot
 from app.core.observation_stats import build_focus_snapshots, observations_in_range
 from app.core.route_history import RouteChange, route_path
 from app.ui.control_panel import build_controls_panel
+from app.ui.developer_mode import DeveloperModeController
 from app.ui.alert_action_dispatcher import AlertActionDispatcher
 from app.ui.export_worker import ExportWorker
 from app.ui.graph_detail_window import GraphDetailWindow
 from app.ui.latency_graph import LatencyGraphWidget, TimelineAnnotation, TimelineSeries
 from app.ui.session_observation_loader import SessionObservationLoader
+from app.ui.session_archive_worker import SessionArchiveWorker
+from app.ui.session_open_worker import SessionOpenResult, SessionOpenWorker
+from app.utils.diagnostics import operation_failure
 from app.ui.table_panels import (
     ALERT_HEADERS,
     SESSION_HEADERS,
@@ -99,11 +103,14 @@ from app.storage.alert_action_log import (
     append_alert_action,
     append_alert_actions,
     alert_action_log_path_for_session,
-    read_alert_actions,
+    read_alert_actions_with_summary,
 )
 from app.storage.atomic_write import atomic_write_path, read_text_with_retries
 from app.storage.export_annotations import ExportAnnotation, annotations_in_range
-from app.storage.route_log import route_changes_in_range, route_log_path_for_session
+from app.storage.route_log import (
+    route_changes_in_range_with_summary,
+    route_log_path_for_session,
+)
 from app.storage.session_index import (
     SESSION_STATE_WILL_DELETE,
     SessionIndexStore,
@@ -154,11 +161,13 @@ TARGET_GROUP_PRESET_VERSION = 2
 ALERT_RULE_PRESET_VERSION = 2
 GRAPH_RENDER_THROTTLE_TARGET_COUNT = 5
 GRAPH_RENDER_THROTTLE_SECONDS = 2.0
-TARGET_GRAPH_ROW_BATCH_THRESHOLD = 30
-TARGET_GRAPH_ROW_CREATE_BATCH = 18
+TARGET_GRAPH_ROW_BATCH_THRESHOLD = 9
+TARGET_GRAPH_ROW_CREATE_BATCH = 8
+TARGET_GRAPH_ROW_CREATE_DELAY_MS = 100
 MAIN_GRAPH_DEFAULT_RANGE_SECONDS = 600
 LIVE_GRAPH_OBSERVATION_RETENTION_SECONDS = 3_900
 LIVE_GRAPH_OBSERVATION_LIMIT = 250_000
+LIVE_GRAPH_CACHE_COVERAGE_TOLERANCE_SECONDS = 1.0
 MAIN_GRAPH_RANGE_RECENT = "recent"
 MAIN_GRAPH_RANGE_ALL = "all"
 MAIN_GRAPH_RANGE_OPTIONS: tuple[tuple[str, int | str], ...] = (
@@ -225,6 +234,10 @@ class MainWindow(QMainWindow):
 
         self.worker: MeasurementWorker | None = None
         self.export_worker: ExportWorker | None = None
+        self.session_archive_worker: SessionArchiveWorker | None = None
+        self.session_open_worker: SessionOpenWorker | None = None
+        self.session_open_serial = 0
+        self.active_session_open_request: tuple[int, str] | None = None
         self.session_graph_loader: SessionObservationLoader | None = None
         self.session_graph_load_serial = 0
         self.active_session_graph_request: tuple[int, Path, datetime, datetime] | None = None
@@ -254,6 +267,8 @@ class MainWindow(QMainWindow):
         self.session_log_path: Path | None = None
         self.route_log_path: Path | None = None
         self.alert_action_log_path: Path | None = None
+        self.route_log_read_error_code: str | None = None
+        self.alert_action_log_read_error_code: str | None = None
 
         # 라이브 측정 화면에 표시되는 최신 hop/target/분석 데이터입니다.
         self.snapshots: list[MetricSnapshot] = []
@@ -329,6 +344,8 @@ class MainWindow(QMainWindow):
         self._set_state_chip("대기", "neutral")
         self._update_target_summary(None)
         self._sync_sessions_box()
+        # F12 개발자 모드는 기본적으로 비활성 상태이며 단축키 외의 작업은 시작하지 않습니다.
+        self.developer_mode = DeveloperModeController(self)
 
     def _is_worker_running(self) -> bool:
         worker = getattr(self, "worker", None)
@@ -336,6 +353,16 @@ class MainWindow(QMainWindow):
 
     def _skip_hidden_running_widget_update(self, widget: QWidget | None) -> bool:
         return bool(widget is not None and not widget.isVisible() and self._is_worker_running())
+
+    def _defer_hidden_target_table_update(self) -> bool:
+        """측정 중에는 기본 화면에 숨겨진 호환용 표 갱신을 미룹니다."""
+
+        return bool(
+            getattr(self, "target_table", None) is not None
+            and not self.target_table.isVisible()
+            and isinstance(self.worker, MeasurementWorker)
+            and self.worker.isRunning()
+        )
 
     def _reset_live_graph_observation_cache(self) -> None:
         self.live_graph_observations.clear()
@@ -400,14 +427,75 @@ class MainWindow(QMainWindow):
         self.session_log_bounds_cache = None
 
     def _reset_session_graph_cache(self) -> None:
-        self.session_graph_load_serial += 1
-        self.pending_session_graph_request = None
-        self.active_session_graph_request = None
+        self._cancel_session_graph_load()
         self.session_graph_cache_path = None
         self.session_graph_cache_range = None
         self.session_graph_cache_observations = []
-        if self.session_graph_loader is not None and self.session_graph_loader.isRunning():
-            self.session_graph_loader.requestInterruption()
+
+    def _cancel_session_graph_load(self, *, keep_pending: bool = False) -> None:
+        loader = self.session_graph_loader
+        has_request = bool(
+            loader is not None
+            or self.active_session_graph_request is not None
+            or self.pending_session_graph_request is not None
+        )
+        if has_request:
+            # 이미 끝난 QThread도 finished 신호가 UI 큐에 남아 있을 수 있습니다.
+            # 세대를 먼저 무효화해 늦게 도착한 결과가 현재 화면을 덮지 못하게 합니다.
+            self.session_graph_load_serial += 1
+        self.active_session_graph_request = None
+        if not keep_pending:
+            self.pending_session_graph_request = None
+        if loader is not None and loader.isRunning():
+            loader.request_cancel()
+
+    def _start_session_open_worker(self, record: TraceSessionRecord) -> None:
+        if self.session_open_worker is not None and self.session_open_worker.isRunning():
+            self.status_label.setText("이미 세션을 불러오는 중입니다.")
+            return
+        self.session_open_serial += 1
+        request_id = self.session_open_serial
+        self.active_session_open_request = (request_id, record.session_id)
+        worker = SessionOpenWorker(request_id=request_id, record=record, parent=self)
+        self.session_open_worker = worker
+        worker.loaded.connect(self._on_session_open_loaded)
+        worker.error_message.connect(self._on_session_open_error)
+        worker.finished.connect(self._on_session_open_finished)
+        self.status_label.setText("저장 세션을 불러오는 중입니다.")
+        self._set_session_opening(True)
+        worker.start()
+
+    def _on_session_open_loaded(self, request_id: int, result: object) -> None:
+        request = self.active_session_open_request
+        if request is None or request[0] != request_id:
+            return
+        if not isinstance(result, SessionOpenResult):
+            return
+        self._open_session_record(result.record, loaded=result)
+
+    def _on_session_open_error(self, request_id: int, message: str) -> None:
+        request = self.active_session_open_request
+        if request is not None and request[0] == request_id:
+            self._record_developer_error(message, error_type="SessionOpenError", feature_id="session.open")
+            self.status_label.setText(f"세션 로그를 읽을 수 없습니다. ({message})")
+
+    def _on_session_open_finished(self) -> None:
+        worker = self.session_open_worker
+        if worker is not None:
+            worker.deleteLater()
+        self.session_open_worker = None
+        self.active_session_open_request = None
+        self._set_session_opening(False)
+
+    def _set_session_opening(self, opening: bool) -> None:
+        if hasattr(self, "open_session_button"):
+            self.open_session_button.setEnabled(not opening and self.session_combo.count() > 0)
+        if hasattr(self, "session_combo"):
+            self.session_combo.setEnabled(not opening and self.session_combo.count() > 0)
+        for button_name in ("delete_session_button", "resume_session_button"):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                button.setEnabled(not opening and self.session_combo.count() > 0)
 
     def _queue_session_graph_load(self, path: Path, start: datetime, end: datetime) -> None:
         if self._session_graph_cache_covers(path, start, end):
@@ -418,7 +506,12 @@ class MainWindow(QMainWindow):
         if self.active_session_graph_request is not None and request == self.active_session_graph_request[1:]:
             return
         self.pending_session_graph_request = request
-        if self.session_graph_loader is None or not self.session_graph_loader.isRunning():
+        if self.active_session_graph_request is not None:
+            self._cancel_session_graph_load(keep_pending=True)
+            return
+        # isRunning()이 False여도 이전 finished 신호가 아직 UI 큐에 남아 있을 수 있습니다.
+        # 해당 신호가 현재 로더 참조를 정리한 뒤에만 다음 로더를 시작합니다.
+        if self.session_graph_loader is None:
             self._start_pending_session_graph_load()
 
     def _session_graph_cache_covers(self, path: Path, start: datetime, end: datetime) -> bool:
@@ -434,7 +527,7 @@ class MainWindow(QMainWindow):
 
     def _start_pending_session_graph_load(self) -> None:
         request = self.pending_session_graph_request
-        if request is None:
+        if request is None or self.session_graph_loader is not None:
             return
         self.pending_session_graph_request = None
         path, start, end = request
@@ -451,7 +544,12 @@ class MainWindow(QMainWindow):
         self.session_graph_loader = loader
         loader.loaded.connect(self._on_session_graph_loaded)
         loader.failed.connect(self._on_session_graph_load_failed)
-        loader.finished.connect(self._on_session_graph_loader_finished)
+        loader.finished.connect(
+            lambda active_loader=loader, active_request_id=request_id: self._on_session_graph_loader_finished(
+                active_loader,
+                active_request_id,
+            )
+        )
         loader.start()
 
     def _on_session_graph_loaded(self, request_id: int, observations: object) -> None:
@@ -469,14 +567,21 @@ class MainWindow(QMainWindow):
     def _on_session_graph_load_failed(self, request_id: int, message: str) -> None:
         request = self.active_session_graph_request
         if request is not None and request[0] == request_id:
+            self._record_developer_error(message, error_type="SessionGraphLoadError", feature_id="session.open")
             self.status_label.setText(message)
 
-    def _on_session_graph_loader_finished(self) -> None:
-        loader = self.session_graph_loader
-        if loader is not None:
-            loader.deleteLater()
+    def _on_session_graph_loader_finished(
+        self,
+        loader: SessionObservationLoader,
+        request_id: int,
+    ) -> None:
+        loader.deleteLater()
+        if loader is not self.session_graph_loader:
+            return
         self.session_graph_loader = None
-        self.active_session_graph_request = None
+        request = self.active_session_graph_request
+        if request is not None and request[0] == request_id:
+            self.active_session_graph_request = None
         if self.pending_session_graph_request is not None:
             self._start_pending_session_graph_load()
 
@@ -531,7 +636,9 @@ class MainWindow(QMainWindow):
                 or observation.timestamp > self.live_graph_latest_timestamp
             ):
                 self.live_graph_latest_timestamp = observation.timestamp
-        latest_timestamp = max(observation.timestamp for observation in observations)
+        latest_timestamp = self.live_graph_latest_timestamp
+        if latest_timestamp is None:
+            return
         cutoff = latest_timestamp - timedelta(seconds=LIVE_GRAPH_OBSERVATION_RETENTION_SECONDS)
         while self.live_graph_observations and (
             self.live_graph_observations[0].timestamp < cutoff
@@ -595,6 +702,23 @@ class MainWindow(QMainWindow):
         if session_start is not None:
             start = min(start, session_start)
         return min(start, self.live_graph_latest_timestamp), self.live_graph_latest_timestamp
+
+    def _live_graph_retained_bounds(self) -> tuple[datetime, datetime] | None:
+        if not self.live_graph_observations:
+            return None
+        start = self.live_graph_observations[0].timestamp
+        end = self.live_graph_latest_timestamp or self.live_graph_observations[-1].timestamp
+        return min(start, end), max(start, end)
+
+    def _live_graph_cache_covers_range(self, start: datetime, end: datetime) -> bool:
+        bounds = self._live_graph_retained_bounds()
+        if bounds is None:
+            return False
+        if end < start:
+            start, end = end, start
+        cached_start, cached_end = bounds
+        tolerance = timedelta(seconds=LIVE_GRAPH_CACHE_COVERAGE_TOLERANCE_SECONDS)
+        return cached_start <= start + tolerance and cached_end + tolerance >= end
 
     def _session_log_start_for_live_graph(self) -> datetime | None:
         bounds = self._session_log_bounds_cached()
@@ -1443,6 +1567,8 @@ class MainWindow(QMainWindow):
         self.session_log_path = None
         self.route_log_path = None
         self.alert_action_log_path = None
+        self.route_log_read_error_code = None
+        self.alert_action_log_read_error_code = None
         self._reset_session_log_bounds_cache()
         self._reset_session_graph_cache()
         self.snapshots = []
@@ -1909,7 +2035,8 @@ class MainWindow(QMainWindow):
         self.target_snapshot = self._target_snapshot_for_address(self.current_target) or target_snapshot
         self.analysis = analyze_path(self.snapshots, self.target_snapshot) if self.target_snapshot is not target_snapshot else list(analysis)
         self.observations = list(observations)
-        self._reset_session_log_bounds_cache()
+        # 세션 시작 시점은 측정 중 바뀌지 않으므로 매 샘플마다 CSV 전체를 다시 읽지 않습니다.
+        # 새 세션이나 저장 세션을 선택할 때는 on_session_log_ready()/세션 열기 경로에서 캐시를 초기화합니다.
         self._remember_live_graph_observations(self.observations)
         self._remember_alert_observations(self.observations)
         self.target_history = self._target_history_from_observations(self.observations) or list(target_history)
@@ -1933,12 +2060,13 @@ class MainWindow(QMainWindow):
 
         if not self._skip_hidden_running_widget_update(getattr(self, "hop_table_panel", None)):
             update_hop_table(self.table, snapshots)
-        update_target_table(
-            self.target_table,
-            target_snapshots,
-            interval_seconds_by_target=interval_seconds_by_target,
-            interval_source_by_target=interval_source_by_target,
-        )
+        if not self._defer_hidden_target_table_update():
+            update_target_table(
+                self.target_table,
+                target_snapshots,
+                interval_seconds_by_target=interval_seconds_by_target,
+                interval_source_by_target=interval_source_by_target,
+            )
         if getattr(self, "problem_sort_check", None) is not None and self.problem_sort_check.isChecked():
             self._apply_target_problem_sort()
         self._update_all_targets_summary(target_snapshots)
@@ -2055,7 +2183,7 @@ class MainWindow(QMainWindow):
         visible_addresses = {snapshot.address for snapshot in snapshots if snapshot.address}
         if not visible_addresses:
             return None
-        if self._should_use_live_graph_cache():
+        if self.live_graph_observations:
             for observation in reversed(self.live_graph_observations):
                 if observation.address in visible_addresses:
                     return observation.timestamp
@@ -2102,11 +2230,24 @@ class MainWindow(QMainWindow):
         self.diagnostics_box.setPlainText("\n".join(lines))
 
     def on_worker_error(self, message: str) -> None:
+        self._record_developer_error(message, error_type="MeasurementError", feature_id="measurement.start")
         QMessageBox.warning(self, "측정 오류", message)
         self.status_label.setText(message)
         self._set_state_chip("오류", "danger")
 
+    def _record_developer_error(
+        self,
+        message: str,
+        *,
+        error_type: str,
+        feature_id: str = "",
+    ) -> None:
+        developer_mode = getattr(self, "developer_mode", None)
+        if developer_mode is not None:
+            developer_mode.record_error(message, error_type=error_type, feature_id=feature_id)
+
     def on_worker_finished(self) -> None:
+        worker = self.worker
         self._set_running(False)
         current_state = self.session_state_label.text()
         if current_state not in {"완료", "중지", "오류"}:
@@ -2114,8 +2255,11 @@ class MainWindow(QMainWindow):
                 self._set_state_chip("완료", "success")
             else:
                 self._set_state_chip("대기", "neutral")
+        if isinstance(worker, QThread):
+            worker.deleteLater()
         self.worker = None
-        self._request_graph_render(force=True)
+        # 측정 중 미뤄 둔 숨김 호환용 표를 종료 시점에 한 번 반영합니다.
+        self._render_current_view(force_graph=True)
         self._sync_sessions_box()
 
     def _update_target_summary(self, target_snapshot: MetricSnapshot | None) -> None:
@@ -2160,6 +2304,8 @@ class MainWindow(QMainWindow):
             f"그래프: 최근 {_format_duration(seconds)} | 데이터 {source} | "
             f"샘플 {len(observations)}개"
         )
+        if self.route_log_read_error_code:
+            self.timeline_status = f"{self.timeline_status} | {self.route_log_read_error_code}"
         self._sync_timeline_controls()
         self._render_current_view(force_graph=True)
         self.status_label.setText(self.timeline_status)
@@ -2297,8 +2443,9 @@ class MainWindow(QMainWindow):
         addresses = _unique_addresses(snapshot.address for snapshot in target_snapshots)
         data_bounds = self._main_graph_data_bounds()
         visible_range = self._main_graph_visible_time_range(data_bounds)
-        histories = self._graph_histories_for_rows(visible_range, addresses)
+        histories: dict[str, list[HopObservation]] = {}
         if not addresses:
+            histories = self._graph_histories_for_rows(visible_range, addresses)
             addresses = _unique_addresses(histories.keys())
         if not addresses:
             self._clear_target_graph_rows()
@@ -2331,36 +2478,39 @@ class MainWindow(QMainWindow):
         self._sync_main_graph_time_status(visible_range, data_bounds)
         row_addresses = [address for address in addresses if address in self.target_graph_rows]
         visible_graph_addresses = set(self._visible_target_graph_addresses(row_addresses))
+        graph_addresses = [address for address in row_addresses if address in visible_graph_addresses]
+        histories = self._graph_histories_for_rows(visible_range, graph_addresses)
         for address in row_addresses:
-            history = histories.get(address, [])
             snapshot = snapshot_by_address.get(address)
+            self._sync_target_graph_alias_label(address)
+            should_render_graph = address in visible_graph_addresses
+            self._sync_target_graph_action_buttons(address, snapshot)
+            if not should_render_graph:
+                continue
+
+            history = histories.get(address, [])
             graph_state = self._target_graph_health_state(address, snapshot, history)
             graph_color = TARGET_GRAPH_STATE_COLORS[graph_state]
             graph = self.target_graph_widgets[address]
             render_key = self._target_graph_render_key(snapshot, history, graph_state)
-            self._sync_target_graph_alias_label(address)
-            should_render_graph = address in visible_graph_addresses
             needs_render_update = self.target_graph_render_keys.get(address) != render_key
             if needs_render_update:
-                if should_render_graph:
-                    if history:
-                        graph.set_series([TimelineSeries(address, address, history, graph_color)])
-                    else:
-                        graph.set_points([])
-                    self.target_graph_render_keys[address] = render_key
+                if history:
+                    graph.set_series([TimelineSeries(address, address, history, graph_color)])
+                else:
+                    graph.set_points([])
+                self.target_graph_render_keys[address] = render_key
                 self.target_graph_metric_labels[address].setText(
                     self._target_graph_metric_text(snapshot, history)
                 )
                 self._set_target_graph_status_label(address, graph_state)
-            self._sync_target_graph_action_buttons(address, snapshot)
-            if should_render_graph:
-                self._apply_main_graph_time_range_to_widget(graph, visible_range)
-                graph.set_annotations(
-                    self._main_graph_annotations(
-                        target=address,
-                        include_route=address == self.current_target,
-                    )
+            self._apply_main_graph_time_range_to_widget(graph, visible_range)
+            graph.set_annotations(
+                self._main_graph_annotations(
+                    target=address,
+                    include_route=address == self.current_target,
                 )
+            )
 
         self.target_graph_empty_label.setVisible(False)
         if has_pending_row_creation:
@@ -2374,21 +2524,19 @@ class MainWindow(QMainWindow):
     def _schedule_graph_render_soon(self) -> None:
         self._pending_graph_render = True
         if not self._graph_render_timer.isActive():
-            self._graph_render_timer.start(1)
+            # 1ms 재예약은 한 번의 processEvents 호출 안에서 여러 배치를 연속 처리해
+            # 대량 대상의 첫 화면을 오래 막을 수 있으므로 다음 UI 회차까지 간격을 둡니다.
+            self._graph_render_timer.start(TARGET_GRAPH_ROW_CREATE_DELAY_MS)
 
     def _graph_histories_for_rows(
         self,
         visible_range: tuple[datetime, datetime] | None,
         addresses: list[str],
     ) -> dict[str, list[HopObservation]]:
-        if (
-            self._should_use_live_graph_cache()
-            and visible_range is not None
-            and self.live_graph_observations_by_address
-        ):
-            _visible_start, end = visible_range
-            start = self.live_graph_observations[0].timestamp
-            return self._live_graph_histories_by_address(start, end, addresses or None)
+        if visible_range is not None and self.live_graph_observations_by_address:
+            start, end = visible_range
+            if self._live_graph_cache_covers_range(start, end):
+                return self._live_graph_histories_by_address(start, end, addresses or None)
         return self._target_histories_by_address(self._graph_observations_for_rows())
 
     def _sync_target_graph_layout_order(self, addresses: list[str]) -> None:
@@ -2517,15 +2665,27 @@ class MainWindow(QMainWindow):
         alias_button = self.target_graph_alias_buttons.get(address)
         alias = self.target_aliases.get(address, "")
         if title is not None:
-            title.setText(alias or address)
-            title.setToolTip(f"{alias}\n{address}" if alias else address)
+            title_text = alias or address
+            title_tooltip = f"{alias}\n{address}" if alias else address
+            if title.text() != title_text:
+                title.setText(title_text)
+            if title.toolTip() != title_tooltip:
+                title.setToolTip(title_tooltip)
         if address_label is not None:
-            address_label.setText(address)
-            address_label.setVisible(bool(alias))
-            address_label.setToolTip(address)
+            if address_label.text() != address:
+                address_label.setText(address)
+            address_visible = bool(alias)
+            if address_label.isHidden() != (not address_visible):
+                address_label.setVisible(address_visible)
+            if address_label.toolTip() != address:
+                address_label.setToolTip(address)
         if alias_button is not None:
-            alias_button.setText("이름")
-            alias_button.setToolTip("이 IP에 표시할 이름을 추가, 수정 또는 삭제합니다.")
+            alias_text = "이름"
+            alias_tooltip = "이 IP에 표시할 이름을 추가, 수정 또는 삭제합니다."
+            if alias_button.text() != alias_text:
+                alias_button.setText(alias_text)
+            if alias_button.toolTip() != alias_tooltip:
+                alias_button.setToolTip(alias_tooltip)
 
     def _create_target_graph_row(self, address: str, *, use_primary_graph: bool) -> None:
         row = QFrame()
@@ -2596,6 +2756,22 @@ class MainWindow(QMainWindow):
         self.target_graph_pause_buttons[address] = pause_button
         self.target_graph_remove_buttons[address] = remove_button
         self._sync_target_graph_alias_label(address)
+        developer_mode = getattr(self, "developer_mode", None)
+        if developer_mode is not None:
+            developer_mode.register_target_row(
+                address,
+                {
+                    "row": row,
+                    "title": title,
+                    "address": address_label,
+                    "status": status_badge,
+                    "metric": metric,
+                    "alias": alias_button,
+                    "pause": pause_button,
+                    "remove": remove_button,
+                    "graph": graph,
+                },
+            )
 
     def _sync_target_graph_action_buttons(self, address: str, snapshot: MetricSnapshot | None = None) -> None:
         button = self.target_graph_pause_buttons.get(address)
@@ -2604,13 +2780,19 @@ class MainWindow(QMainWindow):
         paused = self._is_target_paused(address, snapshot)
         if paused:
             self.paused_target_addresses.add(address)
-            button.setText("재개")
-            button.setToolTip("이 IP 측정을 다시 시작합니다.")
+            button_text = "재개"
+            button_tooltip = "이 IP 측정을 다시 시작합니다."
         else:
             self.paused_target_addresses.discard(address)
-            button.setText("일시중지")
-            button.setToolTip("이 IP만 잠시 측정을 멈춥니다.")
-        button.setEnabled(bool(self.worker and self.worker.isRunning()))
+            button_text = "일시중지"
+            button_tooltip = "이 IP만 잠시 측정을 멈춥니다."
+        if button.text() != button_text:
+            button.setText(button_text)
+        if button.toolTip() != button_tooltip:
+            button.setToolTip(button_tooltip)
+        enabled = bool(self.worker and self.worker.isRunning())
+        if button.isEnabled() != enabled:
+            button.setEnabled(enabled)
 
     def _configure_main_graph_widget(self, graph: LatencyGraphWidget) -> None:
         graph.set_main_graph_mode(True)
@@ -2621,6 +2803,7 @@ class MainWindow(QMainWindow):
             mode = MAIN_GRAPH_RANGE_RECENT
         if mode == MAIN_GRAPH_RANGE_RECENT:
             self.main_graph_range_seconds = MAIN_GRAPH_DEFAULT_RANGE_SECONDS
+            self._cancel_session_graph_load()
         self.main_graph_range_mode = mode
         self._sync_main_graph_range_combo()
         self._sync_main_graph_time_axis_modes()
@@ -2638,6 +2821,7 @@ class MainWindow(QMainWindow):
             seconds = MAIN_GRAPH_DEFAULT_RANGE_SECONDS
         self.main_graph_range_seconds = seconds
         self.main_graph_range_mode = MAIN_GRAPH_RANGE_RECENT
+        self._cancel_session_graph_load()
         self._sync_main_graph_range_combo()
         self._sync_main_graph_time_axis_modes()
         self._sync_main_graph_time_status()
@@ -2809,6 +2993,9 @@ class MainWindow(QMainWindow):
             existing for existing in self.target_graph_layout_order if existing != address
         ]
         self.paused_target_addresses.discard(address)
+        developer_mode = getattr(self, "developer_mode", None)
+        if row is not None and developer_mode is not None:
+            developer_mode.unregister_target_row(row)
         if graph is self.graph:
             self.graph.setParent(None)
         if row is not None:
@@ -2933,7 +3120,9 @@ class MainWindow(QMainWindow):
     def _load_route_changes_for_range(self, start: datetime, end: datetime) -> None:
         if self.route_log_path is None:
             self.route_log_path = route_log_path_for_session(self.session_log_path)
-        loaded = route_changes_in_range(self.route_log_path, start, end)
+        read_summary = route_changes_in_range_with_summary(self.route_log_path, start, end)
+        self.route_log_read_error_code = read_summary.error_code
+        loaded = read_summary.changes
         if loaded:
             self._merge_route_changes(loaded, record_alert_actions=False)
             self._sync_route_changes_box()
@@ -2977,6 +3166,7 @@ class MainWindow(QMainWindow):
         alert_targets = self.current_targets or _unique_addresses(histories.keys())
         if not alert_targets and self.current_target:
             alert_targets = [self.current_target]
+        alert_config = self._alert_rule_config()
         for target in alert_targets:
             target_history = histories.get(target, [])
             if not target_history:
@@ -2984,7 +3174,7 @@ class MainWindow(QMainWindow):
             target_active_keys, target_events = evaluate_target_alerts(
                 target_history,
                 current_target=target,
-                config=self._alert_rule_config(),
+                config=alert_config,
             )
             active_keys.update(self._target_alert_key(target, key) for key in target_active_keys)
             events.extend(self._target_alert_event(target, event) for event in target_events)
@@ -3796,11 +3986,22 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "sessions_box"):
             return
         if not bool(self.worker and self.worker.isRunning()):
-            self.session_index_store.recover_stale_active_sessions(
-                stale_after=timedelta(seconds=STALE_ACTIVE_SESSION_RECOVERY_SECONDS)
-            )
-            self.session_index_store.retry_pending_deletions(failed_only=True)
-            self.session_index_store.reconcile_missing_session_files()
+            try:
+                self.session_index_store.recover_stale_active_sessions(
+                    stale_after=timedelta(seconds=STALE_ACTIVE_SESSION_RECOVERY_SECONDS)
+                )
+                self.session_index_store.retry_pending_deletions(failed_only=True)
+                self.session_index_store.reconcile_missing_session_files()
+            except OSError as exc:
+                self.session_index_store.last_write_warning = (
+                    f"SESSION_INDEX_WRITE_FAILED: {type(exc).__name__}"
+                )
+                operation_failure(
+                    "SESSION_INDEX_WRITE_FAILED",
+                    "session_manager.maintenance",
+                    exc,
+                    session_path=self.session_index_store.path,
+                )
         sessions = self.session_index_store.list_sessions()
         filtered_sessions = self._filtered_session_records(sessions)
         visible_sessions = filtered_sessions[:SESSION_MANAGER_DISPLAY_LIMIT]
@@ -3850,6 +4051,9 @@ class MainWindow(QMainWindow):
         total = len(sessions)
         label = f"세션: {filtered_total}/{total}" if filter_text else f"세션: {total}"
         suffix = f" | {state_summary}" if state_summary else ""
+        warning = self.session_index_store.last_read_warning or self.session_index_store.last_write_warning
+        if warning:
+            suffix += f" | {warning}"
         if shown < filtered_total:
             return f"{label} | 최근 {shown}개 표시{suffix}"
         return f"{label}{suffix}"
@@ -3870,9 +4074,26 @@ class MainWindow(QMainWindow):
         return self._filtered_session_records(sessions)[:SESSION_MANAGER_DISPLAY_LIMIT]
 
     def refresh_saved_sessions(self) -> None:
-        removed_pending = self.session_index_store.retry_pending_deletions(failed_only=True)
-        self.session_index_store.recover_missing_sessions()
-        self.session_index_store.reconcile_session_log_metadata()
+        if self.worker and self.worker.isRunning():
+            self.status_label.setText(
+                "측정 중에는 저장 세션 목록을 복구할 수 없습니다. 측정을 중지한 뒤 다시 시도하세요."
+            )
+            return
+        try:
+            removed_pending = self.session_index_store.retry_pending_deletions(failed_only=True)
+            self.session_index_store.recover_missing_sessions()
+            self.session_index_store.reconcile_session_log_metadata()
+        except OSError as exc:
+            self.session_index_store.last_write_warning = (
+                f"SESSION_INDEX_WRITE_FAILED: {type(exc).__name__}"
+            )
+            operation_failure(
+                "SESSION_INDEX_WRITE_FAILED",
+                "session_manager.refresh",
+                exc,
+                session_path=self.session_index_store.path,
+            )
+            removed_pending = []
         self._sync_sessions_box()
         if removed_pending:
             self.status_label.setText(
@@ -3901,8 +4122,9 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_session_selection = False
         has_sessions = bool(sessions)
-        self.session_combo.setEnabled(has_sessions)
-        can_switch_session = has_sessions and not bool(self.worker and self.worker.isRunning())
+        running = bool(self.worker and self.worker.isRunning())
+        self.session_combo.setEnabled(has_sessions and not running)
+        can_switch_session = has_sessions and not running
         self.open_session_button.setEnabled(can_switch_session)
         self.resume_session_button.setEnabled(can_switch_session)
         self.export_session_button.setEnabled(has_sessions)
@@ -3986,21 +4208,21 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            snapshot_set = build_focus_snapshots(iter_observations(record.sample_path), current_target=record.target)
+            with record.sample_path.open("rb") as handle:
+                handle.read(1)
         except OSError as exc:
             self.status_label.setText(_session_log_read_error_message(record.sample_path, exc))
             return
-        snapshots = [*snapshot_set.hop_snapshots, *snapshot_set.target_snapshots]
-        analysis = analyze_path(snapshot_set.hop_snapshots, snapshot_set.target_snapshot)
         self.export_worker = ExportWorker(
             kind="csv",
             path=path,
             target=record.target,
             session_log_path=record.sample_path,
-            snapshots=snapshots,
-            analysis=analysis,
+            snapshots=[],
+            analysis=[],
             annotations=[],
             focus_range=None,
+            derive_session_summary=True,
         )
         self.export_worker.status_message.connect(self.on_export_status)
         self.export_worker.export_completed.connect(self.on_export_completed)
@@ -4010,7 +4232,10 @@ class MainWindow(QMainWindow):
         self.export_worker.start()
 
     def export_visible_sessions(self) -> None:
-        if self.export_worker and self.export_worker.isRunning():
+        if (
+            (self.export_worker and self.export_worker.isRunning())
+            or (self.session_archive_worker and self.session_archive_worker.isRunning())
+        ):
             QMessageBox.information(self, "내보내기", "이미 내보내기 작업이 진행 중입니다.")
             return
         records = self._visible_session_records()
@@ -4020,13 +4245,38 @@ class MainWindow(QMainWindow):
         path = self._select_save_path("visible_sessions.zip", "ZIP 파일 (*.zip)", target="visible_sessions")
         if not path:
             return
-        try:
-            saved_path, file_count = self._write_visible_sessions_zip(path, records)
-        except OSError as exc:
-            QMessageBox.warning(self, "내보내기 오류", str(exc))
-            self.status_label.setText(str(exc))
-            return
-        self.status_label.setText(f"표시 세션 ZIP 저장 완료: {saved_path} (세션 {len(records)}개, 파일 {file_count}개)")
+        self.session_archive_worker = SessionArchiveWorker(
+            path=path,
+            records=records,
+            writer=self._write_visible_sessions_zip,
+            parent=self,
+        )
+        self.session_archive_worker.status_message.connect(self.on_session_archive_status)
+        self.session_archive_worker.completed.connect(self.on_session_archive_completed)
+        self.session_archive_worker.error_message.connect(self.on_session_archive_error)
+        self.session_archive_worker.finished.connect(self.on_session_archive_finished)
+        self._set_session_archive_exporting(True)
+        self.session_archive_worker.start()
+
+    def on_session_archive_status(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    def on_session_archive_completed(self, path: str, file_count: int, session_count: int) -> None:
+        self.status_label.setText(
+            f"표시 세션 ZIP 저장 완료: {path} (세션 {session_count}개, 파일 {file_count}개)"
+        )
+
+    def on_session_archive_error(self, message: str) -> None:
+        self._record_developer_error(message, error_type="SessionArchiveError")
+        QMessageBox.warning(self, "내보내기 오류", message)
+        self.status_label.setText(message)
+
+    def on_session_archive_finished(self) -> None:
+        worker = self.session_archive_worker
+        if isinstance(worker, QThread):
+            worker.deleteLater()
+        self.session_archive_worker = None
+        self._set_session_archive_exporting(False)
 
     def _write_visible_sessions_zip(
         self,
@@ -4070,10 +4320,13 @@ class MainWindow(QMainWindow):
             for index, record in enumerate(records, start=1):
                 folder = _session_export_folder(record, index)
                 exported_for_session = 0
+                archive_paths: dict[Path, str] = {}
                 for data_path in session_data_paths(record):
                     if not data_path.exists() or not data_path.is_file():
                         continue
-                    archive.write(data_path, f"{folder}/{data_path.name}")
+                    archive_name = f"{folder}/{data_path.name}"
+                    archive.write(data_path, archive_name)
+                    archive_paths[data_path] = archive_name
                     exported_for_session += 1
                 file_count += exported_for_session
                 writer.writerow(
@@ -4091,9 +4344,10 @@ class MainWindow(QMainWindow):
                         "route_probe_engine": record.route_probe_engine,
                         "resumed_from_session_id": record.resumed_from_session_id,
                         "target_count": record.target_count,
-                        "sample_path": str(record.sample_path),
-                        "route_path": str(record.route_path or ""),
-                        "last_error": record.last_error,
+                        # 공유 ZIP에는 Windows 사용자명이 포함될 수 있는 절대 경로를 넣지 않습니다.
+                        "sample_path": archive_paths.get(record.sample_path, ""),
+                        "route_path": archive_paths.get(record.route_path, "") if record.route_path else "",
+                        "last_error": _share_safe_session_error(record.last_error),
                         "exported_file_count": exported_for_session,
                     }
                 )
@@ -4176,25 +4430,31 @@ class MainWindow(QMainWindow):
         self._reset_session_graph_cache()
         self.route_log_path = None
         self.alert_action_log_path = None
+        self.route_log_read_error_code = None
+        self.alert_action_log_read_error_code = None
         self._reset_session_log_bounds_cache()
         self.timeline_status = "그래프 데이터: 실시간 버퍼"
         self._sync_timeline_controls()
 
-    def _open_session_record(self, record: TraceSessionRecord) -> None:
+    def _open_session_record(
+        self,
+        record: TraceSessionRecord,
+        *,
+        loaded: SessionOpenResult | None = None,
+    ) -> None:
         if not record.sample_path.exists():
             self.status_label.setText(f"세션 로그를 찾을 수 없습니다: {record.sample_path}")
             return
-        try:
-            reconciled = self.session_index_store.reconcile_session_log_metadata(record.session_id)
-        except OSError:
-            reconciled = []
-        if reconciled:
-            record = reconciled[0]
-        try:
-            observations, read_summary = read_observations_with_summary(record.sample_path)
-        except OSError as exc:
-            self.status_label.setText(_session_log_read_error_message(record.sample_path, exc))
+        if loaded is None and self.session_open_worker is not None and self.session_open_worker.isRunning():
+            self.status_label.setText("이미 세션을 불러오는 중입니다.")
             return
+        if loaded is None:
+            self._start_session_open_worker(record)
+            return
+        record = loaded.record
+        observations = loaded.observations
+        read_summary = loaded.summary
+        focus_set = loaded.snapshot_set
         self.current_target = record.target
         self.current_targets = [record.target]
         self.target_aliases = {}
@@ -4206,12 +4466,13 @@ class MainWindow(QMainWindow):
         self._reset_session_graph_cache()
         self.route_log_path = record.route_path or route_log_path_for_session(record.sample_path)
         self.alert_action_log_path = alert_action_log_path_for_session(record.sample_path)
+        self.route_log_read_error_code = None
+        self.alert_action_log_read_error_code = None
         self.session_index_store = SessionIndexStore.create(session_index_root_for_sample_path(record.sample_path))
         self.observations = observations
         self._reset_live_graph_observation_cache()
         self._reset_alert_observation_cache()
         self.target_history = self._target_history_from_observations(observations)
-        focus_set = build_focus_snapshots(observations, current_target=record.target)
         self.snapshots = focus_set.hop_snapshots
         self.target_snapshot = focus_set.target_snapshot
         self.target_snapshots = focus_set.target_snapshots
@@ -4228,14 +4489,20 @@ class MainWindow(QMainWindow):
         if bounds is not None:
             self._load_route_changes_for_range(*bounds)
         self._load_saved_alert_actions()
-        self.timeline_status = f"그래프 데이터: 열린 세션, 샘플 {len(observations)}개"
+        self.timeline_status = f"그래프 데이터: 열린 세션, 샘플 {read_summary.rows}개"
+        if self.route_log_read_error_code:
+            self.timeline_status = f"{self.timeline_status} | {self.route_log_read_error_code}"
+        if self.alert_action_log_read_error_code:
+            self.timeline_status = f"{self.timeline_status} | {self.alert_action_log_read_error_code}"
         self._sync_timeline_controls()
         self._sync_alerts_box()
         self._sync_route_changes_box()
         self._sync_focus_controls()
         self._render_current_view(force_graph=True)
         self._set_state_chip("불러옴", "active")
-        status_text = f"세션 불러오기 완료: {record.target}, 샘플 {len(observations)}개"
+        status_text = f"세션 불러오기 완료: {record.target}, 샘플 {read_summary.rows}개"
+        if len(observations) < read_summary.rows:
+            status_text += f" | 화면 메모리 샘플 {len(observations)}개"
         if read_summary.skipped_rows:
             status_text += (
                 f" | 손상된 행 {read_summary.skipped_rows}개 제외 "
@@ -4323,7 +4590,9 @@ class MainWindow(QMainWindow):
 
     def _load_saved_alert_actions(self) -> None:
         merged: dict[str, tuple[AlertEvent, list[str]]] = {}
-        for index, row in enumerate(read_alert_actions(self.alert_action_log_path)):
+        read_summary = read_alert_actions_with_summary(self.alert_action_log_path)
+        self.alert_action_log_read_error_code = read_summary.error_code
+        for index, row in enumerate(read_summary.rows):
             event = _alert_event_from_action_row(row, index)
             if event is None:
                 continue
@@ -4611,7 +4880,10 @@ class MainWindow(QMainWindow):
         statistics_options: StatisticsExportOptions | None = None,
         export_range: tuple[datetime, datetime] | None = None,
     ) -> None:
-        if self.export_worker and self.export_worker.isRunning():
+        if (
+            (self.export_worker and self.export_worker.isRunning())
+            or (self.session_archive_worker and self.session_archive_worker.isRunning())
+        ):
             QMessageBox.information(self, "저장 진행 중", "이미 저장 작업이 진행 중입니다.")
             return
         path = self._select_save_path(extension, file_filter)
@@ -4647,12 +4919,24 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"저장 완료: {path}")
 
     def on_export_error(self, message: str) -> None:
+        self._record_developer_error(message, error_type="ExportError")
         QMessageBox.warning(self, "저장 오류", message)
         self.status_label.setText(message)
 
     def on_export_finished(self) -> None:
+        worker = self.export_worker
+        if isinstance(worker, QThread):
+            worker.deleteLater()
         self.export_worker = None
         self._set_exporting(False)
+
+    def _set_session_archive_exporting(self, exporting: bool) -> None:
+        if not hasattr(self, "export_visible_sessions_button"):
+            return
+        standard_export_running = bool(self.export_worker and self.export_worker.isRunning())
+        self.export_visible_sessions_button.setEnabled(
+            not exporting and not standard_export_running and self.session_combo.count() > 0
+        )
 
     def _observations_override_for_export(
         self,
@@ -4792,9 +5076,12 @@ class MainWindow(QMainWindow):
             self.resume_session_button.setEnabled(has_sessions and not running)
             self.delete_session_button.setEnabled(has_sessions and not running)
             if hasattr(self, "export_visible_sessions_button"):
-                self.export_visible_sessions_button.setEnabled(has_sessions)
+                archive_running = bool(self.session_archive_worker and self.session_archive_worker.isRunning())
+                self.export_visible_sessions_button.setEnabled(has_sessions and not archive_running)
             if hasattr(self, "prune_sessions_button"):
                 self.prune_sessions_button.setEnabled(has_sessions and not running)
+            if hasattr(self, "refresh_sessions_button"):
+                self.refresh_sessions_button.setEnabled(not running)
         self.interval_combo.setEnabled(True)
         self.count_spin.setEnabled(not running and not self.unlimited_check.isChecked())
         self.unlimited_check.setEnabled(not running)
@@ -4856,7 +5143,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "export_session_button"):
             self.export_session_button.setEnabled(not exporting and self.session_combo.count() > 0)
         if hasattr(self, "export_visible_sessions_button"):
-            self.export_visible_sessions_button.setEnabled(not exporting and self.session_combo.count() > 0)
+            archive_running = bool(self.session_archive_worker and self.session_archive_worker.isRunning())
+            self.export_visible_sessions_button.setEnabled(
+                not exporting and not archive_running and self.session_combo.count() > 0
+            )
         if hasattr(self, "resume_session_button"):
             self.resume_session_button.setEnabled(
                 not exporting
@@ -4962,6 +5252,12 @@ class MainWindow(QMainWindow):
         if not self._wait_for_export_shutdown_on_close():
             event.ignore()
             return
+        if not self._wait_for_session_archive_shutdown_on_close():
+            event.ignore()
+            return
+        if not self._wait_for_session_open_on_close():
+            event.ignore()
+            return
         if not self._wait_for_session_graph_loader_on_close():
             event.ignore()
             return
@@ -4971,6 +5267,9 @@ class MainWindow(QMainWindow):
         self._finish_close_event(event)
 
     def _finish_close_event(self, event) -> None:
+        developer_mode = getattr(self, "developer_mode", None)
+        if developer_mode is not None:
+            developer_mode.shutdown()
         self.alert_action_dispatcher.shutdown()
         if self.graph_detail_window is not None:
             self.graph_detail_window.close()
@@ -4980,6 +5279,8 @@ class MainWindow(QMainWindow):
         return bool(
             (self.worker and self.worker.isRunning())
             or (self.export_worker and self.export_worker.isRunning())
+            or (self.session_archive_worker and self.session_archive_worker.isRunning())
+            or (self.session_open_worker and self.session_open_worker.isRunning())
             or (self.session_graph_loader and self.session_graph_loader.isRunning())
             or self.alert_action_dispatcher.pending_count > 0
         )
@@ -5002,10 +5303,31 @@ class MainWindow(QMainWindow):
         self.status_label.setText("내보내기 저장이 끝날 때까지 종료를 보류합니다.")
         return False
 
+    def _wait_for_session_archive_shutdown_on_close(self) -> bool:
+        if not self.session_archive_worker or not self.session_archive_worker.isRunning():
+            return True
+        if self.session_archive_worker.wait(3000) or not self.session_archive_worker.isRunning():
+            return True
+        self.status_label.setText(
+            "표시 세션 ZIP 저장이 아직 끝나지 않았습니다. 저장이 끝난 뒤 다시 종료해 주세요."
+        )
+        return False
+
+    def _wait_for_session_open_on_close(self) -> bool:
+        if not self.session_open_worker or not self.session_open_worker.isRunning():
+            return True
+        self.session_open_worker.request_cancel()
+        if self.session_open_worker.wait(3000) or not self.session_open_worker.isRunning():
+            return True
+        self.status_label.setText(
+            "저장 세션 읽기가 아직 끝나지 않았습니다. 읽기가 끝난 뒤 다시 종료해 주세요."
+        )
+        return False
+
     def _wait_for_session_graph_loader_on_close(self) -> bool:
         if not self.session_graph_loader or not self.session_graph_loader.isRunning():
             return True
-        self.session_graph_loader.requestInterruption()
+        self.session_graph_loader.request_cancel()
         if self.session_graph_loader.wait(3000) or not self.session_graph_loader.isRunning():
             return True
         self.status_label.setText("그래프 데이터 읽기가 끝날 때까지 종료를 보류합니다.")
@@ -5603,6 +5925,28 @@ def _session_error_summary(session: TraceSessionRecord) -> str:
             detail = f"{detail[:77]}..."
         return f"오류 {code}: {detail}"
     return f"오류 {error[:80]}"
+
+
+def _share_safe_session_error(value: str) -> str:
+    """공유 manifest에는 안정 코드와 예외 종류만 남기고 로컬 경로는 제거합니다."""
+
+    if not value:
+        return ""
+    code, separator, detail = value.partition(":")
+    normalized_code = code.strip()
+    is_stable_code = (
+        bool(normalized_code)
+        and normalized_code == normalized_code.upper()
+        and normalized_code.replace("_", "").isalnum()
+    )
+    if not is_stable_code:
+        return "SESSION_ERROR_RECORDED"
+    if not separator:
+        return normalized_code
+    exception_type = detail.strip().partition(":")[0].strip()
+    if exception_type.endswith(("Error", "Exception")) and exception_type.replace("_", "").isalnum():
+        return f"{normalized_code}: {exception_type}"
+    return normalized_code
 
 
 def _session_mode_label(value: str) -> str:

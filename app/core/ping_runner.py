@@ -175,7 +175,15 @@ class IcmpPingRunner:
                     self.timeout_ms,
                 )
             if reply_count == 0:
-                return PingResult(target, False, None, STATUS_TIMEOUT, timestamp)
+                get_last_error = getattr(ctypes, "get_last_error", None)
+                last_error = int(get_last_error()) if get_last_error is not None else 0
+                return PingResult(
+                    target,
+                    False,
+                    None,
+                    _icmp_status_to_result_status(last_error),
+                    timestamp,
+                )
 
             reply = IcmpEchoReply.from_buffer_copy(reply_buffer)
             if reply.status == IP_SUCCESS:

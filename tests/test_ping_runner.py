@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import ctypes
 
+import pytest
+
 from app.core.models import STATUS_ERROR, STATUS_OK, STATUS_TIMEOUT, STATUS_UNREACHABLE
 from app.core import ping_runner
 from app.core.ping_runner import (
     CommandPingRunner,
     IcmpEchoReply,
     IcmpPingRunner,
+    IP_DEST_HOST_UNREACHABLE,
+    IP_REQ_TIMED_OUT,
     IP_SUCCESS,
     SubprocessPingRunner,
     TcpConnectRunner,
@@ -147,6 +151,35 @@ def test_icmp_ping_runner_reuses_handle(monkeypatch) -> None:
     assert fake_dll.send_handles == [fake_dll.handle, fake_dll.handle]
 
 
+@pytest.mark.parametrize(
+    ("last_error", "expected_status"),
+    [
+        (IP_REQ_TIMED_OUT, STATUS_TIMEOUT),
+        (IP_DEST_HOST_UNREACHABLE, STATUS_UNREACHABLE),
+        (5, STATUS_ERROR),
+        (0, STATUS_ERROR),
+    ],
+)
+def test_icmp_ping_runner_classifies_zero_reply_using_windows_last_error(
+    monkeypatch,
+    last_error,
+    expected_status,
+) -> None:
+    fake_dll = _ZeroReplyIcmpDll()
+    monkeypatch.setattr(ping_runner.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ping_runner.ctypes, "WinDLL", lambda *_args, **_kwargs: fake_dll, raising=False)
+    monkeypatch.setattr(ping_runner.ctypes, "get_last_error", lambda: last_error, raising=False)
+
+    runner = IcmpPingRunner(1000)
+    try:
+        result = runner.ping("127.0.0.1")
+    finally:
+        runner.close()
+
+    assert result.success is False
+    assert result.status == expected_status
+
+
 class _FakeCFunction:
     def __init__(self, func):
         self._func = func
@@ -201,3 +234,9 @@ class _FakeIcmpDll:
         reply.round_trip_time = 7
         ctypes.memmove(reply_buffer, ctypes.byref(reply), ctypes.sizeof(reply))
         return 1
+
+
+class _ZeroReplyIcmpDll(_FakeIcmpDll):
+    def _send(self, handle, *_args):
+        self.send_handles.append(handle)
+        return 0

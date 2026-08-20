@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from app.core.models import STATUS_OK, HopObservation
@@ -88,4 +89,41 @@ def test_new_session_index_imports_existing_legacy_session_files(monkeypatch, tm
 
     assert len(sessions) == 1
     assert sessions[0].sample_path == legacy_path
+    assert store.path == data_root / "session_logs" / "session_index.json"
+
+
+def test_corrupted_legacy_index_does_not_prevent_new_store_startup(monkeypatch, tmp_path) -> None:
+    data_root = tmp_path / "app-data"
+    legacy_root = tmp_path / "portable-app" / "exports" / "session_logs"
+    legacy_root.mkdir(parents=True)
+    (legacy_root / "session_index.json").write_text(
+        json.dumps({"version": 999, "sessions": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MULTIPINGCHECK_DATA_DIR", str(data_root))
+    monkeypatch.setenv("MULTIPINGCHECK_LEGACY_SESSION_DIR", str(legacy_root))
+
+    store = SessionIndexStore.create()
+
+    assert store.path == data_root / "session_logs" / "session_index.json"
+    assert store.list_sessions() == []
+
+
+def test_legacy_import_write_failure_does_not_prevent_store_startup(monkeypatch, tmp_path) -> None:
+    data_root = tmp_path / "app-data"
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    (legacy_root / "session_index.json").write_text(
+        json.dumps({"version": 2, "sessions": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MULTIPINGCHECK_DATA_DIR", str(data_root))
+    monkeypatch.setenv("MULTIPINGCHECK_LEGACY_SESSION_DIR", str(legacy_root))
+    def fail_import(*_args, **_kwargs) -> int:
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(SessionIndexStore, "import_sessions", fail_import)
+
+    store = SessionIndexStore.create()
+
     assert store.path == data_root / "session_logs" / "session_index.json"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -18,6 +19,7 @@ APP_BINARY_NAME = "MultiPingCheck"
 PYTEST_TIMEOUT_SECONDS = 600
 
 from app.core.models import STATUS_OK, HopObservation, MetricSnapshot
+from app.developer.build_info import BUILD_INFO_FILE_NAME
 from app.core.ping_runner import CommandPingRunner
 from app.core.traceroute import run_traceroute
 from app.storage.csv_exporter import export_csv
@@ -113,6 +115,8 @@ def run_release_policy_check() -> None:
         raise RuntimeError("Release packaging is expected to use a windowed, console-free app.")
     if spec and "console=False" not in spec:
         raise RuntimeError("Release packaging is expected to use a windowed, console-free app.")
+    if "scripts\\generate_build_info.py" not in build_script or "--add-data" not in build_script:
+        raise RuntimeError("Release packaging must embed generated build metadata.")
 
     expected_excludes = ("numpy", "PIL", "lxml", "PySide6.QtQuick", "PySide6.QtPdf")
     for marker in expected_excludes:
@@ -145,7 +149,9 @@ def run_qt_smoke() -> None:
         "w=MainWindow(); "
         f"assert w.windowTitle() == {APP_DISPLAY_NAME!r}; "
         "assert w.table.columnCount() == 13; "
-        "assert w.session_state_label.text() == '대기'"
+        "assert w.session_state_label.text() == '대기'; "
+        "assert w.developer_mode.active is False; "
+        "assert w.developer_mode.panel is None"
     )
     run_command([sys.executable, "-c", code], env={"QT_QPA_PLATFORM": "offscreen"}, timeout=30)
 
@@ -305,6 +311,7 @@ def run_exe_smoke() -> None:
     if not exe.exists():
         raise RuntimeError(f"Packaged EXE not found: {exe}")
     run_packaged_size_check(exe.parent)
+    run_packaged_build_info_check(exe.parent)
     with tempfile.TemporaryDirectory(prefix="multipingcheck-exe-smoke-") as temp_dir:
         smoke_cwd = Path(temp_dir)
         process = subprocess.Popen([str(exe)], cwd=smoke_cwd)
@@ -340,6 +347,33 @@ def run_packaged_size_check(package_dir: Path) -> None:
     for path in forbidden_paths:
         if path.exists():
             raise RuntimeError(f"Packaged app still contains excluded size-heavy artifact: {path}")
+
+
+def run_packaged_build_info_check(package_dir: Path) -> None:
+    metadata_paths = list(package_dir.rglob(BUILD_INFO_FILE_NAME))
+    if len(metadata_paths) != 1:
+        raise RuntimeError(
+            f"Packaged app must contain exactly one {BUILD_INFO_FILE_NAME}; found {len(metadata_paths)}"
+        )
+    try:
+        payload = json.loads(metadata_paths[0].read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Packaged build metadata is unreadable.") from exc
+    required = (
+        "program_version",
+        "build_id",
+        "build_time",
+        "git_commit",
+        "git_branch",
+        "distribution",
+        "config_schema_version",
+        "source_state",
+    )
+    missing = [key for key in required if not str(payload.get(key) or "").strip()]
+    if missing:
+        raise RuntimeError(f"Packaged build metadata is missing values: {', '.join(missing)}")
+    if payload.get("distribution") != "Windows Portable EXE":
+        raise RuntimeError("Packaged build metadata has an unexpected distribution type.")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
+from collections import deque
 from concurrent.futures import Future
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -64,6 +65,74 @@ def test_worker_reports_invalid_target_without_starting_network() -> None:
 
     assert errors
     assert "IPv4" in errors[0]
+
+
+def test_worker_cleans_partially_created_executors_when_startup_fails(monkeypatch) -> None:
+    _app()
+    created: list[object] = []
+
+    class FailingExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            self.max_workers = max_workers
+            self.shutdown_calls = 0
+            created.append(self)
+            if len(created) == 2:
+                raise RuntimeError("executor allocation failed")
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait is True
+            assert cancel_futures is True
+            self.shutdown_calls += 1
+
+    monkeypatch.setattr(worker_module, "ThreadPoolExecutor", FailingExecutor)
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=1,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+    )
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    assert any("WORKER_UNEXPECTED_ERROR: RuntimeError" in error for error in errors)
+    assert created[0].shutdown_calls == 1
+
+
+def test_worker_closes_session_writer_when_startup_fails_after_creation(monkeypatch, tmp_path) -> None:
+    _app()
+    writer = SessionLogWriter(tmp_path / "startup_failed.samples.csv")
+    original_close = writer.close
+    closed: list[bool] = []
+
+    def close_writer() -> None:
+        original_close()
+        closed.append(True)
+
+    writer.close = close_writer
+
+    def create_log(cls, target: str, root=None):
+        return writer
+
+    def fail_route_log(_path: Path):
+        raise PermissionError("route log directory locked")
+
+    monkeypatch.setattr(worker_module.SessionLogWriter, "create", classmethod(create_log))
+    monkeypatch.setattr(worker_module.RouteLogWriter, "create_for_session", fail_route_log)
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=1,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+    )
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    assert closed == [True]
+    assert any("WORKER_UNEXPECTED_ERROR: PermissionError" in error for error in errors)
 
 
 def test_worker_emits_route_change_when_refreshed_trace_differs() -> None:
@@ -652,6 +721,27 @@ def test_worker_keeps_twenty_targets_responsive_with_many_timeouts(monkeypatch) 
     assert calls["198.51.100.20"] == 1
 
 
+def test_worker_rotates_limited_probe_capacity_across_all_targets(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "MAX_TARGET_PING_WORKERS", 2)
+    targets = [f"198.51.100.{index}" for index in range(1, 6)]
+    calls: list[tuple[str, int]] = []
+
+    worker = MeasurementWorker(
+        targets[0],
+        interval_seconds=0,
+        max_cycles=3,
+        targets=targets,
+        measurement_mode=MEASUREMENT_MODE_FINAL_HOP_ONLY,
+        session_log_root=tmp_path,
+        ping_probe_factory=lambda timeout_ms: _RecordingPingRunner(timeout_ms, calls),
+    )
+
+    worker.run()
+
+    assert {target for target, _timeout_ms in calls} == set(targets)
+
+
 def test_worker_stop_request_before_run_does_not_emit_trace(monkeypatch) -> None:
     _app()
     monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
@@ -866,6 +956,167 @@ def test_async_session_log_writer_rejects_new_writes_after_background_failure(tm
         session_log.close()
 
 
+def test_async_session_log_writer_retries_nonfatal_index_checkpoint(tmp_path) -> None:
+    writer = SessionLogWriter(tmp_path / "checkpoint_retry.samples.csv")
+    attempts: list[int] = []
+    first_attempt = threading.Event()
+
+    def checkpoint(count: int, _timestamp: datetime, _segments: list[object]) -> None:
+        attempts.append(count)
+        if len(attempts) == 1:
+            first_attempt.set()
+            raise PermissionError("index temporarily locked")
+
+    session_log = worker_module._AsyncSessionLogWriter(writer, checkpoint)
+    first = HopObservation(
+        datetime(2026, 1, 1, 12, 0, 0),
+        0,
+        "198.51.100.10",
+        "Target",
+        True,
+        10.0,
+        STATUS_OK,
+        is_target=True,
+    )
+    second = HopObservation(
+        datetime(2026, 1, 1, 12, 0, 1),
+        0,
+        "198.51.100.10",
+        "Target",
+        True,
+        11.0,
+        STATUS_OK,
+        is_target=True,
+    )
+
+    session_log.write_many([first])
+    assert first_attempt.wait(1.0)
+    session_log.write_many([second])
+    session_log.close()
+
+    assert attempts[0] == 1
+    assert attempts[-1] == 2
+    assert session_log.samples_written == 2
+    assert session_log.metadata_error is None
+    assert len(read_observations(writer.path)) == 2
+
+
+def test_async_session_log_writer_preserves_csv_when_index_checkpoint_keeps_failing(tmp_path) -> None:
+    writer = SessionLogWriter(tmp_path / "checkpoint_failed.samples.csv")
+    attempts: list[int] = []
+
+    def checkpoint(count: int, _timestamp: datetime, _segments: list[object]) -> None:
+        attempts.append(count)
+        raise PermissionError("index locked")
+
+    session_log = worker_module._AsyncSessionLogWriter(writer, checkpoint)
+    observations = [
+        HopObservation(
+            datetime(2026, 1, 1, 12, 0, second),
+            0,
+            "198.51.100.10",
+            "Target",
+            True,
+            10.0 + second,
+            STATUS_OK,
+            is_target=True,
+        )
+        for second in range(2)
+    ]
+
+    session_log.write_many(observations)
+    session_log.close()
+
+    assert attempts
+    assert session_log.samples_written == 2
+    assert isinstance(session_log.metadata_error, PermissionError)
+    assert len(read_observations(writer.path)) == 2
+
+
+def test_async_session_log_writer_coalesces_rapid_batches(tmp_path) -> None:
+    class CountingWriter:
+        def __init__(self) -> None:
+            self.path = tmp_path / "coalesced.samples.csv"
+            self.paths = [self.path]
+            self.write_calls: list[list[HopObservation]] = []
+
+        def write_many(self, observations) -> None:
+            self.write_calls.append(list(observations))
+
+        def close(self) -> None:
+            return
+
+    writer = CountingWriter()
+    session_log = worker_module._AsyncSessionLogWriter(writer)
+    for second in range(20):
+        session_log.write_many([
+            HopObservation(
+                datetime(2026, 1, 1, 12, 0, second),
+                0,
+                "198.51.100.10",
+                "Target",
+                True,
+                10.0,
+                STATUS_OK,
+                is_target=True,
+            )
+        ])
+
+    session_log.close()
+
+    assert sum(len(batch) for batch in writer.write_calls) == 20
+    assert len(writer.write_calls) < 20
+
+
+def test_async_session_log_writer_stops_measurement_instead_of_growing_queue_without_bound(tmp_path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowSessionLogWriter:
+        def __init__(self) -> None:
+            self.path = tmp_path / "slow.samples.csv"
+            self.paths = [self.path]
+            self.written: list[HopObservation] = []
+
+        def write_many(self, observations) -> None:
+            started.set()
+            assert release.wait(2.0)
+            self.written.extend(observations)
+
+        def close(self) -> None:
+            return
+
+    observation = HopObservation(
+        datetime.now(),
+        0,
+        "198.51.100.10",
+        None,
+        True,
+        10.0,
+        STATUS_OK,
+        is_target=True,
+    )
+    writer = SlowSessionLogWriter()
+    session_log = worker_module._AsyncSessionLogWriter(writer, max_queue_batches=1)
+    session_log.write_many([observation])
+    assert started.wait(1.0)
+    session_log.write_many([observation])
+
+    with pytest.raises(worker_module._SessionLogWriterFailed) as exc_info:
+        session_log.write_many([observation])
+
+    assert isinstance(exc_info.value.original, worker_module.SessionLogBackpressureError)
+    assert session_log.queue_depth == 1
+    assert (
+        worker_module._session_log_error_summary(exc_info.value)
+        == "SESSION_LOG_BACKPRESSURE: queue_full"
+    )
+    release.set()
+    with pytest.raises(worker_module.SessionLogBackpressureError):
+        session_log.close()
+    assert len(writer.written) == 2
+
+
 def test_session_log_error_summary_unwraps_background_writer_failure() -> None:
     original = RuntimeError("simulated async write failure")
     wrapped = worker_module._SessionLogWriterFailed(original)
@@ -930,7 +1181,7 @@ def test_worker_marks_session_paused_when_session_log_close_hangs(monkeypatch, t
     assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
 
 
-def test_worker_marks_session_paused_when_session_log_segment_index_fails(
+def test_worker_keeps_measurement_archived_when_rebuildable_segment_index_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -956,10 +1207,13 @@ def test_worker_marks_session_paused_when_session_log_segment_index_fails(
     worker.run()
 
     sessions = SessionIndexStore.create(tmp_path).list_sessions(target="198.51.100.10")
+    observations = read_observations(log_path)
     assert len(sessions) == 1
-    assert sessions[0].state == SESSION_STATE_PAUSED
-    assert "SESSION_LOG_WRITE_FAILED: PermissionError" in sessions[0].last_error
-    assert any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
+    assert sessions[0].state == SESSION_STATE_ARCHIVED
+    assert sessions[0].last_error == ""
+    assert observations
+    assert sessions[0].samples == len(observations)
+    assert errors == []
 
 
 def test_worker_reports_session_index_finish_failure_without_crashing(monkeypatch, tmp_path) -> None:
@@ -984,6 +1238,34 @@ def test_worker_reports_session_index_finish_failure_without_crashing(monkeypatc
     worker.run()
 
     assert any("SESSION_INDEX_FINISH_FAILED: PermissionError" in error for error in errors)
+
+
+def test_worker_recovers_exact_session_count_when_index_checkpoints_fail(monkeypatch, tmp_path) -> None:
+    _app()
+    monkeypatch.setattr(worker_module, "run_traceroute", lambda target, timeout_ms, stop_event: [])
+    monkeypatch.setattr(worker_module, "CommandPingRunner", _FakePingRunner)
+
+    def fail_checkpoint(self, session_id: str, count: int, last_timestamp: datetime, **kwargs) -> None:
+        raise PermissionError("index temporarily locked")
+
+    monkeypatch.setattr(SessionIndexStore, "add_samples", fail_checkpoint)
+    worker = MeasurementWorker(
+        "198.51.100.10",
+        interval_seconds=0,
+        max_cycles=2,
+        session_log_root=tmp_path,
+    )
+    errors: list[str] = []
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    sessions = SessionIndexStore.create(tmp_path).list_sessions(target="198.51.100.10")
+    assert len(sessions) == 1
+    assert sessions[0].state == SESSION_STATE_ARCHIVED
+    assert sessions[0].samples == len(read_observations(sessions[0].sample_path))
+    assert sessions[0].samples >= 2
+    assert not any("SESSION_LOG_WRITE_FAILED" in error for error in errors)
 
 
 def test_worker_thread_start_stop_repeats_without_lingering(monkeypatch) -> None:
@@ -1159,6 +1441,53 @@ def test_worker_applies_runtime_add_and_remove_requests() -> None:
     assert active_target_pings == set()
     assert worker.paused_targets() == set()
     assert worker.target_interval_overrides() == {}
+
+
+def test_worker_discards_in_flight_result_from_removed_and_readded_target() -> None:
+    _app()
+    target = "198.51.100.10"
+    worker = MeasurementWorker(target, interval_seconds=1, max_cycles=None, targets=[target])
+    target_trackers = {
+        target: TargetMetricTracker(target, recent_observation_limit=RECENT_OBSERVATION_LIMIT)
+    }
+    old_state = TargetProbeState(target)
+    target_states = {target: old_state}
+    active_target_pings = {target}
+    old_future: Future[PingResult] = Future()
+    old_future.set_result(PingResult(target, False, None, STATUS_TIMEOUT, datetime.now()))
+
+    assert worker.remove_targets([target]) == [target]
+    assert worker._apply_pending_target_changes(target_trackers, target_states, active_target_pings) is True
+    assert worker.add_targets([target]) == [target]
+    assert worker._apply_pending_target_changes(target_trackers, target_states, active_target_pings) is True
+    assert target_states[target] is not old_state
+
+    class CapturingSessionLog:
+        def __init__(self) -> None:
+            self.observations: list[HopObservation] = []
+
+        def write_many(self, observations) -> None:
+            self.observations.extend(observations)
+
+    session_log = CapturingSessionLog()
+    recent_observations: deque[HopObservation] = deque()
+    worker._collect_completed_ping_results(
+        {old_future: old_state},
+        active_target_pings,
+        {},
+        set(),
+        None,
+        [],
+        target_trackers,
+        target_states,
+        session_log,
+        recent_observations,
+        timeout=0,
+    )
+
+    assert target_trackers[target].snapshot().sent == 0
+    assert session_log.observations == []
+    assert list(recent_observations) == []
 
 
 def test_worker_can_cancel_pending_runtime_addition_before_apply() -> None:

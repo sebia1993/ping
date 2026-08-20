@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from app.core.models import HopObservation
 from app.utils.app_paths import session_logs_directory
+from app.utils.diagnostics import operation_failure
 from app.utils.filename import default_export_path, safe_target_name
 
 
@@ -27,7 +30,9 @@ OBSERVATION_HEADERS = [
 SEGMENT_INDEX_VERSION = 2
 SEGMENT_INDEX_IO_RETRY_ATTEMPTS = 5
 SEGMENT_INDEX_IO_RETRY_DELAY_SECONDS = 0.05
+SESSION_LOG_CREATE_ATTEMPTS = 100
 SESSION_LOG_CORRUPTED_CODE = "SESSION_LOG_CORRUPTED"
+SESSION_SEGMENT_INDEX_WRITE_FAILED_CODE = "SESSION_SEGMENT_INDEX_WRITE_FAILED"
 
 
 class SessionLogCorruptionError(RuntimeError):
@@ -68,6 +73,7 @@ class SessionLogWriter:
         self._segment_index = 0
         self._segment_count = 0
         self._segment_metadata: list[SessionLogSegment] = []
+        self._segment_index_error: OSError | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.count = 0
         self._open_segment(self.path)
@@ -75,8 +81,15 @@ class SessionLogWriter:
     @classmethod
     def create(cls, target: str, root: Path | None = None) -> "SessionLogWriter":
         base_dir = session_log_directory(target, root=root)
-        path = default_export_path(target, "samples.csv", base_dir)
-        return cls(path, max_rows_per_file=200_000)
+        for _attempt in range(SESSION_LOG_CREATE_ATTEMPTS):
+            path = default_export_path(target, "samples.csv", base_dir)
+            try:
+                return cls(path, max_rows_per_file=200_000)
+            except FileExistsError:
+                # exists 확인 직후 다른 실행 흐름이 같은 파일을 만들 수 있습니다.
+                # exclusive create가 충돌을 발견하면 새 이름을 계산해 다시 시도합니다.
+                continue
+        raise FileExistsError("고유한 세션 로그 파일을 만들 수 없습니다.")
 
     def write_many(self, observations: Iterable[HopObservation]) -> None:
         wrote = False
@@ -89,14 +102,18 @@ class SessionLogWriter:
             wrote = True
         if wrote:
             _flush_with_retries(self._handle)
-            self._write_segment_index()
+            self._try_write_segment_index()
+
+    @property
+    def segment_index_error(self) -> OSError | None:
+        return self._segment_index_error
 
     def close(self) -> None:
         if self._handle.closed:
             return
         try:
             _flush_with_retries(self._handle)
-            self._write_segment_index()
+            self._try_write_segment_index()
         finally:
             _close_handle_suppressing_errors(self._handle)
 
@@ -151,6 +168,24 @@ class SessionLogWriter:
         }
         _write_json_atomic(session_log_segment_index_path(self.path), payload)
 
+    def _try_write_segment_index(self) -> bool:
+        """Persist the rebuildable segment cache without failing primary CSV writes."""
+
+        try:
+            self._write_segment_index()
+        except OSError as exc:
+            if self._segment_index_error is None:
+                operation_failure(
+                    SESSION_SEGMENT_INDEX_WRITE_FAILED_CODE,
+                    "session_log.segment_index",
+                    exc,
+                    session_path=self.path,
+                )
+            self._segment_index_error = exc
+            return False
+        self._segment_index_error = None
+        return True
+
 
 def observation_to_row(observation: HopObservation) -> list[object]:
     return [
@@ -184,26 +219,49 @@ def read_observations(path: Path | None) -> list[HopObservation]:
 
 def read_observations_with_summary(
     path: Path | None,
+    *,
+    retained_limit: int | None = None,
+    on_observation: Callable[[HopObservation], None] | None = None,
 ) -> tuple[list[HopObservation], SessionLogReadSummary]:
     if path is None:
         return [], SessionLogReadSummary(rows=0, skipped_rows=0, skipped_row_files=())
-    observations: list[HopObservation] = []
+    observations: list[HopObservation] | deque[HopObservation]
+    if retained_limit is None:
+        observations = []
+    else:
+        observations = deque(maxlen=max(int(retained_limit), 0))
+    rows = 0
     skipped_rows = 0
     skipped_row_files: list[Path] = []
     for segment_path in session_log_segments(path):
         segment_skipped = False
-        with _open_csv_read_handle(segment_path) as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                try:
-                    observations.append(row_to_observation(row))
-                except (KeyError, TypeError, ValueError):
+        try:
+            with _open_csv_read_handle(segment_path) as handle:
+                reader = csv.DictReader(handle)
+                if reader.fieldnames != OBSERVATION_HEADERS:
                     skipped_rows += 1
-                    segment_skipped = True
+                    skipped_row_files.append(segment_path)
+                    continue
+                for row in reader:
+                    try:
+                        observation = row_to_observation(row)
+                    except (KeyError, TypeError, ValueError):
+                        skipped_rows += 1
+                        segment_skipped = True
+                        continue
+                    rows += 1
+                    if on_observation is not None:
+                        on_observation(observation)
+                    observations.append(observation)
+        except (UnicodeError, csv.Error):
+            # decode/parser 오류 뒤의 행 경계를 신뢰할 수 없으므로 해당 segment의
+            # 나머지를 버리고 손상 파일 한 건으로 기록합니다.
+            skipped_rows += 1
+            segment_skipped = True
         if segment_skipped:
             skipped_row_files.append(segment_path)
-    return observations, SessionLogReadSummary(
-        rows=len(observations),
+    return list(observations), SessionLogReadSummary(
+        rows=rows,
         skipped_rows=skipped_rows,
         skipped_row_files=tuple(skipped_row_files),
     )
@@ -217,18 +275,29 @@ def session_log_read_summary(path: Path | None) -> SessionLogReadSummary:
     skipped_row_files: list[Path] = []
     seen_skipped_files: set[Path] = set()
     for segment_path in session_log_segments(path):
-        with _open_csv_read_handle(segment_path) as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                try:
-                    row_to_observation(row)
-                except (KeyError, TypeError, ValueError):
+        try:
+            with _open_csv_read_handle(segment_path) as handle:
+                reader = csv.DictReader(handle)
+                if reader.fieldnames != OBSERVATION_HEADERS:
                     skipped_rows += 1
-                    if segment_path not in seen_skipped_files:
-                        skipped_row_files.append(segment_path)
-                        seen_skipped_files.add(segment_path)
+                    skipped_row_files.append(segment_path)
+                    seen_skipped_files.add(segment_path)
                     continue
-                rows += 1
+                for row in reader:
+                    try:
+                        row_to_observation(row)
+                    except (KeyError, TypeError, ValueError):
+                        skipped_rows += 1
+                        if segment_path not in seen_skipped_files:
+                            skipped_row_files.append(segment_path)
+                            seen_skipped_files.add(segment_path)
+                        continue
+                    rows += 1
+        except (UnicodeError, csv.Error):
+            skipped_rows += 1
+            if segment_path not in seen_skipped_files:
+                skipped_row_files.append(segment_path)
+                seen_skipped_files.add(segment_path)
     return SessionLogReadSummary(
         rows=rows,
         skipped_rows=skipped_rows,
@@ -243,15 +312,23 @@ def iter_observations(path: Path | None, *, strict: bool = False) -> Iterator[Ho
     skipped_row_files: list[Path] = []
     for segment_path in session_log_segments(path):
         segment_skipped = False
-        with _open_csv_read_handle(segment_path) as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                try:
-                    yield row_to_observation(row)
-                except (KeyError, TypeError, ValueError):
+        try:
+            with _open_csv_read_handle(segment_path) as handle:
+                reader = csv.DictReader(handle)
+                if reader.fieldnames != OBSERVATION_HEADERS:
                     skipped_rows += 1
                     segment_skipped = True
                     continue
+                for row in reader:
+                    try:
+                        yield row_to_observation(row)
+                    except (KeyError, TypeError, ValueError):
+                        skipped_rows += 1
+                        segment_skipped = True
+                        continue
+        except (UnicodeError, csv.Error):
+            skipped_rows += 1
+            segment_skipped = True
         if segment_skipped:
             skipped_row_files.append(segment_path)
     if strict and skipped_rows:
@@ -295,14 +372,19 @@ def session_log_bounds(path: Path | None) -> tuple[datetime, datetime] | None:
 
 def iter_observations_from_segment(path: Path, *, strict: bool = False) -> Iterator[HopObservation]:
     skipped_rows = 0
-    with _open_csv_read_handle(path) as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            try:
-                yield row_to_observation(row)
-            except (KeyError, TypeError, ValueError):
+    try:
+        with _open_csv_read_handle(path) as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != OBSERVATION_HEADERS:
                 skipped_rows += 1
-                continue
+            else:
+                for row in reader:
+                    try:
+                        yield row_to_observation(row)
+                    except (KeyError, TypeError, ValueError):
+                        skipped_rows += 1
+    except (UnicodeError, csv.Error):
+        skipped_rows += 1
     if strict and skipped_rows:
         raise SessionLogCorruptionError(skipped_rows, (path,))
 
@@ -338,7 +420,7 @@ def _read_segment_index_file(path: Path) -> list[SessionLogSegment] | None:
         return None
     try:
         payload = json.loads(_read_text_with_retries(index_path))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or payload.get("version") != SEGMENT_INDEX_VERSION:
         return None
@@ -418,7 +500,8 @@ def _open_csv_write_handle(path: Path):
 
 
 def _open_csv_write_path(path: Path):
-    return path.open("w", newline="", encoding="utf-8")
+    # 기존 세션을 실수로 truncate하지 않도록 파일이 이미 있으면 반드시 실패합니다.
+    return path.open("x", newline="", encoding="utf-8")
 
 
 def _flush_with_retries(handle) -> None:
@@ -445,6 +528,8 @@ def _run_io_with_retries(operation):
     for attempt in range(SEGMENT_INDEX_IO_RETRY_ATTEMPTS):
         try:
             return operation()
+        except FileExistsError:
+            raise
         except OSError as exc:
             last_error = exc
             if attempt == SEGMENT_INDEX_IO_RETRY_ATTEMPTS - 1:
@@ -489,14 +574,33 @@ def _segment_file_states_match(root: Path, rows: list[object]) -> bool:
 
 
 def row_to_observation(row: dict[str, str]) -> HopObservation:
+    if None in row:
+        raise ValueError("unexpected session log columns")
+    kind = row.get("kind")
+    if kind not in {"Target", "Hop"}:
+        raise ValueError("invalid observation kind")
+    success_value = row.get("success")
+    if success_value not in {"True", "False"}:
+        raise ValueError("invalid observation success value")
+    status = row.get("status") or ""
+    if not status:
+        raise ValueError("missing observation status")
+    hop_index = int(row.get("hop") or 0)
+    if hop_index < 0:
+        raise ValueError("negative hop index")
     latency_value = row.get("latency_ms", "")
+    latency_ms = float(latency_value) if latency_value else None
+    if latency_ms is not None and (not math.isfinite(latency_ms) or latency_ms < 0):
+        raise ValueError("invalid observation latency")
+    if success_value == "True" and latency_ms is None:
+        raise ValueError("successful observation is missing latency")
     return HopObservation(
         timestamp=datetime.fromisoformat(row["timestamp"]),
-        hop_index=int(row.get("hop") or 0),
+        hop_index=hop_index,
         address=row.get("address") or None,
         hostname=row.get("hostname") or None,
-        success=(row.get("success") == "True"),
-        latency_ms=float(latency_value) if latency_value else None,
-        status=row.get("status") or "",
-        is_target=(row.get("kind") == "Target"),
+        success=(success_value == "True"),
+        latency_ms=latency_ms,
+        status=status,
+        is_target=(kind == "Target"),
     )

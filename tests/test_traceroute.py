@@ -1,6 +1,18 @@
 from __future__ import annotations
 
-from app.core.traceroute import ensure_target_hop, parse_tracert_output
+import subprocess
+import threading
+
+import pytest
+
+from app.core import traceroute as traceroute_module
+from app.core.traceroute import (
+    TRACEROUTE_TOTAL_TIMEOUT_CODE,
+    ensure_target_hop,
+    parse_tracert_output,
+    run_traceroute,
+    traceroute_total_timeout_seconds,
+)
 
 
 def test_parse_english_tracert_output() -> None:
@@ -49,3 +61,72 @@ def test_ensure_target_hop_marks_existing_target() -> None:
     assert len(ensured) == 2
     assert ensured[-1].is_target is True
     assert ensured[-1].hostname == "dns.google"
+
+
+def test_traceroute_total_timeout_has_a_finite_upper_bound() -> None:
+    assert traceroute_total_timeout_seconds(30, 1000) == 95.0
+    assert traceroute_total_timeout_seconds(255, 10_000) == 120.0
+
+
+def test_run_traceroute_drains_output_with_communicate(monkeypatch) -> None:
+    class CompletedProcess:
+        def communicate(self, timeout=None):
+            assert timeout is not None
+            return ("  1    1 ms    1 ms    1 ms  192.0.2.1", "")
+
+    monkeypatch.setattr(traceroute_module.subprocess, "Popen", lambda *_args, **_kwargs: CompletedProcess())
+
+    hops = run_traceroute("198.51.100.10")
+
+    assert [hop.address for hop in hops] == ["192.0.2.1"]
+
+
+def test_run_traceroute_kills_and_reaps_process_after_total_timeout(monkeypatch) -> None:
+    class NeverEndingProcess:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.communicate_calls = 0
+
+        def communicate(self, timeout=None):
+            self.communicate_calls += 1
+            if self.killed:
+                return ("", "")
+            raise subprocess.TimeoutExpired("tracert", timeout)
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = NeverEndingProcess()
+    monkeypatch.setattr(traceroute_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(traceroute_module, "traceroute_total_timeout_seconds", lambda *_args: 0.0)
+
+    with pytest.raises(TimeoutError, match=TRACEROUTE_TOTAL_TIMEOUT_CODE):
+        run_traceroute("198.51.100.10")
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.communicate_calls == 2
+
+
+def test_run_traceroute_stops_and_reaps_process_when_cancelled(monkeypatch) -> None:
+    class RunningProcess:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    process = RunningProcess()
+    stop_event = threading.Event()
+    stop_event.set()
+    monkeypatch.setattr(traceroute_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    assert run_traceroute("198.51.100.10", stop_event=stop_event) == []
+    assert process.terminated is True

@@ -8,6 +8,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from PySide6.QtCore import QObject, Signal
 
 from app.core.alerts import AlertEvent
+from app.utils.diagnostics import operation_failure
 
 
 ALERT_ACTION_QUEUE_FULL_CODE = "ALERT_ACTION_QUEUE_FULL"
@@ -94,6 +95,11 @@ class AlertActionDispatcher(QObject):
         except Exception as exc:
             success = False
             message = f"{ALERT_ACTION_UNEXPECTED_ERROR_CODE}: {type(exc).__name__}"
+            operation_failure(
+                ALERT_ACTION_UNEXPECTED_ERROR_CODE,
+                "alert_action.dispatch",
+                exc,
+            )
         finally:
             self._slots.release()
             with self._state_changed:

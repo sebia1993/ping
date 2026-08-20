@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from pathlib import Path
 
 import scripts.verify_release as verify_release
@@ -99,6 +100,29 @@ def test_release_policy_rejects_external_api_clients(monkeypatch, tmp_path) -> N
         assert "External API client dependency" in str(exc)
     else:
         raise AssertionError("Expected release policy check to fail")
+
+
+def test_packaged_build_info_check_requires_complete_metadata(tmp_path) -> None:
+    internal = tmp_path / "_internal"
+    internal.mkdir()
+    (internal / verify_release.BUILD_INFO_FILE_NAME).write_text(
+        json.dumps(
+            {
+                "program_version": "0.1.0",
+                "build_id": "test-build",
+                "build_time": "2026-08-13T10:00:00+09:00",
+                "git_commit": "abc123",
+                "git_branch": "main",
+                "distribution": "Windows Portable EXE",
+                "config_schema_version": "2",
+                "source_state": "커밋과 일치",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    verify_release.run_packaged_build_info_check(tmp_path)
 
 
 def test_run_pytest_uses_release_timeout(monkeypatch) -> None:
@@ -289,7 +313,8 @@ def _write_policy_tree(
     *,
     build_script: str = (
         "python -m PyInstaller --windowed --exclude-module numpy --exclude-module PIL "
-        "--exclude-module lxml --exclude-module PySide6.QtQuick --exclude-module PySide6.QtPdf app\\main.py"
+        "--exclude-module lxml --exclude-module PySide6.QtQuick --exclude-module PySide6.QtPdf "
+        "--add-data metadata;. app\\main.py\npython scripts\\generate_build_info.py"
     ),
     spec: str = "a = Analysis(excludes=['numpy', 'PIL', 'lxml', 'PySide6.QtQuick', 'PySide6.QtPdf'])\nexe = EXE(console=False)",
     requirements: str = "PySide6>=6.7\nopenpyxl>=3.1\n",

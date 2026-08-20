@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ from PySide6.QtCore import QThread, Signal
 
 from app.core.models import HopObservation
 from app.storage.session_log import iter_observations_in_range
+from app.utils.diagnostics import operation_failure
 
 
 SESSION_GRAPH_LOAD_FAILED_CODE = "SESSION_GRAPH_LOAD_FAILED"
@@ -33,8 +35,11 @@ class SessionObservationLoader(QThread):
         self.path = path
         self.start_time = start
         self.end_time = end
+        self._cancel_requested = threading.Event()
 
     def run(self) -> None:
+        if self._is_cancel_requested():
+            return
         accumulators: dict[str, _TargetPointAccumulator] = {}
         try:
             for observation in iter_observations_in_range(
@@ -42,7 +47,7 @@ class SessionObservationLoader(QThread):
                 self.start_time,
                 self.end_time,
             ):
-                if self.isInterruptionRequested():
+                if self._is_cancel_requested():
                     return
                 if not observation.address or not (observation.hop_index == 0 or observation.is_target):
                     continue
@@ -52,12 +57,30 @@ class SessionObservationLoader(QThread):
                 )
                 accumulator.add(observation)
         except OSError as exc:
+            operation_failure(
+                SESSION_GRAPH_LOAD_FAILED_CODE,
+                "session_graph.read",
+                exc,
+                session_path=self.path,
+            )
             self.failed.emit(
                 self.request_id,
                 f"{SESSION_GRAPH_LOAD_FAILED_CODE}: {type(exc).__name__}",
             )
             return
-        if not self.isInterruptionRequested():
+        except Exception as exc:
+            operation_failure(
+                SESSION_GRAPH_LOAD_FAILED_CODE,
+                "session_graph.read",
+                exc,
+                session_path=self.path,
+            )
+            self.failed.emit(
+                self.request_id,
+                f"{SESSION_GRAPH_LOAD_FAILED_CODE}: {type(exc).__name__}",
+            )
+            return
+        if not self._is_cancel_requested():
             observations = [
                 observation
                 for accumulator in accumulators.values()
@@ -65,6 +88,13 @@ class SessionObservationLoader(QThread):
             ]
             observations.sort(key=lambda observation: (observation.timestamp, observation.address))
             self.loaded.emit(self.request_id, observations)
+
+    def request_cancel(self) -> None:
+        self._cancel_requested.set()
+        self.requestInterruption()
+
+    def _is_cancel_requested(self) -> bool:
+        return self._cancel_requested.is_set() or self.isInterruptionRequested()
 
 
 @dataclass

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,12 +11,21 @@ from scripts.soak_test import (
     EventLoopStats,
     SimulatedPingRunner,
     build_summary,
+    connect_window,
     evaluate_summary,
     parse_args,
     write_diagnostics_csv,
     write_health_csv,
     write_summary_json,
 )
+
+
+class _FakeSignal:
+    def __init__(self) -> None:
+        self.slots: list[object] = []
+
+    def connect(self, slot) -> None:
+        self.slots.append(slot)
 
 
 def test_soak_release_profile_sets_fast_fifty_target_defaults() -> None:
@@ -92,6 +102,37 @@ def test_soak_ui_freeze_profiles_measure_ten_twenty_and_fifty_targets() -> None:
     assert ten.event_process_max_milliseconds == 10
     assert twenty.event_process_max_milliseconds == 10
     assert fifty.event_process_max_milliseconds == 10
+
+
+def test_soak_window_connection_matches_running_main_window_state() -> None:
+    running_states: list[bool] = []
+    window = SimpleNamespace(
+        worker=None,
+        on_trace_completed=object(),
+        on_route_changed=object(),
+        on_measurement_updated=object(),
+        on_diagnostics_updated=object(),
+        on_session_log_ready=object(),
+        on_status_message=object(),
+        on_worker_finished=object(),
+        _set_running=running_states.append,
+    )
+    worker = SimpleNamespace(
+        trace_completed=_FakeSignal(),
+        route_changed=_FakeSignal(),
+        measurement_updated=_FakeSignal(),
+        diagnostics_updated=_FakeSignal(),
+        session_log_ready=_FakeSignal(),
+        status_message=_FakeSignal(),
+        finished=_FakeSignal(),
+    )
+
+    connect_window(window, worker)
+
+    assert window.worker is worker
+    assert running_states == [True]
+    assert worker.measurement_updated.slots == [window.on_measurement_updated]
+    assert worker.finished.slots == [window.on_worker_finished]
 
 
 def test_soak_profile_allows_explicit_cli_overrides() -> None:

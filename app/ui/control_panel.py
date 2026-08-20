@@ -39,6 +39,7 @@ class TargetInputEdit(QPlainTextEdit):
 
 def build_controls_panel(owner, panel_factory: Callable[[str], QFrame], field_label_factory: Callable[[str], QLabel]) -> QFrame:
     controls = panel_factory("controls")
+    owner.controls_panel = controls
     root = QVBoxLayout(controls)
     root.setContentsMargins(12, 8, 12, 8)
     root.setSpacing(0)

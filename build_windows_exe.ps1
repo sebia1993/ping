@@ -50,14 +50,42 @@ foreach ($Module in $ExcludeModules) {
 
 # --windowed는 실행할 때 검은 콘솔 창이 뜨지 않게 하는 옵션입니다.
 # app\main.py가 실제 GUI 프로그램의 시작점입니다.
-python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --windowed `
-    --name $Name `
-    --paths . `
-    @ExcludeArgs `
-    app\main.py
+$BuildInfoTempDir = Join-Path ([System.IO.Path]::GetTempPath()) "multipingcheck-build-info-$PID-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $BuildInfoTempDir | Out-Null
+$BuildInfoPath = Join-Path $BuildInfoTempDir "multipingcheck_build_info.json"
+try {
+    # Git과 소스가 없는 사내 PC에서도 테스트한 빌드를 식별할 수 있도록 JSON을 EXE에 포함합니다.
+    python scripts\generate_build_info.py `
+        --output $BuildInfoPath `
+        --program-name $Name `
+        --distribution "Windows Portable EXE"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build metadata generation failed."
+    }
+
+    python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --windowed `
+        --name $Name `
+        --paths . `
+        --add-data "$BuildInfoPath;." `
+        @ExcludeArgs `
+        app\main.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller build failed."
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $BuildInfoTempDir) {
+        $ResolvedBuildInfoTempDir = Resolve-Path -LiteralPath $BuildInfoTempDir
+        $ResolvedSystemTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+        if (-not $ResolvedBuildInfoTempDir.Path.StartsWith($ResolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove build metadata outside the system temporary directory: $ResolvedBuildInfoTempDir"
+        }
+        Remove-Item -LiteralPath $ResolvedBuildInfoTempDir.Path -Recurse -Force
+    }
+}
 
 # PySide6에는 이 프로그램이 쓰지 않는 플러그인과 DLL이 많이 포함됩니다.
 # 빌드 후 dist 폴더 안에서만 불필요한 파일을 지워 ZIP 크기를 줄입니다.

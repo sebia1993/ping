@@ -16,6 +16,12 @@ HOP_LINE_RE = re.compile(r"^\s*(?P<index>\d+)\s+(?P<body>.+?)\s*$")
 IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
 BRACKET_ADDR_RE = re.compile(r"\[(?P<address>[0-9A-Fa-f:.]+)\]")
 TIMEOUT_TEXT_RE = re.compile(r"(request timed out|요청 시간이 만료|시간이 초과|timeout)", re.IGNORECASE)
+TRACEROUTE_PROBES_PER_HOP = 3
+TRACEROUTE_TOTAL_TIMEOUT_GRACE_SECONDS = 5.0
+TRACEROUTE_MAX_TOTAL_TIMEOUT_SECONDS = 120.0
+TRACEROUTE_PROCESS_STOP_TIMEOUT_SECONDS = 1.0
+TRACEROUTE_TOTAL_TIMEOUT_CODE = "TRACEROUTE_TOTAL_TIMEOUT"
+TRACEROUTE_PROCESS_STOP_FAILED_CODE = "TRACEROUTE_PROCESS_STOP_FAILED"
 
 
 def build_traceroute_command(target: str, max_hops: int = 30, timeout_ms: int = 1000) -> list[str]:
@@ -29,6 +35,19 @@ def windows_no_window_flag() -> int:
     if platform.system().lower() == "windows":
         return getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return 0
+
+
+def traceroute_total_timeout_seconds(max_hops: int, timeout_ms: int) -> float:
+    """hop별 대기 시간을 합산하되 비정상 명령이 무한 실행되지 않게 상한을 둡니다."""
+
+    estimated = (
+        max(int(max_hops), 1)
+        * TRACEROUTE_PROBES_PER_HOP
+        * max(int(timeout_ms), 1)
+        / 1000
+        + TRACEROUTE_TOTAL_TIMEOUT_GRACE_SECONDS
+    )
+    return min(max(estimated, TRACEROUTE_TOTAL_TIMEOUT_GRACE_SECONDS), TRACEROUTE_MAX_TOTAL_TIMEOUT_SECONDS)
 
 
 def _hostname_before_bracket(body: str, bracket_start: int) -> str | None:
@@ -86,18 +105,41 @@ def run_traceroute(
         creationflags=windows_no_window_flag(),
     )
 
-    while process.poll() is None:
+    deadline = time.monotonic() + traceroute_total_timeout_seconds(max_hops, timeout_ms)
+    while True:
         if stop_event and stop_event.is_set():
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
+            _terminate_and_collect(process)
             return []
-        time.sleep(0.1)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_and_collect(process)
+            raise TimeoutError(f"{TRACEROUTE_TOTAL_TIMEOUT_CODE}: target={target}")
+        try:
+            # communicate(timeout)는 child가 실행되는 동안에도 PIPE를 비워 과다 출력 교착을 막습니다.
+            stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+        return parse_tracert_output("\n".join(part for part in (stdout, stderr) if part))
 
-    stdout, stderr = process.communicate()
-    return parse_tracert_output("\n".join(part for part in (stdout, stderr) if part))
+
+def _terminate_and_collect(process: subprocess.Popen) -> tuple[str, str]:
+    """terminate/kill 뒤 communicate까지 완료해 child process handle을 회수합니다."""
+
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    try:
+        return process.communicate(timeout=TRACEROUTE_PROCESS_STOP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        return process.communicate(timeout=TRACEROUTE_PROCESS_STOP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(TRACEROUTE_PROCESS_STOP_FAILED_CODE) from exc
 
 
 def ensure_target_hop(hops: Iterable[HopInfo], target: str, resolved_address: str | None = None) -> list[HopInfo]:

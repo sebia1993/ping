@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QFontDatabase
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -32,7 +32,7 @@ from app.storage.session_index import (
     SESSION_STATE_WILL_DELETE,
     SessionIndexStore,
 )
-from app.storage.session_log import SessionLogWriter
+from app.storage.session_log import OBSERVATION_HEADERS, SessionLogWriter
 from app.storage.statistics_exporter import TIMEZONE_UTC
 from app.ui import main_window as main_window_module
 from app.ui import session_observation_loader as session_observation_loader_module
@@ -87,6 +87,28 @@ def _wait_for_session_graph_loader(window: MainWindow, qt_app, timeout_seconds: 
             return
         time.sleep(0.01)
     raise AssertionError("Session graph loader did not finish")
+
+
+def _wait_for_session_archive_worker(window: MainWindow, qt_app, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if window.session_archive_worker is None:
+            qt_app.processEvents()
+            return
+        time.sleep(0.01)
+    raise AssertionError("Session archive worker did not finish")
+
+
+def _wait_for_session_open_worker(window: MainWindow, qt_app, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if window.session_open_worker is None:
+            qt_app.processEvents()
+            return
+        time.sleep(0.01)
+    raise AssertionError("Session open worker did not finish")
 
 
 def test_main_window_initial_state(qt_app) -> None:
@@ -312,7 +334,7 @@ def test_main_window_session_manager_reports_storage_buckets(qt_app, tmp_path) -
     second_path = tmp_path / "203.0.113.10" / "2026-02" / "session.samples.csv"
     for path in (first_path, first_segment, second_path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("header\n", encoding="utf-8")
+        path.write_text(",".join(OBSERVATION_HEADERS) + "\n", encoding="utf-8")
     first = store.register_session(
         target="198.51.100.10",
         sample_path=first_path,
@@ -741,6 +763,7 @@ def test_main_window_opens_saved_session_from_session_manager(qt_app, tmp_path) 
         window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
 
         window.open_selected_session()
+        _wait_for_session_open_worker(window, qt_app)
 
         assert window.current_target == "198.51.100.10"
         assert window.session_log_path == sample_path
@@ -791,11 +814,12 @@ def test_main_window_open_session_reports_locked_log_without_crashing(qt_app, tm
         monkeypatch.setattr(type(sample_path), "open", locked_open)
 
         window.open_selected_session()
+        _wait_for_session_open_worker(window, qt_app)
 
         assert window.session_log_path is None
         assert window.current_target == ""
         assert "세션 로그를 읽을 수 없습니다" in window.status_label.text()
-        assert "PermissionError: locked" in window.status_label.text()
+        assert "SESSION_OPEN_FAILED: PermissionError" in window.status_label.text()
     finally:
         window.close()
 
@@ -828,6 +852,7 @@ def test_main_window_open_session_records_skipped_rows_for_partial_log(qt_app, t
         window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
 
         window.open_selected_session()
+        _wait_for_session_open_worker(window, qt_app)
 
         refreshed = store.find_session(record.session_id)
         assert refreshed is not None
@@ -881,6 +906,7 @@ def test_main_window_restores_saved_alert_actions_when_opening_session(qt_app, t
         window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
 
         window.open_selected_session()
+        _wait_for_session_open_worker(window, qt_app)
 
         assert [event.title for event in window.alert_events] == ["지연 경고"]
         assert "지연 경고" in window.alerts_box.toPlainText()
@@ -1037,8 +1063,9 @@ def test_main_window_exports_selected_saved_session(qt_app, tmp_path, monkeypatc
         assert worker.kwargs["path"] == export_path
         assert worker.kwargs["target"] == "198.51.100.10"
         assert worker.kwargs["session_log_path"] == sample_path
-        assert worker.kwargs["snapshots"][0].sent == 2
-        assert worker.kwargs["analysis"]
+        assert worker.kwargs["snapshots"] == []
+        assert worker.kwargs["analysis"] == []
+        assert worker.kwargs["derive_session_summary"] is True
         assert worker.started is True
         assert window.export_session_button.isEnabled() is False
     finally:
@@ -1051,7 +1078,6 @@ def test_main_window_exports_selected_saved_session_without_materializing_log(
     monkeypatch,
 ) -> None:
     created_workers: list[_FakeExportWorker] = []
-    captured: dict[str, object] = {}
     export_path = tmp_path / "saved_session.csv"
 
     def fake_get_save_file_name(*_args, **_kwargs):
@@ -1062,15 +1088,12 @@ def test_main_window_exports_selected_saved_session_without_materializing_log(
         created_workers.append(worker)
         return worker
 
-    def fake_build_focus_snapshots(observations, *, current_target=""):
-        captured["received_list"] = isinstance(observations, list)
-        captured["rows"] = list(observations)
-        target_snapshot = _snapshot(0, current_target, None, latency=10.0, is_target=True)
-        return FocusSnapshotSet(hop_snapshots=[], target_snapshots=[target_snapshot], target_snapshot=target_snapshot)
+    def fail_build_focus_snapshots(*_args, **_kwargs):
+        raise AssertionError("saved session summary must not be built on the UI thread")
 
     monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
     monkeypatch.setattr(main_window_module, "ExportWorker", fake_export_worker)
-    monkeypatch.setattr(main_window_module, "build_focus_snapshots", fake_build_focus_snapshots)
+    monkeypatch.setattr(main_window_module, "build_focus_snapshots", fail_build_focus_snapshots)
     window = MainWindow()
     now = datetime(2026, 1, 1, 12, 0, 0)
     store = SessionIndexStore.create(tmp_path)
@@ -1099,10 +1122,9 @@ def test_main_window_exports_selected_saved_session_without_materializing_log(
 
         window.export_selected_session()
 
-        assert captured["received_list"] is False
-        assert len(captured["rows"]) == 2
         assert len(created_workers) == 1
         assert created_workers[0].kwargs["session_log_path"] == sample_path
+        assert created_workers[0].kwargs["derive_session_summary"] is True
     finally:
         window.close()
 
@@ -1206,7 +1228,12 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         target_count=2,
         resumed_from_session_id="previous-session",
     )
-    store.finish_session(second.session_id, state=SESSION_STATE_ARCHIVED, ended_at=now + timedelta(minutes=1, seconds=2))
+    store.finish_session(
+        second.session_id,
+        state=SESSION_STATE_ARCHIVED,
+        ended_at=now + timedelta(minutes=1, seconds=2),
+        last_error=f"SESSION_DELETE_FILES_FAILED: PermissionError: {second_path}",
+    )
 
     try:
         window.session_index_store = store
@@ -1214,6 +1241,7 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         window.session_filter_edit.setText("203.0.113")
 
         window.export_visible_sessions()
+        _wait_for_session_archive_worker(window, qt_app)
 
         assert export_path.exists()
         with zipfile.ZipFile(export_path) as archive:
@@ -1226,6 +1254,9 @@ def test_main_window_exports_visible_saved_sessions_zip(qt_app, tmp_path, monkey
         assert "tcp_connect,443,disabled" in manifest
         assert "resumed_from_session_id" in manifest
         assert "previous-session" in manifest
+        assert str(tmp_path) not in manifest
+        assert "SESSION_DELETE_FILES_FAILED: PermissionError" in manifest
+        assert "second.samples.csv" in manifest
         assert any(name.endswith("/second.samples.csv") for name in names)
         assert not any(name.endswith("/first.samples.csv") for name in names)
         assert "표시 세션 ZIP 저장 완료" in window.status_label.text()
@@ -1279,11 +1310,12 @@ def test_main_window_visible_sessions_zip_preserves_existing_file_after_replace_
         window._sync_sessions_box()
 
         window.export_visible_sessions()
+        _wait_for_session_archive_worker(window, qt_app)
 
         with zipfile.ZipFile(export_path) as archive:
             assert archive.read("session_manifest.csv").decode("utf-8") == "old manifest"
-        assert warnings == ["locked"]
-        assert window.status_label.text() == "locked"
+        assert warnings == ["SESSION_ARCHIVE_WRITE_FAILED: PermissionError"]
+        assert window.status_label.text() == "SESSION_ARCHIVE_WRITE_FAILED: PermissionError"
         assert list(tmp_path.glob(".visible_sessions.zip.*")) == []
     finally:
         window.close()
@@ -2612,6 +2644,118 @@ def test_main_window_colors_target_graph_rows_by_current_alert_state(qt_app) -> 
         window.close()
 
 
+def test_main_window_starts_session_open_without_synchronous_log_reconcile(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        ])
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    started: list[str] = []
+
+    try:
+        window.session_index_store = store
+        monkeypatch.setattr(
+            store,
+            "reconcile_session_log_metadata",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("must not scan session log on UI thread")
+            ),
+        )
+        monkeypatch.setattr(
+            window,
+            "_start_session_open_worker",
+            lambda selected: started.append(selected.session_id),
+        )
+
+        window._open_session_record(record)
+
+        assert started == [record.session_id]
+    finally:
+        window.close()
+
+
+def test_main_window_disposes_finished_qthreads(qt_app) -> None:
+    class DisposableThread(QThread):
+        def __init__(self) -> None:
+            super().__init__()
+            self.delete_later_calls = 0
+
+        def deleteLater(self) -> None:
+            self.delete_later_calls += 1
+
+    window = MainWindow()
+    measurement = DisposableThread()
+    export = DisposableThread()
+    archive = DisposableThread()
+
+    try:
+        window.worker = measurement
+        window.on_worker_finished()
+        window.export_worker = export
+        window.on_export_finished()
+        window.session_archive_worker = archive
+        window.on_session_archive_finished()
+
+        assert measurement.delete_later_calls == 1
+        assert export.delete_later_calls == 1
+        assert archive.delete_later_calls == 1
+    finally:
+        window.worker = None
+        window.export_worker = None
+        window.session_archive_worker = None
+        window.close()
+
+
+def test_main_window_blocks_session_recovery_while_measurement_runs(qt_app, monkeypatch) -> None:
+    window = MainWindow()
+    calls: list[str] = []
+
+    try:
+        window.worker = SimpleNamespace(isRunning=lambda: True)
+        monkeypatch.setattr(
+            window.session_index_store,
+            "retry_pending_deletions",
+            lambda **_kwargs: calls.append("retry"),
+        )
+        monkeypatch.setattr(
+            window.session_index_store,
+            "recover_missing_sessions",
+            lambda: calls.append("recover"),
+        )
+        monkeypatch.setattr(
+            window.session_index_store,
+            "reconcile_session_log_metadata",
+            lambda: calls.append("reconcile"),
+        )
+
+        window._set_running(True)
+        window.refresh_saved_sessions()
+
+        assert calls == []
+        assert window.refresh_sessions_button.isEnabled() is False
+        assert "측정 중에는" in window.status_label.text()
+    finally:
+        window.worker = None
+        window._set_running(False)
+        window.close()
+
+
 def test_display_status_uses_recent_loss_after_old_outage_has_recovered() -> None:
     snapshot = _snapshot(
         0,
@@ -2708,12 +2852,15 @@ def test_main_window_keeps_latest_time_range_across_target_graph_rows(qt_app) ->
 
     try:
         window.current_target = targets[0]
+        window.session_log_path = Path("missing-live-session.samples.csv")
         window.on_measurement_updated([], snapshots[0], snapshots, ["live"], observations, [])
 
         expected_current_range = (now + timedelta(minutes=10), now + timedelta(minutes=20))
         assert window.graph.visible_datetime_range() == expected_current_range
         assert window.target_graph_widgets[targets[1]].visible_datetime_range() == expected_current_range
-        assert len(window.graph._points) == 21
+        # 최근 범위에서는 화면 밖의 오래된 샘플을 각 그래프 위젯에 다시 넘기지 않습니다.
+        assert len(window.graph._points) == 11
+        assert window.graph._points[0].timestamp == now + timedelta(minutes=10)
         assert hasattr(window, "graph_time_previous_button") is False
         assert hasattr(window, "graph_time_current_button") is False
         assert hasattr(window, "graph_time_next_button") is False
@@ -2798,7 +2945,142 @@ def test_main_window_all_range_uses_session_log_start_beyond_live_buffer(qt_app,
         window.close()
 
 
-def test_main_window_reuses_session_log_bounds_cache_and_invalidates_on_update(
+def test_main_window_all_range_uses_complete_live_cache_without_session_loader(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    start = datetime(2026, 1, 1, 9, 0, 0)
+    end = start + timedelta(minutes=30)
+    targets = [f"198.51.100.{index}" for index in range(1, 51)]
+    observations = [
+        HopObservation(timestamp, 0, target, "Target", True, 20.0, STATUS_OK, True)
+        for timestamp in (start, end)
+        for target in targets
+    ]
+    session_path = tmp_path / "session.csv"
+    with SessionLogWriter(session_path) as writer:
+        writer.write_many(observations)
+    snapshots = [
+        _snapshot(0, target, None, latency=20.0, is_target=True)
+        for target in targets
+    ]
+    queued: list[tuple[Path, datetime, datetime]] = []
+
+    try:
+        window.current_target = targets[0]
+        window.current_targets = list(targets)
+        window.session_log_path = session_path
+        monkeypatch.setattr(
+            window,
+            "_queue_session_graph_load",
+            lambda path, range_start, range_end: queued.append((path, range_start, range_end)),
+        )
+        window.on_measurement_updated(
+            [],
+            snapshots[0],
+            snapshots,
+            ["live"],
+            observations,
+            [point for point in observations if point.address == targets[0]],
+        )
+
+        window.set_main_graph_range_mode(MAIN_GRAPH_RANGE_ALL)
+
+        assert queued == []
+        assert window.session_graph_loader is None
+        assert window.graph.visible_datetime_range() == (start, end)
+        assert [point.timestamp for point in window.graph._points] == [start, end]
+    finally:
+        window.close()
+
+
+def test_main_window_waits_for_finished_loader_signal_before_starting_next_request(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FinishedLoader:
+        def __init__(self) -> None:
+            self.cancel_calls = 0
+            self.delete_later_calls = 0
+
+        def isRunning(self) -> bool:
+            return False
+
+        def request_cancel(self) -> None:
+            self.cancel_calls += 1
+
+        def deleteLater(self) -> None:
+            self.delete_later_calls += 1
+
+    window = MainWindow()
+    loader = FinishedLoader()
+    path = tmp_path / "session.csv"
+    start = datetime(2026, 1, 1, 9, 0, 0)
+    first_end = start + timedelta(minutes=10)
+    next_end = start + timedelta(minutes=30)
+    started: list[tuple[Path, datetime, datetime] | None] = []
+
+    try:
+        window.session_graph_loader = loader
+        window.session_graph_load_serial = 1
+        window.active_session_graph_request = (1, path, start, first_end)
+        monkeypatch.setattr(
+            window,
+            "_start_pending_session_graph_load",
+            lambda: started.append(window.pending_session_graph_request),
+        )
+
+        window._queue_session_graph_load(path, start, next_end)
+
+        assert started == []
+        assert window.session_graph_loader is loader
+        assert window.active_session_graph_request is None
+        assert window.pending_session_graph_request == (path, start, next_end)
+
+        window._on_session_graph_loader_finished(loader, 1)
+
+        assert loader.delete_later_calls == 1
+        assert window.session_graph_loader is None
+        assert started == [(path, start, next_end)]
+    finally:
+        window.session_graph_loader = None
+        window.close()
+
+
+def test_main_window_stale_loader_finished_signal_does_not_clear_current_loader(qt_app) -> None:
+    class FinishedLoader:
+        def __init__(self) -> None:
+            self.delete_later_calls = 0
+
+        def deleteLater(self) -> None:
+            self.delete_later_calls += 1
+
+    window = MainWindow()
+    stale_loader = FinishedLoader()
+    current_loader = FinishedLoader()
+    path = Path("session.csv")
+    start = datetime(2026, 1, 1, 9, 0, 0)
+    end = start + timedelta(minutes=30)
+
+    try:
+        window.session_graph_loader = current_loader
+        window.active_session_graph_request = (2, path, start, end)
+
+        window._on_session_graph_loader_finished(stale_loader, 1)
+
+        assert stale_loader.delete_later_calls == 1
+        assert current_loader.delete_later_calls == 0
+        assert window.session_graph_loader is current_loader
+        assert window.active_session_graph_request == (2, path, start, end)
+    finally:
+        window.session_graph_loader = None
+        window.close()
+
+
+def test_main_window_reuses_session_log_bounds_cache_during_measurement_update(
     qt_app,
     tmp_path,
     monkeypatch,
@@ -2838,7 +3120,7 @@ def test_main_window_reuses_session_log_bounds_cache_and_invalidates_on_update(
             [],
         )
         assert window._timeline_end_time() == end
-        assert calls == 2
+        assert calls == 1
     finally:
         window.close()
 
@@ -3117,7 +3399,12 @@ def test_main_window_batches_initial_large_target_graph_row_creation(qt_app) -> 
         assert window._pending_graph_render is True
         assert window.target_graph_layout_order == targets[:TARGET_GRAPH_ROW_CREATE_BATCH]
 
-        window._render_pending_graph()
+        previous_count = len(window.target_graph_rows)
+        while window._pending_graph_render:
+            window._render_pending_graph()
+            created_count = len(window.target_graph_rows) - previous_count
+            assert 0 < created_count <= TARGET_GRAPH_ROW_CREATE_BATCH
+            previous_count = len(window.target_graph_rows)
 
         assert len(window.target_graph_rows) == len(targets)
         assert window._pending_graph_render is False
@@ -4406,6 +4693,7 @@ def test_main_window_open_session_does_not_replay_route_alert_actions(qt_app, tm
         window.session_combo.setCurrentIndex(window.session_combo.findData(record.session_id))
 
         window.open_selected_session()
+        _wait_for_session_open_worker(window, qt_app)
 
         rows = read_alert_actions(alert_action_log_path_for_session(sample_path))
         assert len(rows) == 1

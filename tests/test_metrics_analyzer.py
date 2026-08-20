@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.core.analyzer import analyze_path
-from app.core.metrics import HopMetricTracker
+from app.core.metrics import HopMetricTracker, TargetMetricTracker
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopInfo, HopObservation, MetricSnapshot, PingResult
 from app.core.observation_stats import build_focus_snapshots, observations_in_range
 
@@ -20,6 +20,29 @@ def test_metric_tracker_calculates_loss_and_latency() -> None:
     assert round(snapshot.loss_percent, 1) == 33.3
     assert snapshot.avg_latency_ms == 3.0
     assert snapshot.max_latency_ms == 4.0
+
+
+def test_target_metric_tracker_resizes_history_after_interval_change() -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    tracker = TargetMetricTracker("198.51.100.10", recent_observation_limit=3)
+    for index in range(3):
+        tracker.add_result(
+            PingResult(
+                "198.51.100.10",
+                True,
+                float(index + 1),
+                STATUS_OK,
+                now + timedelta(seconds=index),
+            )
+        )
+
+    tracker.set_recent_observation_limit(1)
+    assert len(tracker.observations) == 1
+    assert tracker.observations[0].latency_ms == 3.0
+
+    tracker.set_recent_observation_limit(3)
+    tracker.add_result(PingResult("198.51.100.10", True, 4.0, STATUS_OK, now + timedelta(seconds=3)))
+    assert [point.latency_ms for point in tracker.observations] == [3.0, 4.0]
 
 
 def test_focus_snapshot_builder_recalculates_selected_range() -> None:

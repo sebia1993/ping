@@ -15,6 +15,7 @@ from app.storage.alert_action_log import (
     append_alert_actions,
     alert_action_log_path_for_session,
     read_alert_actions,
+    read_alert_actions_with_summary,
 )
 from app.storage.csv_exporter import export_csv
 from app.storage import excel_exporter as excel_exporter_module
@@ -26,6 +27,7 @@ from app.storage import session_log as session_log_module
 from app.storage.session_index import (
     SESSION_DELETE_FILES_FAILED_CODE,
     SESSION_INDEX_REBUILT_CODE,
+    SESSION_INDEX_WRITE_FAILED_CODE,
     SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE,
     SESSION_STATE_ACTIVE,
     SESSION_STATE_ARCHIVED,
@@ -692,6 +694,46 @@ def test_alert_action_log_read_returns_empty_when_file_is_locked(tmp_path, monke
     monkeypatch.setattr(type(path), "open", locked_open)
 
     assert read_alert_actions(path) == []
+    summary = read_alert_actions_with_summary(path)
+    assert summary.rows == []
+    assert summary.error_code == alert_action_log_module.ALERT_ACTION_LOG_READ_FAILED_CODE
+
+
+def test_alert_action_log_read_reports_invalid_utf8_instead_of_empty_success(tmp_path) -> None:
+    path = tmp_path / "alerts.csv"
+    path.write_bytes(b"timestamp,title\n\xff")
+
+    summary = read_alert_actions_with_summary(path)
+
+    assert summary.rows == []
+    assert summary.error_code == alert_action_log_module.ALERT_ACTION_LOG_READ_FAILED_CODE
+
+
+def test_alert_action_log_reports_partial_row_as_corruption(tmp_path) -> None:
+    path = tmp_path / "partial-alerts.csv"
+    headers = alert_action_log_module.ALERT_ACTION_HEADERS
+    valid = {
+        "timestamp": "2026-01-01T12:00:00",
+        "start": "2026-01-01T12:00:00",
+        "end": "2026-01-01T12:00:30",
+        "source": "alert",
+        "severity": "warning",
+        "title": "지연 경고",
+        "message": "valid",
+        "actions": "log",
+        "key": "latency",
+    }
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        writer.writerow(valid)
+        handle.write("2026-01-01T12:01:00,broken\n")
+
+    summary = read_alert_actions_with_summary(path)
+
+    assert [row["key"] for row in summary.rows] == ["latency"]
+    assert summary.skipped_rows == 1
+    assert summary.error_code == alert_action_log_module.ALERT_ACTION_LOG_CORRUPTED_CODE
 
 
 def test_session_log_round_trips_observations(tmp_path) -> None:
@@ -879,6 +921,62 @@ def test_session_log_strict_reader_rejects_malformed_rows(tmp_path) -> None:
         list(iter_observations(path, strict=True))
 
     assert exc_info.value.skipped_rows == 1
+    assert exc_info.value.skipped_row_files == (path,)
+    assert SESSION_LOG_CORRUPTED_CODE in str(exc_info.value)
+
+
+def test_session_log_reports_wrong_header_even_without_data_rows(tmp_path) -> None:
+    path = tmp_path / "wrong-header.samples.csv"
+    path.write_text("timestamp,address\n", encoding="utf-8")
+
+    summary = session_log_read_summary(path)
+
+    assert summary.rows == 0
+    assert summary.skipped_rows == 1
+    assert summary.skipped_row_files == (path,)
+    with pytest.raises(SessionLogCorruptionError):
+        list(iter_observations(path, strict=True))
+
+
+@pytest.mark.parametrize(
+    "success,latency",
+    [
+        ("invalid", "10.0"),
+        ("True", ""),
+        ("True", "NaN"),
+        ("True", "-1"),
+    ],
+)
+def test_session_log_skips_semantically_invalid_samples(tmp_path, success, latency) -> None:
+    path = tmp_path / f"invalid-{success}-{latency or 'empty'}.samples.csv"
+    path.write_text(
+        "timestamp,address,kind,hop,hostname,success,latency_ms,status\n"
+        f"2026-01-01T12:00:00,198.51.100.10,Target,0,Target,{success},{latency},OK\n",
+        encoding="utf-8",
+    )
+
+    assert read_observations(path) == []
+    summary = session_log_read_summary(path)
+    assert summary.rows == 0
+    assert summary.skipped_rows == 1
+    assert summary.skipped_row_files == (path,)
+
+
+def test_session_log_invalid_utf8_is_reported_as_corruption(tmp_path) -> None:
+    path = tmp_path / "invalid-utf8.samples.csv"
+    with SessionLogWriter(path) as writer:
+        writer.write_many([_sample_observation()])
+    with path.open("ab") as handle:
+        handle.write(b"\xff\xfe\xfa")
+
+    observations = read_observations(path)
+    summary = session_log_read_summary(path)
+
+    assert isinstance(observations, list)
+    assert summary.skipped_rows == 1
+    assert summary.skipped_row_files == (path,)
+    with pytest.raises(SessionLogCorruptionError) as exc_info:
+        list(iter_observations(path, strict=True))
     assert exc_info.value.skipped_row_files == (path,)
     assert SESSION_LOG_CORRUPTED_CODE in str(exc_info.value)
 
@@ -1172,15 +1270,19 @@ def test_session_log_segment_index_preserves_existing_file_after_persistent_repl
     monkeypatch.setattr(session_log_module, "_replace_path", locked_replace)
 
     try:
-        try:
-            writer.write_many([_sample_observation(timestamp=now + timedelta(seconds=1))])
-        except PermissionError:
-            pass
-        else:
-            raise AssertionError("expected PermissionError")
+        writer.write_many([_sample_observation(timestamp=now + timedelta(seconds=1))])
 
         assert index_path.read_text(encoding="utf-8") == original_index
         assert [item for item in path.parent.iterdir() if item.name.startswith("tmp")] == []
+        assert isinstance(writer.segment_index_error, PermissionError)
+        assert len(read_observations(path)) == 2
+
+        monkeypatch.setattr(session_log_module, "_replace_path", original_replace)
+        writer.write_many([_sample_observation(timestamp=now + timedelta(seconds=2))])
+
+        assert writer.segment_index_error is None
+        assert len(read_observations(path)) == 3
+        assert json.loads(index_path.read_text(encoding="utf-8"))["segments"][0]["rows"] == 3
     finally:
         monkeypatch.setattr(session_log_module, "_replace_path", original_replace)
         writer.close()
@@ -1205,8 +1307,11 @@ def test_session_log_segment_index_preserves_replace_error_when_temp_cleanup_fai
     monkeypatch.setattr(session_log_module, "_unlink_path", locked_unlink)
 
     try:
-        with pytest.raises(PermissionError, match="replace locked"):
-            writer.write_many([_sample_observation()])
+        writer.write_many([_sample_observation()])
+
+        assert isinstance(writer.segment_index_error, PermissionError)
+        assert str(writer.segment_index_error) == "replace locked"
+        assert len(read_observations(path)) == 1
     finally:
         monkeypatch.setattr(session_log_module, "_replace_path", original_replace)
         writer.close()
@@ -1223,12 +1328,32 @@ def test_session_log_segment_index_cleans_temp_file_after_json_dump_error(tmp_pa
     monkeypatch.setattr(session_log_module.json, "dump", failing_dump)
 
     try:
-        with pytest.raises(OSError, match="dump failed"):
-            writer.write_many([_sample_observation()])
+        writer.write_many([_sample_observation()])
 
+        assert isinstance(writer.segment_index_error, OSError)
+        assert str(writer.segment_index_error) == "dump failed"
         assert [item for item in tmp_path.iterdir() if item.name.startswith("tmp")] == []
+        assert len(read_observations(path)) == 1
     finally:
         monkeypatch.setattr(session_log_module.json, "dump", original_dump)
+        writer.close()
+
+
+def test_session_log_segment_index_does_not_hide_programming_errors(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session.csv"
+    writer = SessionLogWriter(path)
+    original_write = session_log_module._write_json_atomic
+
+    def fail_with_programming_error(*_args, **_kwargs):
+        raise TypeError("invalid segment payload")
+
+    monkeypatch.setattr(session_log_module, "_write_json_atomic", fail_with_programming_error)
+
+    try:
+        with pytest.raises(TypeError, match="invalid segment payload"):
+            writer.write_many([_sample_observation()])
+    finally:
+        monkeypatch.setattr(session_log_module, "_write_json_atomic", original_write)
         writer.close()
 
 
@@ -1273,6 +1398,16 @@ def test_session_log_create_does_not_overwrite_existing_same_second_log(tmp_path
     assert first.path.read_text(encoding="utf-8") == original_text
     assert len(read_observations(first.path)) == 1
     assert len(read_observations(second.path)) == 1
+
+
+def test_session_log_writer_never_truncates_an_existing_file(tmp_path) -> None:
+    path = tmp_path / "existing.samples.csv"
+    path.write_text("preserve-me\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        SessionLogWriter(path)
+
+    assert path.read_text(encoding="utf-8") == "preserve-me\n"
 
 
 def test_session_index_registers_updates_and_filters_sessions(tmp_path) -> None:
@@ -1768,6 +1903,97 @@ def test_session_index_recovers_sessions_from_logs_when_index_is_corrupt(tmp_pat
     assert store.find_session(sessions[0].session_id) is not None
 
 
+def test_session_index_recovers_sessions_when_index_has_invalid_utf8(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True)])
+    store.path.write_bytes(b"\xff\xfeinvalid index")
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].target == "198.51.100.10"
+    assert sessions[0].samples == 1
+    assert store.last_read_warning == f"{SESSION_INDEX_REBUILT_CODE}: invalid_index"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"version": 2, "sessions": None},
+        {"version": 999, "sessions": []},
+    ],
+)
+def test_session_index_recovers_from_structurally_invalid_json(tmp_path, payload) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        ])
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].sample_path == sample_path
+    assert store.last_read_warning == f"{SESSION_INDEX_REBUILT_CODE}: invalid_index"
+
+
+def test_session_index_skips_non_mapping_and_invalid_segment_rows(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "session.samples.csv"
+    with SessionLogWriter(sample_path) as writer:
+        writer.write_many([
+            HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        ])
+    store.path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "sessions": [
+                    ["not", "a", "mapping"],
+                    {
+                        "session_id": "bad-segments",
+                        "target": "198.51.100.10",
+                        "sample_path": str(sample_path),
+                        "start": now.isoformat(),
+                        "segments": "not-a-list",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].sample_path == sample_path
+    assert store.last_read_warning == f"{SESSION_INDEX_REBUILT_CODE}: invalid_rows=2"
+
+
+def test_session_index_keeps_completely_corrupt_utf8_log_visible_as_paused(tmp_path) -> None:
+    store = SessionIndexStore.create(tmp_path)
+    sample_path = tmp_path / "198.51.100.10" / "2026-01" / "corrupt.samples.csv"
+    sample_path.parent.mkdir(parents=True, exist_ok=True)
+    sample_path.write_bytes(b"\xff\xfe\xfa")
+
+    sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].target == "198.51.100.10"
+    assert sessions[0].state == SESSION_STATE_PAUSED
+    assert sessions[0].samples == 0
+    assert sessions[0].last_error.startswith(SESSION_RECOVERED_WITH_SKIPPED_ROWS_CODE)
+    assert "corrupt.samples.csv" in sessions[0].last_error
+
+
 def test_session_index_recovers_invalid_row_when_other_index_rows_are_still_valid(tmp_path) -> None:
     store = SessionIndexStore.create(tmp_path)
     now = datetime(2026, 1, 1, 12, 0, 0)
@@ -2137,6 +2363,7 @@ def test_session_index_cleans_temp_file_after_persistent_replace_error(tmp_path,
 
     temp_files = [path for path in tmp_path.iterdir() if path.name.startswith("tmp")]
     assert temp_files == []
+    assert store.last_write_warning == f"{SESSION_INDEX_WRITE_FAILED_CODE}: PermissionError"
 
 
 def test_session_index_preserves_replace_error_when_temp_cleanup_fails(tmp_path, monkeypatch) -> None:
@@ -2523,6 +2750,68 @@ def test_export_worker_writes_csv_from_large_segmented_session_log(tmp_path) -> 
     assert "192.168.0.1" in text
     assert "192.168.0.250" in text
     assert text.count("\n2026-01-01T") >= 1200
+
+
+def test_export_worker_derives_saved_session_summary_in_worker(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    session_path = tmp_path / "summary_session.csv"
+    observations = [
+        HopObservation(now, 0, "198.51.100.10", "Target", True, 10.0, STATUS_OK, True),
+        HopObservation(
+            now + timedelta(seconds=1),
+            0,
+            "198.51.100.10",
+            "Target",
+            False,
+            None,
+            STATUS_TIMEOUT,
+            True,
+        ),
+    ]
+    with SessionLogWriter(session_path) as writer:
+        writer.write_many(observations)
+    export_path = tmp_path / "summary_export.csv"
+    errors: list[str] = []
+    worker = ExportWorker(
+        kind="csv",
+        path=export_path,
+        target="198.51.100.10",
+        session_log_path=session_path,
+        snapshots=[],
+        analysis=[],
+        derive_session_summary=True,
+    )
+    worker.error_message.connect(errors.append)
+
+    worker.run()
+
+    target_snapshot = next(item for item in worker.snapshots if item.address == "198.51.100.10")
+    assert errors == []
+    assert target_snapshot.sent == 2
+    assert target_snapshot.loss_percent == 50.0
+    assert worker.analysis
+    assert export_path.exists()
+
+
+def test_finish_session_can_repair_checkpoint_sample_count(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    sample_path = tmp_path / "repair.samples.csv"
+    sample_path.write_text("timestamp,address,kind,hop,hostname,success,latency_ms,status\n", encoding="utf-8")
+    store = SessionIndexStore.create(tmp_path)
+    record = store.register_session(
+        target="198.51.100.10",
+        sample_path=sample_path,
+        route_path=None,
+        started_at=now,
+        interval_seconds=1,
+        measurement_mode="final_hop_only:icmp",
+        target_count=1,
+    )
+    store.add_samples(record.session_id, 9, now)
+
+    store.finish_session(record.session_id, state=SESSION_STATE_ARCHIVED, samples=4)
+
+    assert store.find_session(record.session_id).samples == 4
 
 
 def test_export_worker_includes_focus_annotations(tmp_path) -> None:
