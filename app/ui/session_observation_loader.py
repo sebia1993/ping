@@ -33,6 +33,32 @@ class SessionObservationLoader(QThread):
         self.path = path
         self.start_time = start
         self.end_time = end
+        self._owner_cleanup_pending = False
+
+    def start(self, *args, **kwargs) -> None:
+        """Keep the loader reserved until its owner handles the finished signal.
+
+        QThread.isRunning() becomes false as soon as run() returns, before a queued
+        finished handler in the GUI thread necessarily executes.  MainWindow uses
+        isRunning() to decide whether it may install the next session loader.  If a
+        replacement is installed in that short gap, the old finished handler can
+        delete the replacement QThread and terminate the process.  The lifecycle
+        flag closes that gap without blocking the UI thread.
+        """
+
+        self._owner_cleanup_pending = True
+        try:
+            super().start(*args, **kwargs)
+        except Exception:
+            self._owner_cleanup_pending = False
+            raise
+
+    def isRunning(self) -> bool:
+        return super().isRunning() or self._owner_cleanup_pending
+
+    def deleteLater(self) -> None:
+        self._owner_cleanup_pending = False
+        super().deleteLater()
 
     def run(self) -> None:
         accumulators: dict[str, _TargetPointAccumulator] = {}
