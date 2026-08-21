@@ -150,7 +150,6 @@ def _render_measurement(app: QApplication) -> None:
     for _ in range(5):
         app.processEvents()
     _save(window, OUTPUT_DIR / "multiping-main.png", app)
-    window.close()
 
 
 def main() -> None:
@@ -163,7 +162,6 @@ def main() -> None:
         raise RuntimeError(f"생성된 PNG가 유효하지 않습니다: {path}")
     print(f"generated {path.relative_to(ROOT)} ({path.stat().st_size} bytes)", flush=True)
 
-    app.quit()
     sys.stdout.flush()
     os._exit(0)
 
