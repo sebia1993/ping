@@ -136,7 +136,14 @@ def _render_measurement(app: QApplication) -> None:
             raise RuntimeError(f"대상 그래프 위젯 생성 실패: {address}")
         points = histories[address]
         graph.set_series(
-            [TimelineSeries(key=address, label=window._target_display_name(address), points=points, color=colors[address])]
+            [
+                TimelineSeries(
+                    key=address,
+                    label=window.target_aliases.get(address, address),
+                    points=points,
+                    color=colors[address],
+                )
+            ]
         )
         graph.set_visible_time_range(points[0].timestamp, points[-1].timestamp)
 
