@@ -1,4 +1,5 @@
 name: Manual Stability Soak
+# actions/upload-artifact@v4 is pinned to the reviewed commit SHA below.
 
 on:
   workflow_dispatch:
