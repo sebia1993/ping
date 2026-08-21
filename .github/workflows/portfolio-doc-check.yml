@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python scripts\render_docs_screenshots.py
+        run: python -m scripts.render_docs_screenshots
 
       - name: Upload rendered documentation screens
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
