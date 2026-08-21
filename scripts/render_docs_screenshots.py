@@ -7,9 +7,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QTableWidgetItem
+from PySide6.QtWidgets import QApplication
 
 from app.core.models import STATUS_OK, STATUS_TIMEOUT, HopObservation, MetricSnapshot
+from app.ui.latency_graph import TimelineSeries
 from app.ui.main_window import MainWindow
 
 
@@ -51,8 +52,10 @@ def _snapshot(
 def _history(address: str, base_ms: float, *, timeout_every: int = 0) -> list[HopObservation]:
     start = datetime(2026, 8, 21, 19, 55, 0)
     rows: list[HopObservation] = []
-    for index in range(60):
+    for index in range(120):
         timeout = bool(timeout_every and (index + 1) % timeout_every == 0)
+        wave = ((index % 17) - 8) * 0.32
+        spike = 9.0 if index in {36, 73, 98} and not timeout else 0.0
         rows.append(
             HopObservation(
                 timestamp=start + timedelta(seconds=index),
@@ -60,7 +63,7 @@ def _history(address: str, base_ms: float, *, timeout_every: int = 0) -> list[Ho
                 address=address,
                 hostname=None,
                 success=not timeout,
-                latency_ms=None if timeout else base_ms + ((index % 7) - 3) * 0.4,
+                latency_ms=None if timeout else max(base_ms + wave + spike, 0.1),
                 status=STATUS_TIMEOUT if timeout else STATUS_OK,
                 is_target=True,
             )
@@ -71,7 +74,8 @@ def _history(address: str, base_ms: float, *, timeout_every: int = 0) -> list[Ho
 def _save(window: MainWindow, path: Path, app: QApplication) -> None:
     window.resize(1460, 940)
     window.show()
-    app.processEvents()
+    for _ in range(4):
+        app.processEvents()
     image = window.grab()
     if image.isNull() or image.width() < 1200 or image.height() < 700:
         raise RuntimeError(f"문서 화면 캡처 실패: {path.name}")
@@ -90,11 +94,11 @@ def _render_measurement(app: QApplication) -> None:
         _snapshot(targets[1], current=28.4, average=24.7, loss=5.8, jitter=11.6, status=STATUS_OK),
         _snapshot(targets[2], current=None, average=87.5, loss=25.0, jitter=31.4, status=STATUS_TIMEOUT),
     ]
-    observations = [
-        *_history(targets[0], 4.5),
-        *_history(targets[1], 24.0, timeout_every=17),
-        *_history(targets[2], 88.0, timeout_every=4),
-    ]
+    histories = {
+        targets[0]: _history(targets[0], 4.5),
+        targets[1]: _history(targets[1], 24.0, timeout_every=17),
+        targets[2]: _history(targets[2], 88.0, timeout_every=4),
+    }
 
     window.current_target = targets[0]
     window.current_targets = targets
@@ -106,7 +110,6 @@ def _render_measurement(app: QApplication) -> None:
         targets[2]: "Remote-Site",
     }
     window.target_input.setPlainText("\n".join(targets))
-    window._remember_live_graph_observations(observations)
     window._sync_target_graph_rows(snapshots)
     window._update_target_summary(snapshots[0])
     window._update_all_targets_summary(snapshots)
@@ -117,30 +120,29 @@ def _render_measurement(app: QApplication) -> None:
     window.running_target_summary_label.show()
     window.graph_panel.show()
     window.right_panel.hide()
+
+    window.resize(1460, 940)
+    window.show()
+    app.processEvents()
+
+    colors = {
+        targets[0]: "#16a34a",
+        targets[1]: "#f59e0b",
+        targets[2]: "#dc2626",
+    }
+    for address in targets:
+        graph = window.target_graph_widgets.get(address)
+        if graph is None:
+            raise RuntimeError(f"대상 그래프 위젯 생성 실패: {address}")
+        points = histories[address]
+        graph.set_series(
+            [TimelineSeries(key=address, label=window._target_display_name(address), points=points, color=colors[address])]
+        )
+        graph.set_visible_time_range(points[0].timestamp, points[-1].timestamp)
+
+    for _ in range(5):
+        app.processEvents()
     _save(window, OUTPUT_DIR / "multiping-main.png", app)
-    window.close()
-
-
-def _render_sessions(app: QApplication) -> None:
-    window = MainWindow()
-    window.target_input.setPlainText("192.0.2.10\n198.51.100.20\n203.0.113.30")
-    window.right_panel.show()
-    window.graph_panel.hide()
-    window.status_label.setText("저장된 측정 세션 · 비식별 문서 예시")
-
-    rows = [
-        ["2026-08-21 17:00", "192.0.2.10", "보관", "3,600", "1초", "ICMP"],
-        ["2026-08-21 17:45", "198.51.100.20", "보관", "5,400", "1초", "ICMP"],
-        ["2026-08-21 18:30", "203.0.113.30", "보관", "7,200", "1초", "ICMP"],
-    ]
-    window.session_table.setRowCount(len(rows))
-    for row_index, values in enumerate(rows):
-        for column_index, value in enumerate(values):
-            if column_index >= window.session_table.columnCount():
-                break
-            window.session_table.setItem(row_index, column_index, QTableWidgetItem(value))
-    window.main_splitter.setSizes([650, 810])
-    _save(window, OUTPUT_DIR / "multiping-sessions.png", app)
     window.close()
 
 
@@ -148,12 +150,11 @@ def main() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _render_measurement(app)
-    _render_sessions(app)
 
-    for path in (OUTPUT_DIR / "multiping-main.png", OUTPUT_DIR / "multiping-sessions.png"):
-        if not path.is_file() or path.stat().st_size < 10_000:
-            raise RuntimeError(f"생성된 PNG가 유효하지 않습니다: {path}")
-        print(f"generated {path.relative_to(ROOT)} ({path.stat().st_size} bytes)", flush=True)
+    path = OUTPUT_DIR / "multiping-main.png"
+    if not path.is_file() or path.stat().st_size < 10_000:
+        raise RuntimeError(f"생성된 PNG가 유효하지 않습니다: {path}")
+    print(f"generated {path.relative_to(ROOT)} ({path.stat().st_size} bytes)", flush=True)
 
     app.quit()
     sys.stdout.flush()
